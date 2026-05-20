@@ -127,6 +127,36 @@ only when you are ready to resume the JESD/GTH path:
 vivado.bat -mode batch -source create_project.tcl -tclargs --with-staged-gt
 ```
 
+The generated LiteJESD204B DAC TX RTL is also staged outside the default
+bring-up build. Import it explicitly when working on the JESD path:
+
+```powershell
+vivado.bat -mode batch -source create_project.tcl -tclargs --with-litejesd
+```
+
+For the combined GTH plus LiteJESD project:
+
+```powershell
+vivado.bat -mode batch -source create_project.tcl -tclargs --with-staged-gt --with-litejesd
+```
+
+`src/jesd/litejesd_dac_tx.v` is checked in, so Vivado does not need LiteX or
+Migen. The generator source and provenance are under `third_party/litejesd204b`,
+and the regeneration script is `scripts/gen_litejesd_dac_tx.py`.
+
+The GTH Wizard still needs to expose the raw 8B/10B TX interface used by this
+block: 32-bit `TXDATA` plus 4-bit `TXCHARISK` per lane, clocked by the GTH TX
+user clock. For a 12.5 Gbps 8B/10B link with 32-bit user data, that user clock
+is 312.5 MHz. The staged GTH XCI already uses 12.5 Gbps, 156.25 MHz refclk,
+QPLL0, and 8B/10B, but it currently uses 64-bit TX user data and must be
+regenerated for 32-bit TX user data before wiring it to LiteJESD204B.
+
+The launch-side wrapper for that connection is
+`src/jesd/daq_litejesd_dac_tx_path.v`. It assumes the corrected GTH wrapper
+provides a common TX user clock and reset vector, then exports `gth_txdata`
+and `gth_txcharisk` for direct connection to the wizard's 8B/10B TX data and
+charisk/control path.
+
 After `create_project.tcl`, Vivado writes an IP status report to
 `reports/ip_status_after_create.rpt`.
 

@@ -12,6 +12,7 @@ set script_dir  [file dirname [file normalize [info script]]]
 set project_dir [file join $script_dir project]
 set report_dir  [file join $script_dir reports]
 set include_staged_gt 0
+set include_litejesd 0
 
 for {set i 0} {$i < [llength $::argv]} {incr i} {
     set arg [lindex $::argv $i]
@@ -19,8 +20,11 @@ for {set i 0} {$i < [llength $::argv]} {incr i} {
         "--with-staged-gt" {
             set include_staged_gt 1
         }
+        "--with-litejesd" {
+            set include_litejesd 1
+        }
         default {
-            error "Unknown create_project.tcl argument '$arg'. Supported arguments: --with-staged-gt."
+            error "Unknown create_project.tcl argument '$arg'. Supported arguments: --with-staged-gt, --with-litejesd."
         }
     }
 }
@@ -230,7 +234,10 @@ require_vivado_version $required_vivado
 if {$include_staged_gt} {
     puts "Build variant: simple bring-up plus staged GTH XCI import."
 } else {
-    puts "Build variant: simple bring-up only. Staged GTH/JESD files are not imported."
+    puts "Build variant: simple bring-up without staged GTH XCI import."
+}
+if {$include_litejesd} {
+    puts "LiteJESD204B generated RTL import enabled."
 }
 
 file mkdir $project_dir
@@ -245,6 +252,24 @@ update_ip_catalog
 foreach ext {*.v *.sv *.vhd} {
     foreach f [glob -nocomplain -directory $script_dir/src $ext] {
         import_files -fileset sources_1 $f
+    }
+}
+
+if {$include_litejesd} {
+    set litejesd_dir [file join $script_dir src jesd]
+    set litejesd_rtl [glob -nocomplain -directory $litejesd_dir *.v]
+    if {[llength $litejesd_rtl] == 0} {
+        error "LiteJESD import requested, but no generated RTL was found under $litejesd_dir."
+    }
+    foreach f $litejesd_rtl {
+        import_files -fileset sources_1 $f
+    }
+    foreach f [glob -nocomplain -directory $litejesd_dir *.init] {
+        import_files -fileset sources_1 $f
+        set imported [get_files -quiet [file tail $f]]
+        if {[llength $imported] > 0} {
+            set_property file_type {Memory Initialization Files} $imported
+        }
     }
 }
 
