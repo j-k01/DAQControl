@@ -8,14 +8,18 @@ XCZU9EG target. The user request said "ZCU101 Rev 1.1"; no AMD/Xilinx ZCU101
 user guide was found, so this port uses the official ZCU102 UG1182 Rev 1.7
 HPC1 mapping, whose revision history includes Rev 1.1 board updates.
 
-This design intentionally does not instantiate JESD204 or GTH data channels.
-It proves the board-health layer first:
+The launch top intentionally does not yet instantiate JESD204 or GTH data
+channels. It proves the board-health layer first:
 
 - ZCU102 PL fabric heartbeat from USER_SI570.
 - DAQ `CLK_FMC`, `SYSREF_FMC`, `GBTCLK0`, and `GBTCLK1` activity counters.
 - HMC7044 reset and manual SPI pins.
 - DAC39J84 reset, TX enable, alarm, sync, and manual SPI pins.
 - MicroBlaze/UART register access using the same style as the NAPSAC reference design.
+
+The default project-generation flow does not import staged GTH/JESD files, so
+the simple bring-up bitstream remains independent of transceiver and JESD
+integration details.
 
 ## ZCU102 FMC Power Note
 
@@ -99,22 +103,42 @@ TEST PASSED
 
 ## Bitstream Build
 
-From a Vivado 2023.1 Tcl shell:
+The project-generation and bitstream scripts now explicitly target Vivado
+2024.1 or newer. Vivado 2023.1 is expected to fail early because the pulled
+GTH XCI was customized with Vivado 2024.1.
 
-```tcl
+From PowerShell or `cmd` on a machine with Vivado 2024.1:
+
+```powershell
 cd D:/DAVIS/Research/HighSpeedDAQ/DAQ_LAUNCH
-source create_project.tcl -tclargs --fresh-ip
-source build.tcl
+vivado.bat -mode batch -source create_project.tcl
+vivado.bat -mode batch -source build.tcl
 ```
 
-Then build the MicroBlaze firmware from Vitis/XSDK Tcl after the XSA exists:
+`create_project.tcl` creates the local `clk_wiz_0` instance, opens the imported
+MicroBlaze block design, asks Vivado to upgrade the BD/IP in the generated
+project copy, validates the BD, then generates a fresh wrapper. The checked-in
+2023.1 BD files are not rewritten unless you explicitly export or save them
+back into the repository.
 
-```tcl
-source build_sw.tcl
+Staged GTH XCIs are intentionally excluded from the simple build. Import them
+only when you are ready to resume the JESD/GTH path:
+
+```powershell
+vivado.bat -mode batch -source create_project.tcl -tclargs --with-staged-gt
+```
+
+After `create_project.tcl`, Vivado writes an IP status report to
+`reports/ip_status_after_create.rpt`.
+
+Then build the MicroBlaze firmware from Vitis/XSCT after the XSA exists:
+
+```powershell
+xsct.bat build_sw.tcl
 ```
 
 Re-run implementation with the firmware baked into the bitstream:
 
-```tcl
-source build.tcl -tclargs --bake
+```powershell
+vivado.bat -mode batch -source build.tcl -tclargs --bake
 ```
