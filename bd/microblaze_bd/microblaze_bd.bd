@@ -2,7 +2,7 @@
   "design": {
     "design_info": {
       "boundary_crc": "0x71C161ACADAFF033",
-      "device": "xc7vx690tffg1761-2",
+      "device": "xczu9eg-ffvb1156-2-e",
       "gen_directory": "../../../../DAQ_LAUNCH.gen/sources_1/bd/microblaze_bd",
       "name": "microblaze_bd",
       "rev_ctrl_bd_flag": "RevCtrlBdOff",
@@ -470,7 +470,7 @@
         "inst_hier_path": "axi_uart16550_0",
         "parameters": {
           "UART_BOARD_INTERFACE": {
-            "value": "rs232_uart"
+            "value": "Custom"
           },
           "USE_BOARD_FLOW": {
             "value": "true"

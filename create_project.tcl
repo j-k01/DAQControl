@@ -1,6 +1,6 @@
 set project_name  "DAQ_LAUNCH"
-set part          "xc7vx690tffg1761-2"
-set board         "xilinx.com:vc709:part0:1.8"
+set part          "xczu9eg-ffvb1156-2-e"
+set board         "xilinx.com:zcu102:part0:3.4"
 
 set script_dir  [file dirname [file normalize [info script]]]
 set project_dir [file join $script_dir project]
@@ -8,7 +8,9 @@ set fresh_ip    [expr {[lsearch $::argv "--fresh-ip"] >= 0}]
 
 file mkdir $project_dir
 create_project $project_name $project_dir -part $part -force
-set_property board_part    $board   [current_project]
+if {$board ne ""} {
+    set_property board_part $board [current_project]
+}
 set_property target_language Verilog [current_project]
 set_property XPM_LIBRARIES {XPM_CDC} [current_project]
 set_property ip_repo_paths [list $script_dir/ip_repo] [current_project]
@@ -31,7 +33,7 @@ if {$fresh_ip} {
     create_ip -name clk_wiz -vendor xilinx.com -library ip -module_name clk_wiz_0 -dir $ip_dir
     set_property -dict [list \
         CONFIG.PRIM_SOURCE                {Differential_clock_capable_pin} \
-        CONFIG.PRIM_IN_FREQ               {200.000} \
+        CONFIG.PRIM_IN_FREQ               {300.000} \
         CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {200.000} \
         CONFIG.CLKOUT2_USED               {true} \
         CONFIG.CLKOUT2_REQUESTED_OUT_FREQ {100.000} \
@@ -55,6 +57,9 @@ if {$fresh_ip} {
 foreach bd [glob -nocomplain -directory $script_dir/bd {*/*.bd}] {
     set bd_name [file rootname [file tail $bd]]
     import_files -fileset sources_1 $bd
+    foreach ip [get_ips -quiet] {
+        if {[get_property IS_LOCKED $ip]} { upgrade_ip $ip }
+    }
     generate_target all [get_files ${bd_name}.bd]
     make_wrapper -files [get_files ${bd_name}.bd] -top
     set wrapper $project_dir/${project_name}.gen/sources_1/bd/${bd_name}/hdl/${bd_name}_wrapper.v

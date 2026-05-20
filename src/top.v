@@ -7,10 +7,6 @@ module top (
     input  wire        UART_RXD,
     output wire        UART_TXD,
 
-    output wire        FMC_C2M_PG_LS,
-    input  wire        FMC1_HPC_PG_M2C_LS,
-    input  wire        FMC1_HPC_PRSNT_M2C_B_LS,
-
     input  wire        FMC1_HPC_CLK0_M2C_P,
     input  wire        FMC1_HPC_CLK0_M2C_N,
     input  wire        FMC1_HPC_GBTCLK0_M2C_C_P,
@@ -70,6 +66,12 @@ module top (
     wire [31:0] sysref_count;
     reg  [31:0] selected_count;
 
+    // ZCU102 HPC1 routes FMC power/presence through fixed board logic and
+    // I2C/system-controller paths, not simple PL GPIO pins as on VC709.
+    wire fmc_present = 1'b1;
+    wire fmc_pg_m2c = 1'b1;
+    wire fmc_c2m_pg_status = 1'b1;
+
     microblaze_bd_wrapper u_microblaze (
         .Clk                  (clk_200),
         .reset                (CPU_RESET),
@@ -101,8 +103,6 @@ module top (
     );
 
     wire manual_spi_enable = rw_reg0[30];
-
-    assign FMC_C2M_PG_LS = rw_reg0[31] ? rw_reg0[0] : 1'b1;
 
     assign HMC_CLK_RESET = rw_reg0[1];
     assign DAC_RESET_N   = rw_reg0[2];
@@ -164,28 +164,38 @@ module top (
     wire gbt0_clk;
     wire gbt1_clk;
 
-    IBUFDS_GTE2 u_gbtclk0_ibuf (
+    IBUFDS_GTE4 u_gbtclk0_ibuf (
         .I     (FMC1_HPC_GBTCLK0_M2C_C_P),
         .IB    (FMC1_HPC_GBTCLK0_M2C_C_N),
         .CEB   (1'b0),
         .O     (),
         .ODIV2 (gbt0_odiv2)
     );
-    BUFG u_gbtclk0_bufg (
-        .I (gbt0_odiv2),
-        .O (gbt0_clk)
+    BUFG_GT u_gbtclk0_bufg (
+        .I       (gbt0_odiv2),
+        .CE      (1'b1),
+        .CEMASK  (1'b0),
+        .CLR     (1'b0),
+        .CLRMASK (1'b0),
+        .DIV     (3'b000),
+        .O       (gbt0_clk)
     );
 
-    IBUFDS_GTE2 u_gbtclk1_ibuf (
+    IBUFDS_GTE4 u_gbtclk1_ibuf (
         .I     (FMC1_HPC_GBTCLK1_M2C_C_P),
         .IB    (FMC1_HPC_GBTCLK1_M2C_C_N),
         .CEB   (1'b0),
         .O     (),
         .ODIV2 (gbt1_odiv2)
     );
-    BUFG u_gbtclk1_bufg (
-        .I (gbt1_odiv2),
-        .O (gbt1_clk)
+    BUFG_GT u_gbtclk1_bufg (
+        .I       (gbt1_odiv2),
+        .CE      (1'b1),
+        .CEMASK  (1'b0),
+        .CLR     (1'b0),
+        .CLRMASK (1'b0),
+        .DIV     (3'b000),
+        .O       (gbt1_clk)
     );
 
     wire [31:0] gbt0_count;
@@ -229,24 +239,18 @@ module top (
 
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_sync_pipe = 3'b000;
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_alarm_pipe = 3'b000;
-    (* ASYNC_REG = "TRUE" *) reg [2:0] pg_m2c_pipe = 3'b000;
-    (* ASYNC_REG = "TRUE" *) reg [2:0] prsnt_pipe = 3'b111;
     (* ASYNC_REG = "TRUE" *) reg [2:0] hmc_sdio_pipe = 3'b000;
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_sdout_pipe = 3'b000;
 
     always @(posedge clk_200) begin
         dac_sync_pipe <= {dac_sync_pipe[1:0], dac_sync_raw};
         dac_alarm_pipe <= {dac_alarm_pipe[1:0], DAC_ALARM};
-        pg_m2c_pipe <= {pg_m2c_pipe[1:0], FMC1_HPC_PG_M2C_LS};
-        prsnt_pipe <= {prsnt_pipe[1:0], FMC1_HPC_PRSNT_M2C_B_LS};
         hmc_sdio_pipe <= {hmc_sdio_pipe[1:0], hmc_sdio_in};
         dac_sdout_pipe <= {dac_sdout_pipe[1:0], DAC_SDOUT};
     end
 
     wire dac_sync_level = dac_sync_pipe[2];
     wire dac_alarm_level = dac_alarm_pipe[2];
-    wire fmc_pg_m2c = pg_m2c_pipe[2];
-    wire fmc_present = ~prsnt_pipe[2];
 
     wire [31:0] raw_pin_reg = {
         20'd0,
@@ -258,9 +262,9 @@ module top (
         dac_alarm_level,
         dac_sync_raw,
         dac_sync_level,
-        FMC1_HPC_PG_M2C_LS,
         fmc_pg_m2c,
-        FMC1_HPC_PRSNT_M2C_B_LS,
+        fmc_pg_m2c,
+        fmc_present,
         fmc_present
     };
 
@@ -290,7 +294,7 @@ module top (
         DAC_TXEN,
         DAC_RESET_N,
         HMC_CLK_RESET,
-        FMC_C2M_PG_LS,
+        fmc_c2m_pg_status,
         fmc_pg_m2c,
         fmc_present,
         mmcm_locked
@@ -314,7 +318,7 @@ module top (
     assign GPIO_LED[4] = sysref_seen;
     assign GPIO_LED[5] = gbt0_seen | gbt1_seen;
     assign GPIO_LED[6] = ~dac_alarm_level;
-    assign GPIO_LED[7] = (~fmc_present) | (fmc_present & ~fmc_pg_m2c) | dac_alarm_level;
+    assign GPIO_LED[7] = dac_alarm_level;
 
     wire unused = clk_100 ^ ro_reg0_rdint ^ ro_reg1_rdint ^ ro_reg2_rdint ^
                   ro_reg3_rdint ^ bram_dout[0] ^ rw_reg2[0] ^ rw_reg3[0];

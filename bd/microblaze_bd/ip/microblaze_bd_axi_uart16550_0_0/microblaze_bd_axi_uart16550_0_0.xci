@@ -20,10 +20,10 @@
         "C_USE_MODEM_PORTS": [ { "value": "1", "resolve_type": "user", "format": "long", "usage": "all" } ],
         "C_USE_USER_PORTS": [ { "value": "1", "resolve_type": "user", "format": "long", "usage": "all" } ],
         "USE_BOARD_FLOW": [ { "value": "true", "value_src": "user", "resolve_type": "user", "format": "bool", "usage": "all" } ],
-        "UART_BOARD_INTERFACE": [ { "value": "rs232_uart", "value_src": "user", "resolve_type": "user", "usage": "all" } ]
+        "UART_BOARD_INTERFACE": [ { "value": "Custom", "value_src": "user", "resolve_type": "user", "usage": "all" } ]
       },
       "model_parameters": {
-        "C_FAMILY": [ { "value": "virtex7", "resolve_type": "generated", "usage": "all" } ],
+        "C_FAMILY": [ { "value": "zynquplus", "resolve_type": "generated", "usage": "all" } ],
         "C_SIM_DEVICE": [ { "value": "VERSAL_AI_CORE_ES1", "resolve_type": "generated", "usage": "all" } ],
         "C_S_AXI_ACLK_FREQ_HZ": [ { "value": "200000000", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "C_S_AXI_ADDR_WIDTH": [ { "value": "13", "format": "long", "usage": "all" } ],
@@ -34,17 +34,17 @@
         "C_EXTERNAL_XIN_CLK_HZ": [ { "value": "25000000", "resolve_type": "generated", "format": "long", "usage": "all" } ]
       },
       "project_parameters": {
-        "ARCHITECTURE": [ { "value": "virtex7" } ],
-        "BASE_BOARD_PART": [ { "value": "xilinx.com:vc709:part0:1.8" } ],
+        "ARCHITECTURE": [ { "value": "zynquplus" } ],
+        "BASE_BOARD_PART": [ { "value": "xilinx.com:zcu102:part0:3.4" } ],
         "BOARD_CONNECTIONS": [ { "value": "" } ],
-        "DEVICE": [ { "value": "xc7vx690t" } ],
-        "PACKAGE": [ { "value": "ffg1761" } ],
+        "DEVICE": [ { "value": "xczu9eg" } ],
+        "PACKAGE": [ { "value": "ffvb1156" } ],
         "PREFHDL": [ { "value": "VERILOG" } ],
         "SILICON_REVISION": [ { "value": "" } ],
         "SIMULATOR_LANGUAGE": [ { "value": "MIXED" } ],
         "SPEEDGRADE": [ { "value": "-2" } ],
         "STATIC_POWER": [ { "value": "" } ],
-        "TEMPERATURE_GRADE": [ { "value": "" } ]
+        "TEMPERATURE_GRADE": [ { "value": "E" } ]
       },
       "runtime_parameters": {
         "IPCONTEXT": [ { "value": "IP_Integrator" } ],

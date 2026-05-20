@@ -237,8 +237,8 @@
         "C_LOCKSTEP_MASTER": [ { "value": "0", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "C_TEMPORAL_DEPTH": [ { "value": "0", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "C_ENDIANNESS": [ { "value": "1", "resolve_type": "generated", "format": "long", "usage": "all" } ],
-        "C_FAMILY": [ { "value": "virtex7", "resolve_type": "generated", "usage": "all" } ],
-        "C_PART": [ { "value": "xc7vx690tffg1761-2", "resolve_type": "generated", "usage": "all" } ],
+        "C_FAMILY": [ { "value": "zynquplus", "resolve_type": "generated", "usage": "all" } ],
+        "C_PART": [ { "value": "xczu9eg-ffvb1156-2-e", "resolve_type": "generated", "usage": "all" } ],
         "C_DATA_SIZE": [ { "value": "32", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "C_LMB_DATA_SIZE": [ { "value": "32", "resolve_type": "generated", "format": "long", "usage": "all" } ],
         "C_INSTR_SIZE": [ { "value": "32", "format": "long", "usage": "all" } ],
@@ -395,17 +395,17 @@
         "C_M_AXI_DC_BUSER_WIDTH": [ { "value": "1", "format": "long", "usage": "all" } ]
       },
       "project_parameters": {
-        "ARCHITECTURE": [ { "value": "virtex7" } ],
-        "BASE_BOARD_PART": [ { "value": "xilinx.com:vc709:part0:1.8" } ],
+        "ARCHITECTURE": [ { "value": "zynquplus" } ],
+        "BASE_BOARD_PART": [ { "value": "xilinx.com:zcu102:part0:3.4" } ],
         "BOARD_CONNECTIONS": [ { "value": "" } ],
-        "DEVICE": [ { "value": "xc7vx690t" } ],
-        "PACKAGE": [ { "value": "ffg1761" } ],
+        "DEVICE": [ { "value": "xczu9eg" } ],
+        "PACKAGE": [ { "value": "ffvb1156" } ],
         "PREFHDL": [ { "value": "VERILOG" } ],
         "SILICON_REVISION": [ { "value": "" } ],
         "SIMULATOR_LANGUAGE": [ { "value": "MIXED" } ],
         "SPEEDGRADE": [ { "value": "-2" } ],
         "STATIC_POWER": [ { "value": "" } ],
-        "TEMPERATURE_GRADE": [ { "value": "" } ]
+        "TEMPERATURE_GRADE": [ { "value": "E" } ]
       },
       "runtime_parameters": {
         "IPCONTEXT": [ { "value": "IP_Integrator" } ],

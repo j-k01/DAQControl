@@ -86,7 +86,7 @@ static void cmd_help(void)
     send_str("  WRTE n value     write RW register 0..3\r\n");
     send_str("\r\n");
     send_str("RW0 control bits:\r\n");
-    send_str("  [0] FMC_C2M_PG when [31]=1, default forced high\r\n");
+    send_str("  [0]/[31] FMC_C2M_PG override unused on ZCU102 HPC1\r\n");
     send_str("  [1] HMC reset, [2] DAC_RESET_N, [3] DAC_TXEN\r\n");
     send_str("  [4] ADC1 reset, [5] ADC2 reset\r\n");
     send_str("  [16:22] manual DAC/HMC SPI pins, enabled by [30]\r\n");
