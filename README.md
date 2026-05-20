@@ -115,11 +115,10 @@ vivado.bat -mode batch -source create_project.tcl
 vivado.bat -mode batch -source build.tcl
 ```
 
-`create_project.tcl` creates the local `clk_wiz_0` instance, opens the imported
-MicroBlaze block design, asks Vivado to upgrade the BD/IP in the generated
-project copy, validates the BD, then generates a fresh wrapper. The checked-in
-2023.1 BD files are not rewritten unless you explicitly export or save them
-back into the repository.
+`create_project.tcl` creates the local `clk_wiz_0` instance and regenerates the
+MicroBlaze block design from Tcl using the installed Vivado IP catalog. The
+flow does not import the checked-in 2023.1 MicroBlaze BD products, because
+those can be locked in Vivado 2024.1 before the upgrade step can repair them.
 
 Staged GTH XCIs are intentionally excluded from the simple build. Import them
 only when you are ready to resume the JESD/GTH path:

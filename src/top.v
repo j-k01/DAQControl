@@ -64,7 +64,6 @@ module top #(
     wire ro_reg2_rdint;
     wire ro_reg3_rdint;
 
-    wire [31:0] bram_dout;
     wire [31:0] status_reg;
     wire [31:0] clk_fmc_count;
     wire [31:0] sysref_count;
@@ -93,13 +92,6 @@ module top #(
         .RO_REG2_WE_0         (1'b1),
         .RO_REG3_IN_0         (selected_count),
         .RO_REG3_WE_0         (1'b1),
-        .BRAM_PORTB_0_addr    (32'd0),
-        .BRAM_PORTB_0_clk     (clk_200),
-        .BRAM_PORTB_0_din     (32'd0),
-        .BRAM_PORTB_0_dout    (bram_dout),
-        .BRAM_PORTB_0_en      (1'b0),
-        .BRAM_PORTB_0_rst     (1'b0),
-        .BRAM_PORTB_0_we      (4'd0),
         .RO_REG0_RDINT_0      (ro_reg0_rdint),
         .RO_REG1_RDINT_0      (ro_reg1_rdint),
         .RO_REG2_RDINT_0      (ro_reg2_rdint),
@@ -333,6 +325,6 @@ module top #(
     assign GPIO_LED[7] = dac_alarm_level;
 
     wire unused = clk_100 ^ ro_reg0_rdint ^ ro_reg1_rdint ^ ro_reg2_rdint ^
-                  ro_reg3_rdint ^ bram_dout[0] ^ rw_reg2[0] ^ rw_reg3[0];
+                  ro_reg3_rdint ^ rw_reg2[0] ^ rw_reg3[0];
 
 endmodule
