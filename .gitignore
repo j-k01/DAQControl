@@ -1,0 +1,28 @@
+# Vivado local/generated output
+.Xil/
+project/
+hw/
+xsim.dir/
+*.jou
+*.log
+*.pb
+*.str
+*.wdb
+*.vcd
+*.xpr
+*.cache/
+*.gen/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.srcs/
+vivado_pid*.zip
+
+# Vitis/XSDK generated workspace
+sw/workspace/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*~
