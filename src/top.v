@@ -1,4 +1,8 @@
-module top (
+`timescale 1ns/1ps
+
+module top #(
+    parameter integer MONITOR_WINDOW_CYCLES = 200_000_000
+) (
     input  wire        SYSCLK_P,
     input  wire        SYSCLK_N,
     input  wire        CPU_RESET,
@@ -205,7 +209,9 @@ module top (
     wire        gbt0_seen;
     wire        gbt1_seen;
 
-    clock_activity_monitor u_clk_fmc_monitor (
+    clock_activity_monitor #(
+        .REF_WINDOW_CYCLES (MONITOR_WINDOW_CYCLES)
+    ) u_clk_fmc_monitor (
         .ref_clk    (clk_200),
         .ref_rst    (fabric_rst),
         .test_clk   (clk_fmc),
@@ -213,7 +219,9 @@ module top (
         .seen       (clk_fmc_seen)
     );
 
-    clock_activity_monitor u_sysref_monitor (
+    clock_activity_monitor #(
+        .REF_WINDOW_CYCLES (MONITOR_WINDOW_CYCLES)
+    ) u_sysref_monitor (
         .ref_clk    (clk_200),
         .ref_rst    (fabric_rst),
         .test_clk   (sysref_clk),
@@ -221,7 +229,9 @@ module top (
         .seen       (sysref_seen)
     );
 
-    clock_activity_monitor u_gbt0_monitor (
+    clock_activity_monitor #(
+        .REF_WINDOW_CYCLES (MONITOR_WINDOW_CYCLES)
+    ) u_gbt0_monitor (
         .ref_clk    (clk_200),
         .ref_rst    (fabric_rst),
         .test_clk   (gbt0_clk),
@@ -229,7 +239,9 @@ module top (
         .seen       (gbt0_seen)
     );
 
-    clock_activity_monitor u_gbt1_monitor (
+    clock_activity_monitor #(
+        .REF_WINDOW_CYCLES (MONITOR_WINDOW_CYCLES)
+    ) u_gbt1_monitor (
         .ref_clk    (clk_200),
         .ref_rst    (fabric_rst),
         .test_clk   (gbt1_clk),

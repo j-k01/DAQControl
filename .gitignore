@@ -3,6 +3,7 @@
 project/
 hw/
 xsim.dir/
+sim/work/
 *.jou
 *.log
 *.pb

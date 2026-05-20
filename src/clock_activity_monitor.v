@@ -1,5 +1,8 @@
+`timescale 1ns/1ps
+
 module clock_activity_monitor #(
-    parameter integer COUNTER_WIDTH = 32
+    parameter integer COUNTER_WIDTH = 32,
+    parameter integer REF_WINDOW_CYCLES = 200_000_000
 ) (
     input  wire                     ref_clk,
     input  wire                     ref_rst,
@@ -21,7 +24,7 @@ module clock_activity_monitor #(
     integer i;
     reg [COUNTER_WIDTH-1:0] sync_bin;
     reg [COUNTER_WIDTH-1:0] prev_bin;
-    reg [27:0]              window_count;
+    reg [31:0]              window_count;
 
     always @* begin
         sync_bin[COUNTER_WIDTH-1] = gray_sync[COUNTER_WIDTH-1];
@@ -38,12 +41,12 @@ module clock_activity_monitor #(
             last_count   <= {COUNTER_WIDTH{1'b0}};
             seen         <= 1'b0;
             prev_bin     <= {COUNTER_WIDTH{1'b0}};
-            window_count <= 28'd0;
-        end else if (window_count == 28'd199_999_999) begin
+            window_count <= 32'd0;
+        end else if (window_count == REF_WINDOW_CYCLES - 1) begin
             last_count   <= sync_bin - prev_bin;
             seen         <= |(sync_bin - prev_bin);
             prev_bin     <= sync_bin;
-            window_count <= 28'd0;
+            window_count <= 32'd0;
         end else begin
             window_count <= window_count + 1'b1;
         end

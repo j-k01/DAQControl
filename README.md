@@ -80,6 +80,25 @@ WRTE n value
 
 ## Build
 
+## Simulation
+
+Run the simulator-only launch-design testbench:
+
+```tcl
+vivado -mode batch -source scripts/run_sim.tcl
+```
+
+The testbench uses behavioral stubs for the clock wizard, MicroBlaze wrapper,
+and Xilinx clock-buffer primitives. It does not run synthesis or implementation.
+
+Expected result:
+
+```text
+TEST PASSED
+```
+
+## Bitstream Build
+
 From a Vivado 2023.1 Tcl shell:
 
 ```tcl
