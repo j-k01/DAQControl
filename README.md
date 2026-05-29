@@ -12,7 +12,7 @@ The default launch top intentionally does not instantiate JESD204 or GTH data
 channels. It proves the board-health layer first:
 
 - ZCU102 PL fabric heartbeat from USER_SI570.
-- DAQ `CLK_FMC`, `SYSREF_FMC`, `GBTCLK0`, and `GBTCLK1` activity counters.
+- DAQ `CLK_FMC`, `SYSREF_FMC`, `GBTCLK0`, and `GBTCLK1` activity monitors.
 - HMC7044 reset and manual SPI pins.
 - DAC39J84 reset, TX enable, alarm, sync, and manual SPI pins.
 - MicroBlaze/UART register access using the same style as the NAPSAC reference design.
@@ -60,10 +60,16 @@ RDRW n
 WRTE n value
 ```
 
-`RO0` is packed status. `RO1` is the latest one-second `CLK_FMC` count.
-`RO2` is the latest one-second `SYSREF_FMC` count. `RO3` is selected by
+`RO0` is packed status. `RO1` is the latest one-second `CLK_FMC` sampled-edge
+count. `RO2` is the latest one-second `SYSREF_FMC` sampled-edge count. `RO3` is selected by
 `RW1[2:0]`: `0=GBTCLK0`, `1=GBTCLK1`, `2=raw pins`, `3=build ID`,
 `4=GTH status`, `5=GTH RX lane status`.
+
+The FMC fabric clocks and MGT `ODIV2` monitor outputs are sampled by the
+200 MHz fabric clock. They are intentionally not routed through BUFG/BUFG_GT
+resources, because several FMC pins are not legal clock-buffer sources on the
+ZCU102. These counts are bring-up activity indicators, not precision frequency
+meters.
 
 ## RW0 Control Bits
 

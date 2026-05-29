@@ -125,7 +125,6 @@ module top #(
     wire hmc_sdio_in = HMC_CLK_SDIO;
 
     wire clk_fmc_ibuf;
-    wire clk_fmc;
     IBUFDS #(
         .DIFF_TERM  ("TRUE"),
         .IOSTANDARD ("LVDS")
@@ -134,13 +133,7 @@ module top #(
         .IB (FMC1_HPC_CLK0_M2C_N),
         .O  (clk_fmc_ibuf)
     );
-    BUFG u_clk_fmc_bufg (
-        .I (clk_fmc_ibuf),
-        .O (clk_fmc)
-    );
-
     wire sysref_ibuf;
-    wire sysref_clk;
     IBUFDS #(
         .DIFF_TERM  ("TRUE"),
         .IOSTANDARD ("LVDS")
@@ -149,11 +142,6 @@ module top #(
         .IB (DAQ_SYSREF_N),
         .O  (sysref_ibuf)
     );
-    BUFG u_sysref_bufg (
-        .I (sysref_ibuf),
-        .O (sysref_clk)
-    );
-
     wire dac_sync_raw;
     IBUFDS #(
         .DIFF_TERM  ("TRUE"),
@@ -168,8 +156,6 @@ module top #(
     wire gbt1_refclk;
     wire gbt0_odiv2;
     wire gbt1_odiv2;
-    wire gbt0_clk;
-    wire gbt1_clk;
 
     IBUFDS_GTE4 u_gbtclk0_ibuf (
         .I     (FMC1_HPC_GBTCLK0_M2C_C_P),
@@ -178,16 +164,6 @@ module top #(
         .O     (gbt0_refclk),
         .ODIV2 (gbt0_odiv2)
     );
-    BUFG_GT u_gbtclk0_bufg (
-        .I       (gbt0_odiv2),
-        .CE      (1'b1),
-        .CEMASK  (1'b0),
-        .CLR     (1'b0),
-        .CLRMASK (1'b0),
-        .DIV     (3'b000),
-        .O       (gbt0_clk)
-    );
-
     IBUFDS_GTE4 u_gbtclk1_ibuf (
         .I     (FMC1_HPC_GBTCLK1_M2C_C_P),
         .IB    (FMC1_HPC_GBTCLK1_M2C_C_N),
@@ -195,16 +171,6 @@ module top #(
         .O     (gbt1_refclk),
         .ODIV2 (gbt1_odiv2)
     );
-    BUFG_GT u_gbtclk1_bufg (
-        .I       (gbt1_odiv2),
-        .CE      (1'b1),
-        .CEMASK  (1'b0),
-        .CLR     (1'b0),
-        .CLRMASK (1'b0),
-        .DIV     (3'b000),
-        .O       (gbt1_clk)
-    );
-
     wire [31:0] gbt0_count;
     wire [31:0] gbt1_count;
     wire        clk_fmc_seen;
@@ -212,42 +178,42 @@ module top #(
     wire        gbt0_seen;
     wire        gbt1_seen;
 
-    clock_activity_monitor #(
+    signal_activity_monitor #(
         .REF_WINDOW_CYCLES (MONITOR_WINDOW_CYCLES)
     ) u_clk_fmc_monitor (
         .ref_clk    (clk_200),
         .ref_rst    (fabric_rst),
-        .test_clk   (clk_fmc),
+        .test_signal(clk_fmc_ibuf),
         .last_count (clk_fmc_count),
         .seen       (clk_fmc_seen)
     );
 
-    clock_activity_monitor #(
+    signal_activity_monitor #(
         .REF_WINDOW_CYCLES (MONITOR_WINDOW_CYCLES)
     ) u_sysref_monitor (
         .ref_clk    (clk_200),
         .ref_rst    (fabric_rst),
-        .test_clk   (sysref_clk),
+        .test_signal(sysref_ibuf),
         .last_count (sysref_count),
         .seen       (sysref_seen)
     );
 
-    clock_activity_monitor #(
+    signal_activity_monitor #(
         .REF_WINDOW_CYCLES (MONITOR_WINDOW_CYCLES)
     ) u_gbt0_monitor (
         .ref_clk    (clk_200),
         .ref_rst    (fabric_rst),
-        .test_clk   (gbt0_clk),
+        .test_signal(gbt0_odiv2),
         .last_count (gbt0_count),
         .seen       (gbt0_seen)
     );
 
-    clock_activity_monitor #(
+    signal_activity_monitor #(
         .REF_WINDOW_CYCLES (MONITOR_WINDOW_CYCLES)
     ) u_gbt1_monitor (
         .ref_clk    (clk_200),
         .ref_rst    (fabric_rst),
-        .test_clk   (gbt1_clk),
+        .test_signal(gbt1_odiv2),
         .last_count (gbt1_count),
         .seen       (gbt1_seen)
     );
