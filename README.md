@@ -127,6 +127,10 @@ only when you are ready to resume the JESD/GTH path:
 vivado.bat -mode batch -source create_project.tcl -tclargs --with-staged-gt
 ```
 
+Checked-in generated IP instances, including the GTH Wizard XCI, live under
+`ip_repo/<ip_name>/`. Do not create a separate `ip/` directory for imported
+XCIs.
+
 The generated LiteJESD204B DAC TX RTL is also staged outside the default
 bring-up build. Import it explicitly when working on the JESD path:
 

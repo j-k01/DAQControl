@@ -294,7 +294,7 @@ set_property -dict [list \
 ] [get_ips clk_wiz_0]
 
 if {$include_staged_gt} {
-    foreach xci [glob -nocomplain -directory $script_dir/ip {*/*.xci}] {
+    foreach xci [glob -nocomplain -directory $script_dir/ip_repo {*/*.xci}] {
         import_ip $xci
     }
 }
