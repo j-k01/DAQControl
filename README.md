@@ -8,7 +8,7 @@ XCZU9EG target. The user request said "ZCU101 Rev 1.1"; no AMD/Xilinx ZCU101
 user guide was found, so this port uses the official ZCU102 UG1182 Rev 1.7
 HPC1 mapping, whose revision history includes Rev 1.1 board updates.
 
-The launch top intentionally does not yet instantiate JESD204 or GTH data
+The default launch top intentionally does not instantiate JESD204 or GTH data
 channels. It proves the board-health layer first:
 
 - ZCU102 PL fabric heartbeat from USER_SI570.
@@ -17,9 +17,11 @@ channels. It proves the board-health layer first:
 - DAC39J84 reset, TX enable, alarm, sync, and manual SPI pins.
 - MicroBlaze/UART register access using the same style as the NAPSAC reference design.
 
-The default project-generation flow does not import staged GTH/JESD files, so
-the simple bring-up bitstream remains independent of transceiver and JESD
-integration details.
+The optional `--with-staged-gt` project flow instantiates the checked-in
+8-lane GTH Wizard XCI as a first transceiver health test. That build uses the
+DAQ MGT reference clocks, releases the GT reset helper, drives continuous K28.5
+comma characters on all TX lanes, and reports QPLL/user-clock/reset/RX-align
+status through LEDs and UART registers. It still does not drive DAC samples.
 
 ## ZCU102 FMC Power Note
 
@@ -35,16 +37,16 @@ Power monitoring can be added later through the ZCU102 I2C/PMBus path.
 
 ## LED Map
 
-| LED | Meaning |
-| --- | --- |
-| 0 | ZCU102 PL fabric heartbeat |
-| 1 | FMC present status placeholder, forced high |
-| 2 | FMC power-good status placeholder, forced high |
-| 3 | `CLK_FMC` activity seen |
-| 4 | `SYSREF_FMC` activity seen |
-| 5 | `GBTCLK0` or `GBTCLK1` activity seen via `IBUFDS_GTE4` `ODIV2` |
-| 6 | DAC alarm not asserted |
-| 7 | DAC alarm asserted |
+| LED | Default Build | `--with-staged-gt` Build |
+| --- | --- | --- |
+| 0 | ZCU102 PL fabric heartbeat | ZCU102 PL fabric heartbeat |
+| 1 | FMC present status placeholder, forced high | FMC present status placeholder, forced high |
+| 2 | FMC power-good status placeholder, forced high | FMC power-good status placeholder, forced high |
+| 3 | `CLK_FMC` activity seen | `CLK_FMC` activity seen |
+| 4 | `SYSREF_FMC` activity seen | `SYSREF_FMC` activity seen |
+| 5 | `GBTCLK0` or `GBTCLK1` activity seen via `IBUFDS_GTE4` `ODIV2` | GTH QPLL lock |
+| 6 | DAC alarm not asserted | GTH TX ready |
+| 7 | DAC alarm asserted | GTH RX ready |
 
 ## UART Commands
 
@@ -60,7 +62,8 @@ WRTE n value
 
 `RO0` is packed status. `RO1` is the latest one-second `CLK_FMC` count.
 `RO2` is the latest one-second `SYSREF_FMC` count. `RO3` is selected by
-`RW1[1:0]`: `0=GBTCLK0`, `1=GBTCLK1`, `2=raw pins`, `3=build ID`.
+`RW1[2:0]`: `0=GBTCLK0`, `1=GBTCLK1`, `2=raw pins`, `3=build ID`,
+`4=GTH status`, `5=GTH RX lane status`.
 
 ## RW0 Control Bits
 
@@ -81,6 +84,16 @@ WRTE n value
 | 22 | HMC SDIO output-enable |
 | 30 | Manual SPI enable |
 | 31 | Unused on ZCU102 HPC1 |
+
+## RW2 GTH Control Bits
+
+These bits are only used by the `--with-staged-gt` build.
+
+| Bits | Function |
+| --- | --- |
+| 0 | Assert GTH reset-all while high |
+| 15:8 | Per-lane TX polarity invert |
+| 23:16 | Per-lane RX polarity invert |
 
 ## Build
 
@@ -120,8 +133,9 @@ MicroBlaze block design from Tcl using the installed Vivado IP catalog. The
 flow does not import the checked-in 2023.1 MicroBlaze BD products, because
 those can be locked in Vivado 2024.1 before the upgrade step can repair them.
 
-Staged GTH XCIs are intentionally excluded from the simple build. Import them
-only when you are ready to resume the JESD/GTH path:
+Staged GTH XCIs are intentionally excluded from the simple default build. To
+build the first GTH health test, import the checked-in wizard XCI and compile
+the `DAQ_WITH_GTH` top:
 
 ```powershell
 vivado.bat -mode batch -source create_project.tcl -tclargs --with-staged-gt
@@ -130,6 +144,19 @@ vivado.bat -mode batch -source create_project.tcl -tclargs --with-staged-gt
 Checked-in generated IP instances, including the GTH Wizard XCI, live under
 `ip_repo/<ip_name>/`. Do not create a separate `ip/` directory for imported
 XCIs.
+
+In the GTH health build, use UART to select the GT status words:
+
+```text
+WRTE 1 4
+RDRO 3
+WRTE 1 5
+RDRO 3
+```
+
+Use `WRTE 2 1` to hold the GTH reset helper in reset, then `WRTE 2 0` to
+release it. If the lanes need polarity inversion later, write the TX invert mask
+to `RW2[15:8]` and the RX invert mask to `RW2[23:16]`.
 
 The generated LiteJESD204B DAC TX RTL is also staged outside the default
 bring-up build. Import it explicitly when working on the JESD path:
@@ -148,12 +175,11 @@ vivado.bat -mode batch -source create_project.tcl -tclargs --with-staged-gt --wi
 Migen. The generator source and provenance are under `third_party/litejesd204b`,
 and the regeneration script is `scripts/gen_litejesd_dac_tx.py`.
 
-The GTH Wizard still needs to expose the raw 8B/10B TX interface used by this
-block: 32-bit `TXDATA` plus 4-bit `TXCHARISK` per lane, clocked by the GTH TX
-user clock. For a 12.5 Gbps 8B/10B link with 32-bit user data, that user clock
-is 312.5 MHz. The staged GTH XCI already uses 12.5 Gbps, 156.25 MHz refclk,
-QPLL0, and 8B/10B, but it currently uses 64-bit TX user data and must be
-regenerated for 32-bit TX user data before wiring it to LiteJESD204B.
+The GTH Wizard exposes the raw 8B/10B TX interface used by this block: 32-bit
+`TXDATA` plus 4-bit `TXCHARISK` per lane, clocked by the GTH TX user clock. For
+a 12.5 Gbps 8B/10B link with 32-bit user data, that user clock is 312.5 MHz.
+The staged GTH XCI uses 12.5 Gbps, 156.25 MHz refclk, QPLL0, 8B/10B, 32-bit
+TX/RX user data, and a 125 MHz freerun clock.
 
 The launch-side wrapper for that connection is
 `src/jesd/daq_litejesd_dac_tx_path.v`. It assumes the corrected GTH wrapper

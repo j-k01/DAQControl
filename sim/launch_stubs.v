@@ -5,17 +5,20 @@ module clk_wiz_0 (
     input  wire clk_in1_n,
     output reg  clk_out1,
     output reg  clk_out2,
+    output reg  clk_out3,
     output reg  locked
 );
     initial begin
         clk_out1 = 1'b0;
         clk_out2 = 1'b0;
+        clk_out3 = 1'b0;
         locked = 1'b0;
         #100 locked = 1'b1;
     end
 
     always #2.5 clk_out1 = ~clk_out1;
     always #5.0 clk_out2 = ~clk_out2;
+    always #4.0 clk_out3 = ~clk_out3;
 
     wire unused = clk_in1_p ^ clk_in1_n;
 endmodule

@@ -246,6 +246,9 @@ create_project $project_name $project_dir -part $part -force
 set_first_available_board_part $board_candidates
 set_property target_language Verilog [current_project]
 set_property XPM_LIBRARIES {XPM_CDC} [current_project]
+if {$include_staged_gt} {
+    set_property verilog_define {DAQ_WITH_GTH=1} [current_fileset]
+}
 set_property ip_repo_paths [list $script_dir/ip_repo] [current_project]
 update_ip_catalog
 
