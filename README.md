@@ -221,6 +221,20 @@ The loader auto-selects the MicroBlaze target and downloads
 `sw/workspace/firmware/Debug/firmware.elf`. You can also pass an explicit ELF
 path as the first argument.
 
+To program the FPGA bitstream and then load/start the MicroBlaze firmware in
+one JTAG pass:
+
+```powershell
+xsct.bat program_and_load.tcl
+```
+
+Defaults are `project/DAQ_LAUNCH.runs/impl_1/top.bit` and
+`sw/workspace/firmware/Debug/firmware.elf`. You can override them with:
+
+```powershell
+xsct.bat program_and_load.tcl path/to/top.bit path/to/firmware.elf
+```
+
 Re-run implementation with the firmware baked into the bitstream:
 
 ```powershell
