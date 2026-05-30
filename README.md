@@ -47,8 +47,8 @@ Power monitoring can be added later through the ZCU102 I2C/PMBus path.
 | 2 | FMC power-good status placeholder, forced high | FMC power-good status placeholder, forced high |
 | 3 | `CLK_FMC` activity seen | `CLK_FMC` activity seen |
 | 4 | `SYSREF_FMC` activity seen | `SYSREF_FMC` activity seen |
-| 5 | Reserved, forced low | GTH RX QPLL0 locks asserted |
-| 6 | DAC alarm not asserted | GTH TX QPLL1 locks asserted |
+| 5 | Reserved, forced low | GTH QPLL0 lock bit 0 |
+| 6 | DAC alarm not asserted | GTH QPLL0 lock bit 1 |
 | 7 | DAC alarm asserted | LiteJESD ready |
 
 ## UART Commands
@@ -232,8 +232,8 @@ the GTH QPLL/user-clock bits ever assert. The GTH/JESD status probes are
 synchronized into `clk_200` before they reach this ILA.
 
 The wide TX-side ILA is intentionally disabled in the default staged build
-because it runs at the GTH TX user clock and can dominate timing before the
-link is known-good. Enable it only after the fabric ILA shows stable
+because it runs at the 250 MHz GTH TX user clock and can dominate timing
+before the link is known-good. Enable it only after the fabric ILA shows stable
 QPLL/user-clock/reset-done status:
 
 ```powershell
@@ -255,16 +255,11 @@ FPGA-side waveform.
 Migen. The generator source and provenance are under `third_party/litejesd204b`,
 and the regeneration script is `scripts/gen_litejesd_dac_tx.py`.
 
-The staged GTH XCI follows the vendor's active Tcl-generated 8B/10B
-transceiver profile, translated to the ZCU102 HPC0 GT sites: 10 Gbps,
-125 MHz MGT refclk, RX on QPLL0, TX on QPLL1, 64-bit TX/RX user data, and a
-125 MHz freerun clock. That profile gives a 125 MHz GT user clock.
-
-The currently checked-in LiteJESD204B TX block still emits 32-bit `TXDATA`
-plus 4-bit `TXCHARISK` per lane. The launch wrapper zero-extends that into the
-active 64-bit GTH TX interface so the transceiver bring-up remains buildable;
-the next JESD step is regenerating/replacing the LiteJESD TX block for native
-64-bit lane words.
+The GTH Wizard exposes the raw 8B/10B TX interface used by this block: 32-bit
+`TXDATA` plus 4-bit `TXCHARISK` per lane, clocked by the GTH TX user clock. For
+a 10 Gbps 8B/10B link with 32-bit user data, that user clock is 250 MHz. The
+staged GTH XCI uses the DAQ/vendor clock-tree profile: 10 Gbps, 125 MHz MGT
+refclk, QPLL0, 8B/10B, 32-bit TX/RX user data, and a 125 MHz freerun clock.
 
 The launch-side wrapper for that connection is
 `src/jesd/daq_litejesd_dac_tx_path.v`. It assumes the corrected GTH wrapper

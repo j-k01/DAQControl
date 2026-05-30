@@ -150,11 +150,10 @@ module gtwizard_ultrascale_0 (
     output wire         gtwiz_reset_rx_cdr_stable_out,
     output wire         gtwiz_reset_tx_done_out,
     output wire         gtwiz_reset_rx_done_out,
-    input  wire [511:0] gtwiz_userdata_tx_in,
-    output wire [511:0] gtwiz_userdata_rx_out,
+    input  wire [255:0] gtwiz_userdata_tx_in,
+    output wire [255:0] gtwiz_userdata_rx_out,
     input  wire [1:0]   gtrefclk00_in,
     output wire [1:0]   qpll0lock_out,
-    output wire [1:0]   qpll1lock_out,
     output wire [1:0]   qpll0outclk_out,
     output wire [1:0]   qpll0outrefclk_out,
     input  wire [7:0]   gthrxn_in,
@@ -190,10 +189,10 @@ module gtwizard_ultrascale_0 (
         gtwiz_userclk_rx_usrclk2_out = 1'b0;
     end
 
-    always #4.0 gtwiz_userclk_tx_usrclk_out = ~gtwiz_userclk_tx_usrclk_out;
-    always #4.0 gtwiz_userclk_tx_usrclk2_out = ~gtwiz_userclk_tx_usrclk2_out;
-    always #4.0 gtwiz_userclk_rx_usrclk_out = ~gtwiz_userclk_rx_usrclk_out;
-    always #4.0 gtwiz_userclk_rx_usrclk2_out = ~gtwiz_userclk_rx_usrclk2_out;
+    always #1.6 gtwiz_userclk_tx_usrclk_out = ~gtwiz_userclk_tx_usrclk_out;
+    always #1.6 gtwiz_userclk_tx_usrclk2_out = ~gtwiz_userclk_tx_usrclk2_out;
+    always #1.6 gtwiz_userclk_rx_usrclk_out = ~gtwiz_userclk_rx_usrclk_out;
+    always #1.6 gtwiz_userclk_rx_usrclk2_out = ~gtwiz_userclk_rx_usrclk2_out;
 
     wire reset_any = gtwiz_reset_all_in | gtwiz_userclk_tx_reset_in |
                      gtwiz_userclk_rx_reset_in;
@@ -207,7 +206,6 @@ module gtwizard_ultrascale_0 (
     assign gtwiz_reset_rx_done_out = ~reset_any;
     assign gtwiz_userdata_rx_out = gtwiz_userdata_tx_in;
     assign qpll0lock_out = reset_any ? 2'b00 : 2'b11;
-    assign qpll1lock_out = reset_any ? 2'b00 : 2'b11;
     assign qpll0outclk_out = gtrefclk00_in;
     assign qpll0outrefclk_out = gtrefclk00_in;
     assign gthtxn_out = 8'd0;

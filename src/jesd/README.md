@@ -37,25 +37,23 @@ tx_data0 ... tx_data7  // 32-bit GTH TXDATA
 tx_ctrl0 ... tx_ctrl7  // 4-bit GTH TXCHARISK/control
 ```
 
-The active vendor GTH profile uses a 64-bit TX/RX user-data path plus an
-8-bit `TXCTRL2` / charisk path per lane. At 10 Gbps with 8B/10B and 64-bit
-user data, the GT user clock is 125 MHz. The current checked-in LiteJESD block
-is still the earlier 32-bit-per-lane generation; the top-level launch wrapper
-zero-extends it into the lower half of each 64-bit GTH lane while we finish
-the native 64-bit JESD TX regeneration.
+The GTH Wizard must therefore expose a 32-bit TX user-data path plus a 4-bit
+TX control/charisk path per lane. At 10 Gbps with 8B/10B and 32-bit user
+data, the TX user clock is 250 MHz.
 
 `daq_litejesd_dac_tx_path.v` is the hardware-facing shell for the launch test.
 It instantiates `litejesd_dac_tx`, drives one selectable converter with a
 triangle wave, drives the remaining converters at midscale, and exports:
 
 ```verilog
-gth_txdata[255:0]    // {lane7, ..., lane0}, 32 bits per generated LiteJESD lane
-gth_txcharisk[31:0]  // {lane7, ..., lane0}, 4 bits per generated LiteJESD lane
+gth_txdata[255:0]    // {lane7, ..., lane0}, 32 bits per lane
+gth_txcharisk[31:0]  // {lane7, ..., lane0}, 4 bits per lane
 ```
 
-For the staged active-profile GT Wizard instance, `top.v` packs each 32-bit
-LiteJESD lane into the lower 32 bits of the corresponding 64-bit GTH lane and
-ties the upper lane half to data characters. Keep `TX8B10BEN` asserted and
+For a corrected GT Wizard instance, connect `gth_txdata` to the wizard TX user
+data input. Connect `gth_txcharisk` to the 8B/10B `TXCTRL2` / charisk path,
+with `TXCTRL0` and `TXCTRL1` tied low unless the generated wrapper requires
+those ports for another control function. Keep `TX8B10BEN` asserted and
 `TX8B10BBYPASS` deasserted.
 
 Regenerate with:
