@@ -78,7 +78,7 @@ is selected by `RW1[3:0]`: `0=HMC7044 auto-init status`,
 `5=GTH RX lane status`, `6=LiteJESD status`, `7=triangle sample word`,
 `8=HMC7044 readback summary`, `9=HMC7044 product ID`, `10=HMC7044 alarm
 readbacks`, `11=HMC7044 PLL1 status readbacks`, `12=HMC7044 PLL2/SYSREF
-status readbacks`.
+status readbacks`, `13=HMC7044 scratchpad readback`.
 
 `RO0[28]` means HMC SDIO readback looked stuck at all zeroes or all ones,
 `RO0[27]` means HMC readback completed, `RO0[26]` is the HMC7044 auto-init done
@@ -237,6 +237,8 @@ WRTE 1 11
 RDRO 3
 WRTE 1 12
 RDRO 3
+WRTE 1 13
+RDRO 3
 ```
 
 The build also instantiates hardware debug cores:
@@ -250,8 +252,10 @@ Start with `ila_fabric_debug`. If LEDs remain 0/1/2 only, trigger on
 `probe0` (`status_reg`) or `probe16` (`ila_debug_flags`) first. For the HMC7044
 clock source, read `probe10` (alarm readbacks), `probe11` (PLL1 readbacks),
 `probe14` (PLL2/SYSREF readbacks), and `probe15` (product ID readback). If
-`probe15[23:0]` is `0x000000` or `0xffffff`, the FPGA is not getting valid SDIO
-readback from the HMC, so the failure is on SPI/reset/power rather than JESD.
+selector `13` does not read back `0x000000AD`, the basic HMC7044 scratchpad
+write/read failed before PLL status is meaningful. If `probe15[23:0]` is
+`0x000000` or `0xffffff`, the FPGA is not getting valid SDIO readback from the
+HMC, so the failure is on SPI/reset/power rather than JESD.
 If the ID is valid but `LED3`/`LED4` remain low, the HMC is reachable but its
 reference/PLL/output-enable state is wrong. The GTH/JESD status probes are
 synchronized into `clk_200` before they reach this ILA.

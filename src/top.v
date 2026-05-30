@@ -154,6 +154,7 @@ module top #(
     wire [3:0] hmc_readback_index;
     wire [11:0] hmc_readback_last_addr;
     wire [7:0] hmc_readback_last_data;
+    wire [31:0] hmc_readback_scratch_word;
     wire [31:0] hmc_readback_id_word;
     wire [31:0] hmc_readback_alarm_word;
     wire [31:0] hmc_readback_pll1_word;
@@ -184,6 +185,7 @@ module top #(
         .readback_index      (hmc_readback_index),
         .readback_last_addr  (hmc_readback_last_addr),
         .readback_last_data  (hmc_readback_last_data),
+        .readback_scratch_word (hmc_readback_scratch_word),
         .readback_id_word    (hmc_readback_id_word),
         .readback_alarm_word (hmc_readback_alarm_word),
         .readback_pll1_word  (hmc_readback_pll1_word),
@@ -614,10 +616,12 @@ module top #(
     };
     wire hmc_id_rev_e = hmc_readback_id_word[23:0] == 24'h045201;
     wire hmc_id_legacy = hmc_readback_id_word[23:0] == 24'h301651;
+    wire hmc_scratch_ok = hmc_readback_scratch_word[7:0] == 8'hAD;
     wire [31:0] hmc_readback_summary_reg = {
-        4'd0,
+        3'd0,
         hmc_readback_done,
         hmc_readback_sdio_stuck,
+        hmc_scratch_ok,
         hmc_id_rev_e,
         hmc_id_legacy,
         hmc_readback_index,
@@ -663,6 +667,7 @@ module top #(
             4'd10: selected_count = hmc_readback_alarm_word;
             4'd11: selected_count = hmc_readback_pll1_word;
             4'd12: selected_count = hmc_readback_pll2_word;
+            4'd13: selected_count = hmc_readback_scratch_word;
             default: selected_count = 32'd0;
         endcase
     end

@@ -19,6 +19,7 @@ module hmc7044_init_tb;
     wire [3:0] readback_index;
     wire [11:0] readback_last_addr;
     wire [7:0] readback_last_data;
+    wire [31:0] readback_scratch_word;
     wire [31:0] readback_id_word;
     wire [31:0] readback_alarm_word;
     wire [31:0] readback_pll1_word;
@@ -48,6 +49,7 @@ module hmc7044_init_tb;
         .readback_index      (readback_index),
         .readback_last_addr  (readback_last_addr),
         .readback_last_data  (readback_last_data),
+        .readback_scratch_word (readback_scratch_word),
         .readback_id_word    (readback_id_word),
         .readback_alarm_word (readback_alarm_word),
         .readback_pll1_word  (readback_pll1_word),
@@ -108,11 +110,15 @@ module hmc7044_init_tb;
             $display("FAIL: first HMC read command captured %0d bits", read_cmd_bit_count);
             errors = errors + 1;
         end
-        if (first_read_cmd !== 16'h8078) begin
-            $display("FAIL: first HMC read command expected 0x8078 got 0x%04x", first_read_cmd);
+        if (first_read_cmd !== 16'h8008) begin
+            $display("FAIL: first HMC read command expected 0x8008 got 0x%04x", first_read_cmd);
             errors = errors + 1;
         end else begin
             $display("PASS: first HMC read command = 0x%04x", first_read_cmd);
+        end
+        if (readback_scratch_word[7:0] !== 8'hff) begin
+            $display("FAIL: tied-high scratch readback expected 0xff got 0x%02x", readback_scratch_word[7:0]);
+            errors = errors + 1;
         end
         if (!readback_sdio_stuck) begin
             $display("FAIL: stuck-high SDIO readback was not detected");
@@ -122,8 +128,8 @@ module hmc7044_init_tb;
             $display("FAIL: tied-high readback expected 0xffffff got 0x%06x", readback_id_word[23:0]);
             errors = errors + 1;
         end
-        if (readback_index !== 4'd13) begin
-            $display("FAIL: readback index expected 13 got %0d", readback_index);
+        if (readback_index !== 4'd14) begin
+            $display("FAIL: readback index expected 14 got %0d", readback_index);
             errors = errors + 1;
         end
 

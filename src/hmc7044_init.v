@@ -32,6 +32,7 @@ module hmc7044_init #(
     output reg  [3:0]  readback_index,
     output reg  [11:0] readback_last_addr,
     output reg  [7:0]  readback_last_data,
+    output reg  [31:0] readback_scratch_word,
     output reg  [31:0] readback_id_word,
     output reg  [31:0] readback_alarm_word,
     output reg  [31:0] readback_pll1_word,
@@ -53,8 +54,8 @@ module hmc7044_init #(
         ST_READ_LOAD     = 3'd6,
         ST_DONE          = 3'd7;
 
-    localparam [7:0] SEQ_LEN = 8'd127;
-    localparam [3:0] READ_LEN = 4'd13;
+    localparam [7:0] SEQ_LEN = 8'd128;
+    localparam [3:0] READ_LEN = 4'd14;
 
     reg [2:0]  state = ST_IDLE;
     reg [31:0] delay_count = 32'd0;
@@ -81,19 +82,20 @@ module hmc7044_init #(
         input [3:0] idx;
         begin
             case (idx)
-                4'd0:  readback_reg_addr = 12'h078; // Product ID LSB
-                4'd1:  readback_reg_addr = 12'h079; // Product ID mid
-                4'd2:  readback_reg_addr = 12'h07A; // Product ID MSB
-                4'd3:  readback_reg_addr = 12'h07B; // Alarm signal
-                4'd4:  readback_reg_addr = 12'h07C; // PLL1 alarm readback
-                4'd5:  readback_reg_addr = 12'h07D; // Combined alarm readback
-                4'd6:  readback_reg_addr = 12'h07E; // Latched alarm readback
-                4'd7:  readback_reg_addr = 12'h082; // PLL1 best/active/FSM
-                4'd8:  readback_reg_addr = 12'h083; // PLL1 holdover average
-                4'd9:  readback_reg_addr = 12'h084; // PLL1 holdover current
-                4'd10: readback_reg_addr = 12'h085; // PLL1 LOS/VCXO status
-                4'd11: readback_reg_addr = 12'h08C; // PLL2 autotune value
-                4'd12: readback_reg_addr = 12'h08F; // PLL2/SYSREF FSM state
+                4'd0:  readback_reg_addr = 12'h008; // Scratchpad write/read sanity check
+                4'd1:  readback_reg_addr = 12'h078; // Product ID LSB
+                4'd2:  readback_reg_addr = 12'h079; // Product ID mid
+                4'd3:  readback_reg_addr = 12'h07A; // Product ID MSB
+                4'd4:  readback_reg_addr = 12'h07B; // Alarm signal
+                4'd5:  readback_reg_addr = 12'h07C; // PLL1 alarm readback
+                4'd6:  readback_reg_addr = 12'h07D; // Combined alarm readback
+                4'd7:  readback_reg_addr = 12'h07E; // Latched alarm readback
+                4'd8:  readback_reg_addr = 12'h082; // PLL1 best/active/FSM
+                4'd9:  readback_reg_addr = 12'h083; // PLL1 holdover average
+                4'd10: readback_reg_addr = 12'h084; // PLL1 holdover current
+                4'd11: readback_reg_addr = 12'h085; // PLL1 LOS/VCXO status
+                4'd12: readback_reg_addr = 12'h08C; // PLL2 autotune value
+                4'd13: readback_reg_addr = 12'h08F; // PLL2/SYSREF FSM state
                 default: readback_reg_addr = 12'h000;
             endcase
         end
@@ -249,6 +251,7 @@ module hmc7044_init #(
                 8'd121: seq_reg_addr = 12'h001;
                 8'd123: seq_reg_addr = 12'h001;
                 8'd125: seq_reg_addr = 12'h001;
+                8'd127: seq_reg_addr = 12'h008;
                 default: seq_reg_addr = 12'h000;
             endcase
         end
@@ -378,6 +381,7 @@ module hmc7044_init #(
                 8'd121: seq_reg_data = 8'h00;
                 8'd123: seq_reg_data = 8'h04;
                 8'd125: seq_reg_data = 8'h00;
+                8'd127: seq_reg_data = 8'hAD;
                 default: seq_reg_data = 8'h00;
             endcase
         end
@@ -401,6 +405,7 @@ module hmc7044_init #(
             readback_index <= 4'd0;
             readback_last_addr <= 12'd0;
             readback_last_data <= 8'd0;
+            readback_scratch_word <= 32'd0;
             readback_id_word <= 32'd0;
             readback_alarm_word <= 32'd0;
             readback_pll1_word <= 32'd0;
@@ -422,6 +427,7 @@ module hmc7044_init #(
                     readback_index <= 4'd0;
                     readback_last_addr <= 12'd0;
                     readback_last_data <= 8'd0;
+                    readback_scratch_word <= 32'd0;
                     readback_id_word <= 32'd0;
                     readback_alarm_word <= 32'd0;
                     readback_pll1_word <= 32'd0;
@@ -521,19 +527,20 @@ module hmc7044_init #(
                                 if (spi_read_mode) begin
                                     readback_last_data <= spi_read_shift;
                                     case (readback_index)
-                                        4'd0:  readback_id_word[7:0] <= spi_read_shift;
-                                        4'd1:  readback_id_word[15:8] <= spi_read_shift;
-                                        4'd2:  readback_id_word[23:16] <= spi_read_shift;
-                                        4'd3:  readback_alarm_word[7:0] <= spi_read_shift;
-                                        4'd4:  readback_alarm_word[15:8] <= spi_read_shift;
-                                        4'd5:  readback_alarm_word[23:16] <= spi_read_shift;
-                                        4'd6:  readback_alarm_word[31:24] <= spi_read_shift;
-                                        4'd7:  readback_pll1_word[7:0] <= spi_read_shift;
-                                        4'd8:  readback_pll1_word[15:8] <= spi_read_shift;
-                                        4'd9:  readback_pll1_word[23:16] <= spi_read_shift;
-                                        4'd10: readback_pll1_word[31:24] <= spi_read_shift;
-                                        4'd11: readback_pll2_word[7:0] <= spi_read_shift;
-                                        4'd12: readback_pll2_word[15:8] <= spi_read_shift;
+                                        4'd0:  readback_scratch_word[7:0] <= spi_read_shift;
+                                        4'd1:  readback_id_word[7:0] <= spi_read_shift;
+                                        4'd2:  readback_id_word[15:8] <= spi_read_shift;
+                                        4'd3:  readback_id_word[23:16] <= spi_read_shift;
+                                        4'd4:  readback_alarm_word[7:0] <= spi_read_shift;
+                                        4'd5:  readback_alarm_word[15:8] <= spi_read_shift;
+                                        4'd6:  readback_alarm_word[23:16] <= spi_read_shift;
+                                        4'd7:  readback_alarm_word[31:24] <= spi_read_shift;
+                                        4'd8:  readback_pll1_word[7:0] <= spi_read_shift;
+                                        4'd9:  readback_pll1_word[15:8] <= spi_read_shift;
+                                        4'd10: readback_pll1_word[23:16] <= spi_read_shift;
+                                        4'd11: readback_pll1_word[31:24] <= spi_read_shift;
+                                        4'd12: readback_pll2_word[7:0] <= spi_read_shift;
+                                        4'd13: readback_pll2_word[15:8] <= spi_read_shift;
                                         default: begin end
                                     endcase
                                     readback_index <= readback_index + 1'b1;
