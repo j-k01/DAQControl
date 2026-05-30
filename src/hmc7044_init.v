@@ -413,7 +413,7 @@ module hmc7044_init #(
                         spi_div_count <= SPI_HALF_CYCLES[31:0] - 1'b1;
                         spi_cs_n <= 1'b0;
                         spi_sdio_oe <= 1'b1;
-                        spi_sdio_o <= 1'b0;
+                        spi_sdio_o <= 1'b0; // First write-command bit; stable before first SCLK edge.
                         state <= ST_SPI;
                     end
                 end
@@ -424,7 +424,6 @@ module hmc7044_init #(
                     end else begin
                         spi_div_count <= SPI_HALF_CYCLES[31:0] - 1'b1;
                         if (!spi_half_phase) begin
-                            spi_sdio_o <= spi_shift[23];
                             spi_sclk <= 1'b1;
                             spi_half_phase <= 1'b1;
                         end else begin
@@ -436,6 +435,7 @@ module hmc7044_init #(
                                 step_index <= step_index + 1'b1;
                                 state <= ST_LOAD;
                             end else begin
+                                spi_sdio_o <= spi_shift[22];
                                 spi_shift <= {spi_shift[22:0], 1'b0};
                                 spi_bits_left <= spi_bits_left - 1'b1;
                             end

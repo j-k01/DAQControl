@@ -17,3 +17,10 @@ exec xvlog.bat -sv \
 
 exec xelab.bat top_tb -snapshot top_tb
 exec xsim.bat top_tb -runall
+
+exec xvlog.bat -sv \
+    ../../src/hmc7044_init.v \
+    ../hmc7044_init_tb.sv
+
+exec xelab.bat hmc7044_init_tb -snapshot hmc7044_init_tb
+exec xsim.bat hmc7044_init_tb -runall
