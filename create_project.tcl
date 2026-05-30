@@ -241,10 +241,6 @@ proc create_microblaze_bd {bd_name} {
     }
 
     assign_bd_address
-    catch {set_property offset 0x44A00000 [get_bd_addr_segs microblaze_0/Data/SEG_axi_uart16550_0_Reg]}
-    catch {set_property range 64K [get_bd_addr_segs microblaze_0/Data/SEG_axi_uart16550_0_Reg]}
-    catch {set_property offset 0x44A10000 [get_bd_addr_segs microblaze_0/Data/SEG_AXI4_register_file_0_S00_AXI_reg]}
-    catch {set_property range 64K [get_bd_addr_segs microblaze_0/Data/SEG_AXI4_register_file_0_S00_AXI_reg]}
 
     validate_bd_design
 
