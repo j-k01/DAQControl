@@ -9,19 +9,16 @@ module cdc_vector_sync #(
     output wire [WIDTH-1:0] dest
 );
 
-    (* ASYNC_REG = "TRUE" *) reg [WIDTH-1:0] meta = {WIDTH{1'b0}};
-    (* ASYNC_REG = "TRUE" *) reg [WIDTH-1:0] sync = {WIDTH{1'b0}};
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [WIDTH-1:0] meta = {WIDTH{1'b0}};
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [WIDTH-1:0] sync = {WIDTH{1'b0}};
 
     always @(posedge dest_clk) begin
-        if (dest_rst) begin
-            meta <= {WIDTH{1'b0}};
-            sync <= {WIDTH{1'b0}};
-        end else begin
-            meta <= src;
-            sync <= meta;
-        end
+        meta <= src;
+        sync <= meta;
     end
 
     assign dest = sync;
+
+    wire unused_dest_rst = dest_rst;
 
 endmodule

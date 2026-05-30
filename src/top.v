@@ -128,6 +128,8 @@ module top #(
     wire [31:0] litejesd_triangle_word;
     wire [31:0] gth_tx_clk_count;
     wire [31:0] gth_rx_clk_count;
+    wire [15:0] gth_tx_clk_count_short;
+    wire [15:0] gth_rx_clk_count_short;
     wire [31:0] gth_txdata_lane0_async;
     wire [31:0] gth_txdata_lane0_debug;
     wire [7:0]  gth_txctrl2_lane0_async;
@@ -406,24 +408,29 @@ module top #(
     wire        gth_rx_clk_seen;
 
     clock_activity_monitor #(
+        .COUNTER_WIDTH     (16),
         .REF_WINDOW_CYCLES (MONITOR_WINDOW_CYCLES)
     ) u_gth_tx_userclk_monitor (
         .ref_clk    (clk_200),
         .ref_rst    (fabric_rst),
         .test_clk   (gth_tx_usrclk2),
-        .last_count (gth_tx_clk_count),
+        .last_count (gth_tx_clk_count_short),
         .seen       (gth_tx_clk_seen)
     );
 
     clock_activity_monitor #(
+        .COUNTER_WIDTH     (16),
         .REF_WINDOW_CYCLES (MONITOR_WINDOW_CYCLES)
     ) u_gth_rx_userclk_monitor (
         .ref_clk    (clk_200),
         .ref_rst    (fabric_rst),
         .test_clk   (gth_rx_usrclk2),
-        .last_count (gth_rx_clk_count),
+        .last_count (gth_rx_clk_count_short),
         .seen       (gth_rx_clk_seen)
     );
+
+    assign gth_tx_clk_count = {16'd0, gth_tx_clk_count_short};
+    assign gth_rx_clk_count = {16'd0, gth_rx_clk_count_short};
 
     assign gth_qpll_locked_async = &gth_qpll0lock;
     assign gth_tx_ready_async = gth_reset_tx_done & gth_tx_userclk_active & gth_tx_clk_seen &
@@ -477,6 +484,8 @@ module top #(
     assign litejesd_triangle_async = 32'd0;
     assign gth_tx_clk_count = 32'd0;
     assign gth_rx_clk_count = 32'd0;
+    assign gth_tx_clk_count_short = 16'd0;
+    assign gth_rx_clk_count_short = 16'd0;
     assign gth_txdata_lane0_async = 32'd0;
     assign gth_txctrl2_lane0_async = 8'd0;
 `endif

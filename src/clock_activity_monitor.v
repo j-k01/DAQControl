@@ -18,8 +18,8 @@ module clock_activity_monitor #(
 
     wire [COUNTER_WIDTH-1:0] test_gray = test_count ^ (test_count >> 1);
 
-    (* ASYNC_REG = "TRUE" *) reg [COUNTER_WIDTH-1:0] gray_meta = {COUNTER_WIDTH{1'b0}};
-    (* ASYNC_REG = "TRUE" *) reg [COUNTER_WIDTH-1:0] gray_sync = {COUNTER_WIDTH{1'b0}};
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [COUNTER_WIDTH-1:0] gray_meta = {COUNTER_WIDTH{1'b0}};
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [COUNTER_WIDTH-1:0] gray_sync = {COUNTER_WIDTH{1'b0}};
 
     integer i;
     reg [COUNTER_WIDTH-1:0] sync_bin;
