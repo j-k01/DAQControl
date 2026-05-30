@@ -7,7 +7,8 @@ for {set i 0} {$i < [llength $::argv]} {incr i} {
     set arg [lindex $::argv $i]
     switch -- $arg {
         "--with-staged-gt" -
-        "--with-litejesd" {
+        "--with-litejesd" -
+        "--with-gth-tx-ila" {
             lappend create_args $arg
         }
         "--bake" {
@@ -21,7 +22,7 @@ for {set i 0} {$i < [llength $::argv]} {incr i} {
             lappend build_args --jobs [lindex $::argv $i]
         }
         default {
-            error "Unknown rebuild.tcl argument '$arg'. Supported arguments: --with-staged-gt, --with-litejesd, --bake, --jobs <n>."
+            error "Unknown rebuild.tcl argument '$arg'. Supported arguments: --with-staged-gt, --with-litejesd, --with-gth-tx-ila, --bake, --jobs <n>."
         }
     }
 }

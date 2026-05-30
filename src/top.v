@@ -107,27 +107,40 @@ module top #(
         .RO_REG3_RDINT_0      (ro_reg3_rdint)
     );
 
+    wire [31:0] gth_status_async;
     wire [31:0] gth_status_reg;
+    wire [31:0] gth_rx_status_async;
     wire [31:0] gth_rx_status_reg;
+    wire        gth_qpll_locked_async;
     wire        gth_qpll_locked;
+    wire        gth_tx_ready_async;
     wire        gth_tx_ready;
+    wire        gth_rx_ready_async;
     wire        gth_rx_ready;
     wire        gth_unused_reduce;
+    wire        litejesd_active_async;
     wire        litejesd_active;
+    wire        litejesd_ready_async;
     wire        litejesd_ready;
+    wire [31:0] litejesd_status_async;
     wire [31:0] litejesd_status_reg;
+    wire [31:0] litejesd_triangle_async;
     wire [31:0] litejesd_triangle_word;
     wire [31:0] gth_tx_clk_count;
     wire [31:0] gth_rx_clk_count;
+    wire [31:0] gth_txdata_lane0_async;
     wire [31:0] gth_txdata_lane0_debug;
+    wire [7:0]  gth_txctrl2_lane0_async;
     wire [7:0]  gth_txctrl2_lane0_debug;
+    wire [1:0]  gth_qpll0lock;
+    wire [1:0]  gth_qpll0lock_sync;
 
     wire manual_spi_enable = rw_reg0[30];
 
     assign HMC_CLK_RESET = rw_reg0[1];
 `ifdef DAQ_WITH_LITEJESD
     assign DAC_RESET_N   = ~fabric_rst;
-    assign DAC_TXEN      = gth_tx_ready;
+    assign DAC_TXEN      = gth_tx_ready_async;
 `else
     assign DAC_RESET_N   = rw_reg0[2];
     assign DAC_TXEN      = rw_reg0[3];
@@ -227,7 +240,6 @@ module top #(
     wire        gth_reset_rx_cdr_stable;
     wire        gth_reset_tx_done;
     wire        gth_reset_rx_done;
-    wire [1:0]  gth_qpll0lock;
     wire [1:0]  gth_qpll0outclk;
     wire [1:0]  gth_qpll0outrefclk;
     wire [7:0]  gth_gtpowergood;
@@ -265,22 +277,22 @@ module top #(
         end
     end
 
-    assign litejesd_active = ~litejesd_reset;
+    assign litejesd_active_async = ~litejesd_reset;
 
     daq_litejesd_dac_tx_path u_litejesd_dac_tx_path (
         .jesd_clk         (gth_tx_usrclk2),
         .jesd_rst         (litejesd_reset),
         .phy_tx_clk       (gth_tx_usrclk2),
         .phy_tx_rst       (litejesd_phy_tx_rst),
-        .enable           (litejesd_active),
+        .enable           (litejesd_active_async),
         .stpl_enable      (1'b0),
         .sysref           (litejesd_sysref_pipe[2]),
         .sync_n           (litejesd_sync_pipe[2]),
         .active_converter (3'd0),
         .triangle_step    (16'd256),
-        .litejesd_ready   (litejesd_ready),
-        .status           (litejesd_status_reg),
-        .triangle_word    (litejesd_triangle_word),
+        .litejesd_ready   (litejesd_ready_async),
+        .status           (litejesd_status_async),
+        .triangle_word    (litejesd_triangle_async),
         .gth_txdata       (litejesd_txdata),
         .gth_txcharisk    (litejesd_txcharisk)
     );
@@ -297,30 +309,32 @@ module top #(
         4'd0, litejesd_txcharisk[3:0]
     };
 
+`ifdef DAQ_WITH_GTH_TX_ILA
     ila_gth_tx_debug u_ila_gth_tx_debug (
         .clk    (gth_tx_usrclk2),
         .probe0 (gth_userdata_tx[31:0]),
         .probe1 (gth_userdata_tx[63:32]),
         .probe2 (gth_txctrl2),
-        .probe3 (litejesd_status_reg),
-        .probe4 (litejesd_triangle_word),
+        .probe3 (litejesd_status_async),
+        .probe4 (litejesd_triangle_async),
         .probe5 ({
             19'd0,
             litejesd_sysref_pipe,
             litejesd_sync_pipe,
-            litejesd_ready,
-            litejesd_active,
+            litejesd_ready_async,
+            litejesd_active_async,
             gth_qpll0lock,
             gth_tx_userclk_active,
             gth_reset_tx_done,
             litejesd_reset
         })
     );
+`endif
 `else
-    assign litejesd_active = 1'b0;
-    assign litejesd_ready = 1'b0;
-    assign litejesd_status_reg = 32'd0;
-    assign litejesd_triangle_word = 32'd0;
+    assign litejesd_active_async = 1'b0;
+    assign litejesd_ready_async = 1'b0;
+    assign litejesd_status_async = 32'd0;
+    assign litejesd_triangle_async = 32'd0;
 
     assign gth_userdata_tx = {8{32'hbcbc_bcbc}};
     assign gth_txctrl2 = {
@@ -329,8 +343,8 @@ module top #(
     };
 `endif
 
-    assign gth_txdata_lane0_debug = gth_userdata_tx[31:0];
-    assign gth_txctrl2_lane0_debug = gth_txctrl2[7:0];
+    assign gth_txdata_lane0_async = gth_userdata_tx[31:0];
+    assign gth_txctrl2_lane0_async = gth_txctrl2[7:0];
 
     gtwizard_ultrascale_0 u_gth (
         .gtwiz_userclk_tx_reset_in              (gth_reset_all),
@@ -408,13 +422,13 @@ module top #(
         .seen       (gth_rx_clk_seen)
     );
 
-    assign gth_qpll_locked = &gth_qpll0lock;
-    assign gth_tx_ready = gth_reset_tx_done & gth_tx_userclk_active & gth_tx_clk_seen &
-                          gth_qpll_locked & (&gth_gtpowergood) & (&gth_txpmaresetdone);
-    assign gth_rx_ready = gth_reset_rx_done & gth_rx_userclk_active & gth_rx_clk_seen &
-                          gth_qpll_locked & (&gth_rxpmaresetdone);
+    assign gth_qpll_locked_async = &gth_qpll0lock;
+    assign gth_tx_ready_async = gth_reset_tx_done & gth_tx_userclk_active & gth_tx_clk_seen &
+                                gth_qpll_locked_async & (&gth_gtpowergood) & (&gth_txpmaresetdone);
+    assign gth_rx_ready_async = gth_reset_rx_done & gth_rx_userclk_active & gth_rx_clk_seen &
+                                gth_qpll_locked_async & (&gth_rxpmaresetdone);
 
-    assign gth_status_reg = {
+    assign gth_status_async = {
         14'd0,
         gth_reset_rx_cdr_stable,
         |gth_rxcommadet,
@@ -426,7 +440,7 @@ module top #(
         &gth_rxpmaresetdone,
         &gth_txpmaresetdone,
         &gth_gtpowergood,
-        gth_qpll_locked,
+        gth_qpll_locked_async,
         gth_qpll0lock,
         gth_rx_userclk_active,
         gth_tx_userclk_active,
@@ -435,7 +449,7 @@ module top #(
         gth_reset_all
     };
 
-    assign gth_rx_status_reg = {
+    assign gth_rx_status_async = {
         gth_rxbyteisaligned,
         gth_rxbyterealign,
         gth_rxcommadet,
@@ -447,21 +461,60 @@ module top #(
                                ^gth_qpll0outrefclk ^ ^gth_tx_clk_count ^
                                ^gth_rx_clk_count ^ gth_tx_usrclk ^ gth_rx_usrclk;
 `else
-    assign gth_status_reg = 32'd0;
-    assign gth_rx_status_reg = 32'd0;
-    assign gth_qpll_locked = 1'b0;
-    assign gth_tx_ready = 1'b0;
-    assign gth_rx_ready = 1'b0;
+    assign gth_status_async = 32'd0;
+    assign gth_rx_status_async = 32'd0;
+    assign gth_qpll_locked_async = 1'b0;
+    assign gth_tx_ready_async = 1'b0;
+    assign gth_rx_ready_async = 1'b0;
+    assign gth_qpll0lock = 2'd0;
     assign gth_unused_reduce = 1'b0;
-    assign litejesd_active = 1'b0;
-    assign litejesd_ready = 1'b0;
-    assign litejesd_status_reg = 32'd0;
-    assign litejesd_triangle_word = 32'd0;
+    assign litejesd_active_async = 1'b0;
+    assign litejesd_ready_async = 1'b0;
+    assign litejesd_status_async = 32'd0;
+    assign litejesd_triangle_async = 32'd0;
     assign gth_tx_clk_count = 32'd0;
     assign gth_rx_clk_count = 32'd0;
-    assign gth_txdata_lane0_debug = 32'd0;
-    assign gth_txctrl2_lane0_debug = 8'd0;
+    assign gth_txdata_lane0_async = 32'd0;
+    assign gth_txctrl2_lane0_async = 8'd0;
 `endif
+
+    wire [167:0] fabric_debug_sync;
+    cdc_vector_sync #(
+        .WIDTH (168)
+    ) u_fabric_debug_sync (
+        .dest_clk (clk_200),
+        .dest_rst (fabric_rst),
+        .src      ({
+            gth_qpll0lock,
+            gth_rx_ready_async,
+            gth_tx_ready_async,
+            gth_qpll_locked_async,
+            litejesd_ready_async,
+            litejesd_active_async,
+            gth_txctrl2_lane0_async,
+            gth_txdata_lane0_async,
+            litejesd_triangle_async,
+            litejesd_status_async,
+            gth_rx_status_async,
+            gth_status_async
+        }),
+        .dest     (fabric_debug_sync)
+    );
+
+    assign {
+        gth_qpll0lock_sync,
+        gth_rx_ready,
+        gth_tx_ready,
+        gth_qpll_locked,
+        litejesd_ready,
+        litejesd_active,
+        gth_txctrl2_lane0_debug,
+        gth_txdata_lane0_debug,
+        litejesd_triangle_word,
+        litejesd_status_reg,
+        gth_rx_status_reg,
+        gth_status_reg
+    } = fabric_debug_sync;
 
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_sync_pipe = 3'b000;
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_alarm_pipe = 3'b000;
@@ -598,8 +651,8 @@ module top #(
     assign GPIO_LED[4] = sysref_seen;
 `ifdef DAQ_WITH_GTH
 `ifdef DAQ_WITH_LITEJESD
-    assign GPIO_LED[5] = gth_qpll0lock[0];
-    assign GPIO_LED[6] = gth_qpll0lock[1];
+    assign GPIO_LED[5] = gth_qpll0lock_sync[0];
+    assign GPIO_LED[6] = gth_qpll0lock_sync[1];
     assign GPIO_LED[7] = litejesd_ready;
 `else
     assign GPIO_LED[5] = gth_qpll_locked;

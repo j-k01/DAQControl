@@ -8,6 +8,7 @@ cd sim/work_litejesd
 
 exec xvlog.bat -sv -d DAQ_WITH_GTH -d DAQ_WITH_LITEJESD \
     ../launch_stubs.v \
+    ../../src/cdc_vector_sync.v \
     ../../src/clock_activity_monitor.v \
     ../../src/signal_activity_monitor.v \
     ../../src/jesd/litejesd_dac_tx.v \

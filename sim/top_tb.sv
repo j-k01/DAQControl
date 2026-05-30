@@ -106,7 +106,7 @@ module top_tb;
         expect_bit(GPIO_LED[2], 1'b1, "FMC power-good placeholder LED");
         expect_bit(GPIO_LED[3], 1'b1, "CLK_FMC activity LED");
         expect_bit(GPIO_LED[4], 1'b1, "SYSREF activity LED");
-        expect_bit(GPIO_LED[5], 1'b1, "GBT reference activity LED");
+        expect_bit(GPIO_LED[5], 1'b0, "reserved LED");
         expect_bit(GPIO_LED[6], 1'b1, "DAC alarm deasserted LED");
         expect_bit(GPIO_LED[7], 1'b0, "error LED with DAC alarm low");
         expect_bit(DAC_CS_N, 1'b1, "DAC chip-select idle high");
@@ -122,6 +122,7 @@ module top_tb;
             $display("TEST PASSED");
         end else begin
             $display("TEST FAILED with %0d errors", errors);
+            $fatal(1);
         end
         $finish;
     end

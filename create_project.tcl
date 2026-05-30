@@ -13,6 +13,7 @@ set project_dir [file join $script_dir project]
 set report_dir  [file join $script_dir reports]
 set include_staged_gt 0
 set include_litejesd 0
+set include_gth_tx_ila 0
 
 for {set i 0} {$i < [llength $::argv]} {incr i} {
     set arg [lindex $::argv $i]
@@ -23,8 +24,11 @@ for {set i 0} {$i < [llength $::argv]} {incr i} {
         "--with-litejesd" {
             set include_litejesd 1
         }
+        "--with-gth-tx-ila" {
+            set include_gth_tx_ila 1
+        }
         default {
-            error "Unknown create_project.tcl argument '$arg'. Supported arguments: --with-staged-gt, --with-litejesd."
+            error "Unknown create_project.tcl argument '$arg'. Supported arguments: --with-staged-gt, --with-litejesd, --with-gth-tx-ila."
         }
     }
 }
@@ -277,6 +281,12 @@ if {$include_staged_gt} {
 if {$include_litejesd} {
     lappend verilog_defines DAQ_WITH_LITEJESD=1
 }
+if {$include_gth_tx_ila} {
+    if {!$include_litejesd} {
+        error "--with-gth-tx-ila requires --with-staged-gt/--with-litejesd so the TX ILA has a GTH TX user clock."
+    }
+    lappend verilog_defines DAQ_WITH_GTH_TX_ILA=1
+}
 if {[llength $verilog_defines] > 0} {
     set_property verilog_define $verilog_defines [current_fileset]
 }
@@ -338,7 +348,7 @@ for {set i 0} {$i < [llength $fabric_ila_widths]} {incr i} {
 }
 set_property -dict $fabric_ila_props [get_ips ila_fabric_debug]
 
-if {$include_litejesd} {
+if {$include_gth_tx_ila} {
     create_ip -name ila -vendor xilinx.com -library ip -module_name ila_gth_tx_debug -dir $ip_dir
     set gth_tx_ila_props [list \
         CONFIG.C_DATA_DEPTH    {2048} \

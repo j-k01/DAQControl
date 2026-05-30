@@ -82,7 +82,7 @@ proc copy_debug_probes {script_dir project_name} {
 
     set gth_tx_ila_cells [get_cells -hier -quiet *u_ila_gth_tx_debug*]
     if {[llength $gth_tx_ila_cells] == 0} {
-        puts "WARNING: implemented design does not contain u_ila_gth_tx_debug. This is expected only for non-LiteJESD builds."
+        puts "INFO: implemented design does not contain u_ila_gth_tx_debug. This is expected unless create_project.tcl used --with-gth-tx-ila."
     }
 
     set ltx_files [glob -nocomplain -directory $impl_dir *.ltx]

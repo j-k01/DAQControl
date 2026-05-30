@@ -218,12 +218,23 @@ The build also instantiates hardware debug cores:
 | ILA | Clock | Purpose |
 | --- | --- | --- |
 | `ila_fabric_debug` | `clk_200` | Always-on bring-up view: RW/RO registers, raw pins, fabric clock counters, GTH status, LiteJESD status, LED-equivalent flags |
-| `ila_gth_tx_debug` | `gth_tx_usrclk2` | JESD/TX-side view: lane 0/1 TX words, TX charisk/control, LiteJESD status, triangle word, sync/sysref samples |
+| `ila_gth_tx_debug` | `gth_tx_usrclk2` | Optional JESD/TX-side view: lane 0/1 TX words, TX charisk/control, LiteJESD status, triangle word, sync/sysref samples |
 
 Start with `ila_fabric_debug`. If LEDs remain 0/1/2 only, trigger on
 `probe8` (`gth_status_reg`) or `probe16` (`ila_debug_flags`) and check whether
-the GTH QPLL/user-clock bits ever assert. `ila_gth_tx_debug` will only capture
-after the GTH TX user clock is alive.
+the GTH QPLL/user-clock bits ever assert. The GTH/JESD status probes are
+synchronized into `clk_200` before they reach this ILA.
+
+The wide TX-side ILA is intentionally disabled in the default staged build
+because it runs at the 312.5 MHz GTH TX user clock and can dominate timing
+before the link is known-good. Enable it only after the fabric ILA shows stable
+QPLL/user-clock/reset-done status:
+
+```powershell
+vivado.bat -mode batch -source rebuild.tcl -tclargs --with-staged-gt --with-gth-tx-ila --jobs 8
+```
+
+`ila_gth_tx_debug` will only capture after the GTH TX user clock is alive.
 
 Use `WRTE 2 1` to hold the GTH reset helper in reset, then `WRTE 2 0` to
 release it. If the lanes need polarity inversion later, write the TX invert mask

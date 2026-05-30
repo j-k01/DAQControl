@@ -8,6 +8,7 @@ cd sim/work
 
 exec xvlog.bat -sv \
     ../launch_stubs.v \
+    ../../src/cdc_vector_sync.v \
     ../../src/clock_activity_monitor.v \
     ../../src/signal_activity_monitor.v \
     ../../src/top.v \
