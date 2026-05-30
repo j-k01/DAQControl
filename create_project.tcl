@@ -191,6 +191,15 @@ proc create_microblaze_bd {bd_name} {
         catch {set_property CONFIG.C_S_AXI_ACLK_FREQ_HZ $fabric_clk_hz $dbg_cell}
     }
 
+    set ext_reset_pins [get_bd_pins -quiet rst_Clk_200M/ext_reset_in]
+    if {[llength $ext_reset_pins] == 0} {
+        set ext_reset_pins [get_bd_pins -quiet -hierarchical */ext_reset_in]
+    }
+    if {[llength $ext_reset_pins] != 1} {
+        error "MicroBlaze automation did not create exactly one proc_sys_reset ext_reset_in pin."
+    }
+    safe_connect_bd_net [get_bd_ports reset] [lindex $ext_reset_pins 0]
+
     create_bd_cell -type ip -vlnv xilinx.com:ip:axi_uart16550:* axi_uart16550_0
     set_property CONFIG.C_S_AXI_ACLK_FREQ_HZ $fabric_clk_hz [get_bd_cells axi_uart16550_0]
     create_bd_cell -type ip -vlnv xilinx.com:user:AXI4_register_file:1.0 AXI4_register_file_0
