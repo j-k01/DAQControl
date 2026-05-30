@@ -248,12 +248,15 @@ module ila_fabric_debug (
     input  wire [31:0] probe13,
     input  wire [31:0] probe14,
     input  wire [31:0] probe15,
-    input  wire [31:0] probe16
+    input  wire [31:0] probe16,
+    input  wire [31:0] probe17,
+    input  wire [31:0] probe18,
+    input  wire [31:0] probe19
 );
     wire unused = clk ^ ^probe0 ^ ^probe1 ^ ^probe2 ^ ^probe3 ^ ^probe4 ^
                   ^probe5 ^ ^probe6 ^ ^probe7 ^ ^probe8 ^ ^probe9 ^
                   ^probe10 ^ ^probe11 ^ ^probe12 ^ ^probe13 ^ ^probe14 ^
-                  ^probe15 ^ ^probe16;
+                  ^probe15 ^ ^probe16 ^ ^probe17 ^ ^probe18 ^ ^probe19;
 endmodule
 
 module ila_gth_tx_debug (

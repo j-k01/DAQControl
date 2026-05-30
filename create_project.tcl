@@ -340,9 +340,9 @@ set_property -dict [list \
 create_ip -name ila -vendor xilinx.com -library ip -module_name ila_fabric_debug -dir $ip_dir
 set fabric_ila_props [list \
     CONFIG.C_DATA_DEPTH    {2048} \
-    CONFIG.C_NUM_OF_PROBES {17} \
+    CONFIG.C_NUM_OF_PROBES {20} \
 ]
-set fabric_ila_widths [list 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32]
+set fabric_ila_widths [list 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32]
 for {set i 0} {$i < [llength $fabric_ila_widths]} {incr i} {
     lappend fabric_ila_props CONFIG.C_PROBE${i}_WIDTH [lindex $fabric_ila_widths $i]
 }

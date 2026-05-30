@@ -245,7 +245,7 @@ The build also instantiates hardware debug cores:
 
 | ILA | Clock | Purpose |
 | --- | --- | --- |
-| `ila_fabric_debug` | `clk_200` | Always-on bring-up view: RW/RO registers, raw pins, fabric clock counters, GTH status, LiteJESD status, LED-equivalent flags |
+| `ila_fabric_debug` | `clk_200` | Always-on bring-up view: RW/RO registers, raw pins, fabric clock counters, GTH status, LiteJESD status, UART RX/TX activity, LED-equivalent flags |
 | `ila_gth_tx_debug` | `gth_tx_usrclk2` | Optional JESD/TX-side view: lane 0/1 TX words, TX charisk/control, LiteJESD status, triangle word, sync/sysref samples |
 
 Start with `ila_fabric_debug`. If LEDs remain 0/1/2 only, trigger on
@@ -270,6 +270,20 @@ vivado.bat -mode batch -source rebuild.tcl -tclargs --with-staged-gt --with-gth-
 ```
 
 `ila_gth_tx_debug` will only capture after the GTH TX user clock is alive.
+
+For UART bring-up without working firmware, use the always-on fabric ILA:
+
+| Probe | Meaning |
+| --- | --- |
+| `probe17` | UART debug word: `0xA5`, RX edge count low byte, TX edge count low byte, line/status bits |
+| `probe18` | Full UART RX edge count sampled in `clk_200` |
+| `probe19` | Full UART TX edge count sampled in `clk_200` |
+
+In `probe17`, the low byte is `{rx_low_seen, tx_low_seen, ro3_rdint,
+ro0_rdint, UART_TXD_raw, UART_TXD_sync, UART_RXD_raw, UART_RXD_sync}`. If you
+type on the correct CP2108 channel, `probe18` must increment even if
+MicroBlaze firmware is not running. If firmware is running and printing,
+`probe19` must increment.
 
 Use `WRTE 2 1` to hold the GTH reset helper in reset, then `WRTE 2 0` to
 release it. If the lanes need polarity inversion later, write the TX invert mask

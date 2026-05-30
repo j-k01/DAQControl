@@ -107,6 +107,64 @@ module top #(
         .RO_REG3_RDINT_0      (ro_reg3_rdint)
     );
 
+    (* ASYNC_REG = "TRUE" *) reg [2:0] uart_rxd_sync = 3'b111;
+    (* ASYNC_REG = "TRUE" *) reg [2:0] uart_txd_sync = 3'b111;
+    reg       uart_rx_prev = 1'b1;
+    reg       uart_tx_prev = 1'b1;
+    reg       uart_rx_low_seen = 1'b0;
+    reg       uart_tx_low_seen = 1'b0;
+    reg [31:0] uart_rx_edge_count = 32'd0;
+    reg [31:0] uart_tx_edge_count = 32'd0;
+
+    wire uart_rx_level = uart_rxd_sync[2];
+    wire uart_tx_level = uart_txd_sync[2];
+
+    always @(posedge clk_200) begin
+        if (fabric_rst) begin
+            uart_rxd_sync <= 3'b111;
+            uart_txd_sync <= 3'b111;
+            uart_rx_prev <= 1'b1;
+            uart_tx_prev <= 1'b1;
+            uart_rx_low_seen <= 1'b0;
+            uart_tx_low_seen <= 1'b0;
+            uart_rx_edge_count <= 32'd0;
+            uart_tx_edge_count <= 32'd0;
+        end else begin
+            uart_rxd_sync <= {uart_rxd_sync[1:0], UART_RXD};
+            uart_txd_sync <= {uart_txd_sync[1:0], UART_TXD};
+
+            uart_rx_prev <= uart_rx_level;
+            uart_tx_prev <= uart_tx_level;
+            if (uart_rx_level != uart_rx_prev) begin
+                uart_rx_edge_count <= uart_rx_edge_count + 1'b1;
+            end
+            if (uart_tx_level != uart_tx_prev) begin
+                uart_tx_edge_count <= uart_tx_edge_count + 1'b1;
+            end
+
+            if (!uart_rx_level) begin
+                uart_rx_low_seen <= 1'b1;
+            end
+            if (!uart_tx_level) begin
+                uart_tx_low_seen <= 1'b1;
+            end
+        end
+    end
+
+    wire [31:0] uart_debug_reg = {
+        8'hA5,
+        uart_rx_edge_count[7:0],
+        uart_tx_edge_count[7:0],
+        uart_rx_low_seen,
+        uart_tx_low_seen,
+        ro_reg3_rdint,
+        ro_reg0_rdint,
+        UART_TXD,
+        uart_tx_level,
+        UART_RXD,
+        uart_rx_level
+    };
+
     wire [31:0] gth_status_async;
     wire [31:0] gth_status_reg;
     wire [31:0] gth_rx_status_async;
@@ -749,7 +807,10 @@ module top #(
         .probe13 (gth_rx_clk_count),
         .probe14 (hmc_readback_pll2_word),
         .probe15 (hmc_readback_id_word),
-        .probe16 (ila_debug_flags)
+        .probe16 (ila_debug_flags),
+        .probe17 (uart_debug_reg),
+        .probe18 (uart_rx_edge_count),
+        .probe19 (uart_tx_edge_count)
     );
 
     reg [27:0] fabric_clk_cnt = 28'd0;
