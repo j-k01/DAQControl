@@ -53,7 +53,15 @@ Power monitoring can be added later through the ZCU102 I2C/PMBus path.
 
 ## UART Commands
 
-UART is CP2108 channel 2 PL UART at 250000 baud, 8N1.
+UART is CP2108 channel 2 PL UART at 115200 baud, 8N1. On Windows, use the
+CP2108 device whose hardware ID contains `MI_02`; CP2108 channel 3 / `MI_03`
+is the ZCU102 MSP430 system-controller UART, not this design.
+
+To list likely ZCU102 USB-UART ports:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File scripts/list_zcu102_uart_ports.ps1
+```
 
 ```text
 HELP
@@ -234,6 +242,10 @@ Defaults are `project/DAQ_LAUNCH.runs/impl_1/top.bit` and
 ```powershell
 xsct.bat program_and_load.tcl path/to/top.bit path/to/firmware.elf
 ```
+
+Programming only `top.bit` from Vivado Hardware Manager does not start the UART
+firmware unless the ELF has been baked into BRAM. Use `load_mb_firmware.tcl`
+afterward, or use `program_and_load.tcl`.
 
 Re-run implementation with the firmware baked into the bitstream:
 

@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define UART_BAUD_RATE 250000
+#define UART_BAUD_RATE 115200
 
 #define REG_BASE  XPAR_AXI4_REGISTER_FILE_0_S00_AXI_BASEADDR
 #define RW_REG0   (REG_BASE + 0x00)
@@ -86,12 +86,13 @@ static void cmd_help(void)
     send_str("  WRTE n value     write RW register 0..3\r\n");
     send_str("\r\n");
     send_str("RW0 control bits:\r\n");
-    send_str("  [0]/[31] FMC_C2M_PG override unused on ZCU102 HPC1\r\n");
+    send_str("  [0]/[31] FMC_C2M_PG override unused on ZCU102 HPC0\r\n");
     send_str("  [1] HMC reset, [2] DAC_RESET_N, [3] DAC_TXEN\r\n");
     send_str("  [4] ADC1 reset, [5] ADC2 reset\r\n");
     send_str("  [16:22] manual DAC/HMC SPI pins, enabled by [30]\r\n");
     send_str("  [31] FMC_C2M_PG override enable\r\n");
-    send_str("RW1[1:0] selects RO3: 0=GBT0, 1=GBT1, 2=raw pins, 3=build ID\r\n");
+    send_str("RW1[2:0] selects RO3: 0/1=reserved, 2=raw pins, 3=build ID\r\n");
+    send_str("                 4=GTH, 5=GTH lanes, 6=LiteJESD, 7=triangle\r\n");
 }
 
 static void cmd_status(void)
