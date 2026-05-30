@@ -291,10 +291,12 @@ afterward, or use `program_and_load.tcl`.
 For ILA debug, the bitstream and probes file must come from the same
 implementation run. `build.tcl` copies the matching probes file to
 `hw/DAQ_LAUNCH.ltx`, and `program.tcl` attaches it automatically when
-programming through Vivado Hardware Manager. If Hardware Manager reports that
-it is dropping `u_ila_fabric_debug` or `u_ila_gth_tx_debug` from the probes
-file, the board was programmed with a bitstream that does not contain those
-cores, or a stale/mismatched `.ltx` was loaded.
+programming through Vivado Hardware Manager. `program.tcl` auto-selects the
+ZCU102 FPGA by matching `xczu9`/`zu9` in the hardware device name or part, and
+prints the available devices if it cannot select one. If Hardware Manager
+reports that it is dropping `u_ila_fabric_debug` or `u_ila_gth_tx_debug` from
+the probes file, the board was programmed with a bitstream that does not
+contain those cores, or a stale/mismatched `.ltx` was loaded.
 
 Re-run implementation with the firmware baked into the bitstream:
 
