@@ -38,8 +38,8 @@ tx_ctrl0 ... tx_ctrl7  // 4-bit GTH TXCHARISK/control
 ```
 
 The GTH Wizard must therefore expose a 32-bit TX user-data path plus a 4-bit
-TX control/charisk path per lane. At 12.5 Gbps with 8B/10B and 32-bit user
-data, the TX user clock is 312.5 MHz.
+TX control/charisk path per lane. At 10 Gbps with 8B/10B and 32-bit user
+data, the TX user clock is 250 MHz.
 
 `daq_litejesd_dac_tx_path.v` is the hardware-facing shell for the launch test.
 It instantiates `litejesd_dac_tx`, drives one selectable converter with a

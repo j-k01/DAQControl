@@ -15,7 +15,7 @@ channels. It proves the board-health layer first:
 - DAQ `CLK_FMC` and `SYSREF_FMC` activity monitors.
 - DAQ `GBTCLK0` and `GBTCLK1` feed the GTH Wizard directly; in the GTH build,
   QPLL lock is the MGT reference-clock health indication.
-- HMC7044 reset and manual SPI pins.
+- HMC7044 bitstream-startup SPI initialization, plus manual SPI override pins.
 - DAC39J84 reset, TX enable, alarm, sync, and manual SPI pins.
 - MicroBlaze/UART register access using the same style as the NAPSAC reference design.
 
@@ -73,9 +73,15 @@ WRTE n value
 
 `RO0` is packed status. `RO1` is the latest one-second `CLK_FMC` sampled-edge
 count. `RO2` is the latest one-second `SYSREF_FMC` sampled-edge count. `RO3` is selected by
-`RW1[2:0]`: `0=reserved`, `1=reserved`, `2=raw pins`, `3=build ID`,
+`RW1[2:0]`: `0=HMC7044 auto-init status`, `1=HMC7044 last auto write`, `2=raw pins`, `3=build ID`,
 `4=GTH status`, `5=GTH RX lane status`, `6=LiteJESD status`,
 `7=triangle sample word`.
+
+`RO0[26]` is the HMC7044 auto-init done bit, `RO0[25]` is auto-init busy, and
+`RO0[24]` is auto-init ownership of the HMC SPI pins. In the default startup
+state, `RW0[30] = 0`, the bitstream owns the HMC SPI bus, pulses the HMC reset,
+programs the DAQ clock tree, and then releases the GTH reset helper. Set
+`RW0[30] = 1` only when deliberately taking manual control of the HMC SPI pins.
 
 The FMC fabric clocks are sampled by the 200 MHz fabric clock. The MGT
 reference-clock `ODIV2` pins are intentionally not routed into fabric; on
@@ -226,7 +232,7 @@ the GTH QPLL/user-clock bits ever assert. The GTH/JESD status probes are
 synchronized into `clk_200` before they reach this ILA.
 
 The wide TX-side ILA is intentionally disabled in the default staged build
-because it runs at the 312.5 MHz GTH TX user clock and can dominate timing
+because it runs at the 250 MHz GTH TX user clock and can dominate timing
 before the link is known-good. Enable it only after the fabric ILA shows stable
 QPLL/user-clock/reset-done status:
 
@@ -251,9 +257,9 @@ and the regeneration script is `scripts/gen_litejesd_dac_tx.py`.
 
 The GTH Wizard exposes the raw 8B/10B TX interface used by this block: 32-bit
 `TXDATA` plus 4-bit `TXCHARISK` per lane, clocked by the GTH TX user clock. For
-a 12.5 Gbps 8B/10B link with 32-bit user data, that user clock is 312.5 MHz.
-The staged GTH XCI uses 12.5 Gbps, 156.25 MHz refclk, QPLL0, 8B/10B, 32-bit
-TX/RX user data, and a 125 MHz freerun clock.
+a 10 Gbps 8B/10B link with 32-bit user data, that user clock is 250 MHz. The
+staged GTH XCI uses the DAQ/vendor clock-tree profile: 10 Gbps, 125 MHz MGT
+refclk, QPLL0, 8B/10B, 32-bit TX/RX user data, and a 125 MHz freerun clock.
 
 The launch-side wrapper for that connection is
 `src/jesd/daq_litejesd_dac_tx_path.v`. It assumes the corrected GTH wrapper

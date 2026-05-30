@@ -138,8 +138,39 @@ module top #(
     wire [1:0]  gth_qpll0lock_sync;
 
     wire manual_spi_enable = rw_reg0[30];
+    wire hmc_auto_busy;
+    wire hmc_auto_done;
+    wire hmc_auto_reset;
+    wire hmc_auto_cs_n;
+    wire hmc_auto_sclk;
+    wire hmc_auto_sdio_o;
+    wire hmc_auto_sdio_oe;
+    wire [7:0] hmc_auto_step;
+    wire [11:0] hmc_auto_last_addr;
+    wire [7:0] hmc_auto_last_data;
+    wire hmc_auto_owns = ~manual_spi_enable;
 
-    assign HMC_CLK_RESET = rw_reg0[1];
+    hmc7044_init #(
+        .CLK_HZ           (200_000_000),
+        .SPI_HZ           (1_000_000),
+        .RESET_ASSERT_US  (10_000),
+        .RESET_RELEASE_US (10_000)
+    ) u_hmc7044_init (
+        .clk         (clk_200),
+        .rst         (fabric_rst),
+        .busy        (hmc_auto_busy),
+        .done        (hmc_auto_done),
+        .reset_out   (hmc_auto_reset),
+        .spi_cs_n    (hmc_auto_cs_n),
+        .spi_sclk    (hmc_auto_sclk),
+        .spi_sdio_o  (hmc_auto_sdio_o),
+        .spi_sdio_oe (hmc_auto_sdio_oe),
+        .step_index  (hmc_auto_step),
+        .last_addr   (hmc_auto_last_addr),
+        .last_data   (hmc_auto_last_data)
+    );
+
+    assign HMC_CLK_RESET = hmc_auto_owns ? hmc_auto_reset : rw_reg0[1];
 `ifdef DAQ_WITH_LITEJESD
     assign DAC_RESET_N   = ~fabric_rst;
     assign DAC_TXEN      = gth_tx_ready_async;
@@ -154,9 +185,11 @@ module top #(
     assign DAC_SCLK      = manual_spi_enable ? rw_reg0[17] : 1'b0;
     assign DAC_SDIN      = manual_spi_enable ? rw_reg0[18] : 1'b0;
 
-    assign HMC_CLK_CS_N  = manual_spi_enable ? rw_reg0[19] : 1'b1;
-    assign HMC_CLK_SCLK  = manual_spi_enable ? rw_reg0[20] : 1'b0;
-    assign HMC_CLK_SDIO  = (manual_spi_enable && rw_reg0[22]) ? rw_reg0[21] : 1'bz;
+    assign HMC_CLK_CS_N  = hmc_auto_owns ? hmc_auto_cs_n : rw_reg0[19];
+    assign HMC_CLK_SCLK  = hmc_auto_owns ? hmc_auto_sclk : rw_reg0[20];
+    assign HMC_CLK_SDIO  = hmc_auto_owns ?
+                           (hmc_auto_sdio_oe ? hmc_auto_sdio_o : 1'bz) :
+                           (rw_reg0[22] ? rw_reg0[21] : 1'bz);
     wire hmc_sdio_in = HMC_CLK_SDIO;
 
     wire clk_fmc_ibuf;
@@ -232,7 +265,7 @@ module top #(
     );
 
 `ifdef DAQ_WITH_GTH
-    wire        gth_reset_all = fabric_rst | rw_reg2[0];
+    wire        gth_reset_all = fabric_rst | rw_reg2[0] | ~hmc_auto_done;
     wire        gth_tx_userclk_active;
     wire        gth_rx_userclk_active;
     wire        gth_tx_usrclk;
@@ -543,8 +576,31 @@ module top #(
     wire dac_sync_level = dac_sync_pipe[2];
     wire dac_alarm_level = dac_alarm_pipe[2];
 
+    wire [31:0] hmc_auto_status_reg = {
+        16'd0,
+        manual_spi_enable,
+        hmc_auto_done,
+        hmc_auto_busy,
+        hmc_auto_reset,
+        hmc_auto_cs_n,
+        hmc_auto_sclk,
+        hmc_auto_sdio_oe,
+        hmc_auto_sdio_o,
+        hmc_auto_step
+    };
+    wire [31:0] hmc_auto_last_write_reg = {
+        12'd0,
+        hmc_auto_last_addr,
+        hmc_auto_last_data
+    };
+
     wire [31:0] raw_pin_reg = {
-        20'd0,
+        12'd0,
+        hmc_auto_done,
+        hmc_auto_busy,
+        hmc_auto_reset,
+        hmc_auto_cs_n,
+        hmc_auto_step[3:0],
         DAC_SDOUT,
         dac_sdout_pipe[2],
         hmc_sdio_in,
@@ -559,12 +615,12 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0001;
+    wire [31:0] build_id = 32'hDA01_0002;
 
     always @* begin
         case (rw_reg1[2:0])
-            3'd0: selected_count = gbt0_count;
-            3'd1: selected_count = gbt1_count;
+            3'd0: selected_count = hmc_auto_status_reg;
+            3'd1: selected_count = hmc_auto_last_write_reg;
             3'd2: selected_count = raw_pin_reg;
             3'd3: selected_count = build_id;
             3'd4: selected_count = gth_status_reg;
@@ -576,7 +632,10 @@ module top #(
     end
 
     assign status_reg = {
-        8'd0,
+        5'd0,
+        hmc_auto_done,
+        hmc_auto_busy,
+        hmc_auto_owns,
         rw_reg1[2:0],
         litejesd_ready,
         litejesd_active,
@@ -602,7 +661,11 @@ module top #(
     };
 
     wire [31:0] ila_debug_flags = {
-        6'd0,
+        2'd0,
+        hmc_auto_done,
+        hmc_auto_busy,
+        hmc_auto_reset,
+        hmc_auto_cs_n,
         GPIO_LED,
         litejesd_ready,
         litejesd_active,

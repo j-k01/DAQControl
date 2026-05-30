@@ -19,6 +19,14 @@ if {[llength $async_reg_d_pins] > 0} {
     set_false_path -to $async_reg_d_pins
 }
 
+# The placed timing reports showed these first-stage CDC flops still being
+# timed in some Vivado runs, despite the RTL ASYNC_REG attributes.  Keep an
+# instance-name fallback for the explicit debug/status synchronizers.
+set explicit_async_meta_pins [get_pins -hier -quiet -regexp {.*(u_fabric_debug_sync|u_gth_rx_userclk_monitor|u_gth_tx_userclk_monitor|u_clk_fmc_monitor|u_sysref_monitor)/(meta_reg(\[[0-9]+\])?|gray_meta_reg(\[[0-9]+\])?|signal_meta_reg)/D$}]
+if {[llength $explicit_async_meta_pins] > 0} {
+    set_false_path -to $explicit_async_meta_pins
+}
+
 # LiteJESD's generated reset synchronizers are emitted as FDPE instances instead
 # of ASYNC_REG-attributed Verilog regs.  They are reset synchronizers, not data
 # paths, so the async preset timing must not dominate implementation.

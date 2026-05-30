@@ -11,6 +11,7 @@ exec xvlog.bat -sv \
     ../../src/cdc_vector_sync.v \
     ../../src/clock_activity_monitor.v \
     ../../src/signal_activity_monitor.v \
+    ../../src/hmc7044_init.v \
     ../../src/top.v \
     ../top_tb.sv
 
