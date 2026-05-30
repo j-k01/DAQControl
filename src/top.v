@@ -73,9 +73,6 @@ module top #(
     wire ro_reg1_rdint;
     wire ro_reg2_rdint;
     wire ro_reg3_rdint;
-    wire mb_dbg_mb_reset;
-    wire mb_dbg_peripheral_aresetn;
-    wire mb_dbg_interconnect_aresetn;
 
     wire [31:0] status_reg;
     wire [31:0] clk_fmc_count;
@@ -90,11 +87,7 @@ module top #(
 
     microblaze_bd_wrapper u_microblaze (
         .Clk                  (clk_200),
-        .locked               (mmcm_locked),
         .reset                (microblaze_reset),
-        .DBG_MB_RESET_0       (mb_dbg_mb_reset),
-        .DBG_PERIPHERAL_ARESETN_0  (mb_dbg_peripheral_aresetn),
-        .DBG_INTERCONNECT_ARESETN_0 (mb_dbg_interconnect_aresetn),
         .rs232_uart_txd       (UART_TXD),
         .rs232_uart_rxd       (UART_RXD),
         .RW_REG0_0            (rw_reg0),
@@ -171,17 +164,6 @@ module top #(
         uart_tx_level,
         UART_RXD,
         uart_rx_level
-    };
-    wire [31:0] mb_reset_debug_reg = {
-        16'hDA51,
-        9'd0,
-        fabric_rst,
-        mb_dbg_interconnect_aresetn,
-        mb_dbg_peripheral_aresetn,
-        mb_dbg_mb_reset,
-        microblaze_reset,
-        mmcm_locked,
-        CPU_RESET
     };
 
     wire [31:0] gth_status_async;
@@ -805,6 +787,7 @@ module top #(
         clk_fmc_seen,
         fabric_rst,
         CPU_RESET,
+        microblaze_reset,
         mmcm_locked
     };
 
@@ -829,8 +812,7 @@ module top #(
         .probe16 (ila_debug_flags),
         .probe17 (uart_debug_reg),
         .probe18 (uart_rx_edge_count),
-        .probe19 (uart_tx_edge_count),
-        .probe20 (mb_reset_debug_reg)
+        .probe19 (uart_tx_edge_count)
     );
 
     reg [27:0] fabric_clk_cnt = 28'd0;
