@@ -3,6 +3,17 @@ set project_name DAQ_LAUNCH
 set bit_file [file join $script_dir project ${project_name}.runs impl_1 top.bit]
 set probes_file [file join $script_dir hw ${project_name}.ltx]
 
+if {![info exists argv]} {
+    set argv {}
+}
+
+if {[llength $argv] > 0} {
+    set bit_file [file normalize [lindex $argv 0]]
+}
+if {[llength $argv] > 1} {
+    set probes_file [file normalize [lindex $argv 1]]
+}
+
 proc safe_hw_property {prop obj} {
     if {[catch {get_property $prop $obj} value]} {
         return ""

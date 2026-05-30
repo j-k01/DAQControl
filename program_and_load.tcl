@@ -4,6 +4,10 @@ set bit_file [file join $script_dir project DAQ_LAUNCH.runs impl_1 top.bit]
 set elf_file [file join $script_dir sw workspace firmware Debug firmware.elf]
 set probes_file [file join $script_dir hw DAQ_LAUNCH.ltx]
 
+if {![info exists argv]} {
+    set argv {}
+}
+
 if {[llength $argv] > 0} {
     set bit_file [file normalize [lindex $argv 0]]
 }
@@ -19,56 +23,163 @@ if {![file exists $elf_file]} {
     error "MicroBlaze ELF not found: $elf_file\nRun 'xsct.bat build_sw.tcl' first, or pass an ELF path as the second argument."
 }
 
-proc select_microblaze_target {} {
-    set filters [list \
-        {name =~ "*MicroBlaze*"} \
-        {name =~ "*microblaze*"} \
-        {name =~ "*microblaze_0*"} \
-    ]
+proc have_vivado_hw_manager {} {
+    expr {[llength [info commands open_hw_manager]] > 0}
+}
 
-    foreach filter $filters {
-        if {![catch {set matches [targets -filter $filter]} result] && [llength $matches] > 0} {
-            set target_id [lindex $matches 0]
-            targets $target_id
-            return $target_id
+proc have_xsct_debugger {} {
+    expr {
+        [llength [info commands connect]] > 0 &&
+        [llength [info commands targets]] > 0 &&
+        [llength [info commands dow]] > 0 &&
+        [llength [info commands con]] > 0
+    }
+}
+
+proc first_existing_command {commands} {
+    foreach command $commands {
+        set resolved [auto_execok $command]
+        if {$resolved ne ""} {
+            return $resolved
+        }
+    }
+    return {}
+}
+
+proc find_xsct_command {} {
+    if {[info exists ::env(XSCT)] && [file exists $::env(XSCT)]} {
+        return [list $::env(XSCT)]
+    }
+    if {[info exists ::env(XILINX_VITIS)]} {
+        foreach name {xsct.bat xsct} {
+            set candidate [file join $::env(XILINX_VITIS) bin $name]
+            if {[file exists $candidate]} {
+                return [list $candidate]
+            }
+        }
+    }
+    if {[info exists ::env(XILINX_VIVADO)]} {
+        set version [file tail $::env(XILINX_VIVADO)]
+        set xilinx_root [file dirname [file dirname $::env(XILINX_VIVADO)]]
+        foreach name {xsct.bat xsct} {
+            set candidate [file join $xilinx_root Vitis $version bin $name]
+            if {[file exists $candidate]} {
+                return [list $candidate]
+            }
         }
     }
 
-    puts "Available JTAG targets:"
-    catch {targets}
-    error "No MicroBlaze target found after programming the FPGA."
+    set resolved [first_existing_command {xsct.bat xsct}]
+    if {$resolved ne ""} {
+        return $resolved
+    }
+
+    error "Could not find XSCT. Run this from a Xilinx/Vitis command shell, or set XSCT to the full path of xsct.bat."
 }
 
-puts "Connecting to hw_server..."
-connect
+proc find_vivado_command {} {
+    if {[info exists ::env(VIVADO)] && [file exists $::env(VIVADO)]} {
+        return [list $::env(VIVADO)]
+    }
+    if {[info exists ::env(XILINX_VIVADO)]} {
+        foreach name {vivado.bat vivado} {
+            set candidate [file join $::env(XILINX_VIVADO) bin $name]
+            if {[file exists $candidate]} {
+                return [list $candidate]
+            }
+        }
+    }
+    if {[info exists ::env(XILINX_VITIS)]} {
+        set version [file tail $::env(XILINX_VITIS)]
+        set xilinx_root [file dirname [file dirname $::env(XILINX_VITIS)]]
+        foreach name {vivado.bat vivado} {
+            set candidate [file join $xilinx_root Vivado $version bin $name]
+            if {[file exists $candidate]} {
+                return [list $candidate]
+            }
+        }
+    }
 
-puts "Selecting Zynq UltraScale+ device target..."
-if {[catch {targets -set -filter {name =~ "*xczu9eg*"}}]} {
-    catch {targets -set -filter {name =~ "*PSU*"}}
+    set resolved [first_existing_command {vivado.bat vivado}]
+    if {$resolved ne ""} {
+        return $resolved
+    }
+
+    error "Could not find Vivado. Run this from a Xilinx/Vivado command shell, or set VIVADO to the full path of vivado.bat."
 }
 
-puts "Programming bitstream: $bit_file"
-fpga -file $bit_file
-if {[file exists $probes_file]} {
-    puts "Matching debug probes file for Hardware Manager: $probes_file"
-} else {
-    puts "WARNING: matching debug probes file not found: $probes_file"
-    puts "WARNING: rerun Vivado build.tcl after create_project.tcl to generate the .ltx."
+proc run_checked {description command} {
+    puts $description
+    if {[catch {exec -- {*}$command} result options]} {
+        if {$result ne ""} {
+            puts $result
+        }
+        return -options $options $result
+    }
+    if {$result ne ""} {
+        puts $result
+    }
 }
 
-after 1000
+proc program_bitstream {script_dir bit_file probes_file} {
+    if {[have_vivado_hw_manager]} {
+        puts "Programming FPGA from Vivado Tcl..."
+        set had_argv [info exists ::argv]
+        if {$had_argv} {
+            set saved_argv $::argv
+        }
+        set ::argv [list $bit_file $probes_file]
+        if {[catch {uplevel #0 [list source [file join $script_dir program.tcl]]} result options]} {
+            if {$had_argv} {
+                set ::argv $saved_argv
+            } else {
+                unset ::argv
+            }
+            return -options $options $result
+        }
+        if {$had_argv} {
+            set ::argv $saved_argv
+        } else {
+            unset ::argv
+        }
+        return
+    }
 
-set target_id [select_microblaze_target]
-puts "Selected MicroBlaze target: $target_id"
+    set vivado_cmd [find_vivado_command]
+    run_checked "Programming FPGA through Vivado subprocess..." \
+        [concat $vivado_cmd [list -mode batch -source [file join $script_dir program.tcl] -tclargs $bit_file $probes_file]]
+}
 
-puts "Stopping processor..."
-catch {stop}
-catch {rst -processor}
+proc load_firmware {script_dir elf_file} {
+    if {[have_xsct_debugger]} {
+        puts "Loading MicroBlaze firmware from XSCT..."
+        set had_argv [info exists ::argv]
+        if {$had_argv} {
+            set saved_argv $::argv
+        }
+        set ::argv [list $elf_file]
+        if {[catch {uplevel #0 [list source [file join $script_dir load_mb_firmware.tcl]]} result options]} {
+            if {$had_argv} {
+                set ::argv $saved_argv
+            } else {
+                unset ::argv
+            }
+            return -options $options $result
+        }
+        if {$had_argv} {
+            set ::argv $saved_argv
+        } else {
+            unset ::argv
+        }
+        return
+    }
 
-puts "Downloading ELF: $elf_file"
-dow $elf_file
+    set xsct_cmd [find_xsct_command]
+    run_checked "Loading MicroBlaze firmware through XSCT subprocess..." \
+        [concat $xsct_cmd [list [file join $script_dir load_mb_firmware.tcl] $elf_file]]
+}
 
-puts "Starting processor..."
-con
+program_bitstream $script_dir $bit_file $probes_file
+load_firmware $script_dir $elf_file
 
 puts "FPGA programmed and MicroBlaze firmware loaded."

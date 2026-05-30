@@ -1,5 +1,18 @@
 set script_dir [file dirname [file normalize [info script]]]
 
+if {![info exists argv]} {
+    set argv {}
+}
+
+if {
+    [llength [info commands connect]] == 0 ||
+    [llength [info commands targets]] == 0 ||
+    [llength [info commands dow]] == 0 ||
+    [llength [info commands con]] == 0
+} {
+    error "load_mb_firmware.tcl must run under XSCT/Vitis Tcl, not Vivado Tcl.\nUse 'xsct.bat load_mb_firmware.tcl', or use 'vivado.bat -mode batch -source program_and_load.tcl' to program the FPGA and then load firmware."
+}
+
 if {[llength $argv] > 0} {
     set elf_file [file normalize [lindex $argv 0]]
 } else {

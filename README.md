@@ -334,15 +334,21 @@ To program the FPGA bitstream and then load/start the MicroBlaze firmware in
 one JTAG pass:
 
 ```powershell
-xsct.bat program_and_load.tcl
+vivado.bat -mode batch -source program_and_load.tcl
 ```
 
 Defaults are `project/DAQ_LAUNCH.runs/impl_1/top.bit` and
 `sw/workspace/firmware/Debug/firmware.elf`. You can override them with:
 
 ```powershell
-xsct.bat program_and_load.tcl path/to/top.bit path/to/firmware.elf
+vivado.bat -mode batch -source program_and_load.tcl -tclargs path/to/top.bit path/to/firmware.elf
 ```
+
+`program_and_load.tcl` is intentionally safe to launch from either Vivado Tcl
+or XSCT/Vitis Tcl. In Vivado it programs the bitstream, then invokes XSCT to
+download the ELF. In XSCT it invokes Vivado for bitstream programming, then
+downloads the ELF itself. If you only want to load firmware into an already
+programmed FPGA, run `xsct.bat load_mb_firmware.tcl`.
 
 Programming only `top.bit` from Vivado Hardware Manager does not start the UART
 firmware unless the ELF has been baked into BRAM. Use `load_mb_firmware.tcl`
