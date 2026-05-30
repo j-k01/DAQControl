@@ -288,9 +288,10 @@ MicroBlaze firmware is not running. If firmware is running and printing,
 
 `probe20` starts with marker `0xDA51` in bits `[31:16]`. Its low bits are:
 `[0]=CPU_RESET`, `[1]=mmcm_locked`, `[2]=MicroBlaze BD reset input`,
-`[3]=proc_sys_reset/mb_reset`, `[4]=peripheral_aresetn`,
-`[5]=interconnect_aresetn`, `[6]=fabric_rst`. For firmware loading,
-`probe20[3]` must be `0` and `probe20[4]`/`probe20[5]` must be `1`.
+`[3]=proc_sys_reset/ext_reset_in`, `[4]=proc_sys_reset/mb_reset`,
+`[5]=peripheral_aresetn`, `[6]=interconnect_aresetn`, `[7]=fabric_rst`. For
+firmware loading, `probe20[3]` and `probe20[4]` must be `0`, and
+`probe20[5]`/`probe20[6]` must be `1`.
 
 Use `WRTE 2 1` to hold the GTH reset helper in reset, then `WRTE 2 0` to
 release it. If the lanes need polarity inversion later, write the TX invert mask
@@ -369,11 +370,12 @@ fully sent. If `probe1`/`RW0` remains `0` and `probe2`/`RW1` has no
 `0xC0DE...` marker after `load_mb_firmware.tcl`, the ELF did not actually run.
 For this launch design the MicroBlaze reset input is tied deasserted in the PL
 wrapper so the external ZCU102 CPU_RESET pushbutton cannot hold the debug CPU in
-reset during JTAG firmware loading. The MicroBlaze BD also receives the
-`clk_wiz_0.locked` signal on its `locked` port so the internal `proc_sys_reset`
-block can release `mb_reset` after the 200 MHz fabric clock is stable. This
-reset-path change is in the generated BD/bitstream, so rerun `rebuild.tcl` and
-reprogram the FPGA before expecting the firmware loader behavior to change.
+reset during JTAG firmware loading. The BD `reset` port is explicitly connected
+to `proc_sys_reset/ext_reset_in`, and the BD also receives `clk_wiz_0.locked`
+on its `locked` port so the internal `proc_sys_reset` block can release
+`mb_reset` after the 200 MHz fabric clock is stable. This reset-path change is
+in the generated BD/bitstream, so rerun `rebuild.tcl` and reprogram the FPGA
+before expecting the firmware loader behavior to change.
 
 For ILA debug, the bitstream and probes file must come from the same
 implementation run. `build.tcl` copies the matching probes file to
