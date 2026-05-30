@@ -16,6 +16,7 @@ module hmc7044_init #(
 ) (
     input  wire        clk,
     input  wire        rst,
+    input  wire        spi_sdio_i,
     output reg         busy,
     output reg         done,
     output reg         reset_out,
@@ -25,7 +26,16 @@ module hmc7044_init #(
     output reg         spi_sdio_oe,
     output reg  [7:0]  step_index,
     output reg  [11:0] last_addr,
-    output reg  [7:0]  last_data
+    output reg  [7:0]  last_data,
+    output reg         readback_done,
+    output reg         readback_sdio_stuck,
+    output reg  [3:0]  readback_index,
+    output reg  [11:0] readback_last_addr,
+    output reg  [7:0]  readback_last_data,
+    output reg  [31:0] readback_id_word,
+    output reg  [31:0] readback_alarm_word,
+    output reg  [31:0] readback_pll1_word,
+    output reg  [31:0] readback_pll2_word
 );
 
     localparam integer US_CYCLES = (CLK_HZ + 999_999) / 1_000_000;
@@ -40,9 +50,11 @@ module hmc7044_init #(
         ST_LOAD          = 3'd3,
         ST_SPI           = 3'd4,
         ST_DELAY         = 3'd5,
-        ST_DONE          = 3'd6;
+        ST_READ_LOAD     = 3'd6,
+        ST_DONE          = 3'd7;
 
     localparam [7:0] SEQ_LEN = 8'd127;
+    localparam [3:0] READ_LEN = 4'd13;
 
     reg [2:0]  state = ST_IDLE;
     reg [31:0] delay_count = 32'd0;
@@ -50,6 +62,8 @@ module hmc7044_init #(
     reg [23:0] spi_shift = 24'd0;
     reg [5:0]  spi_bits_left = 6'd0;
     reg        spi_half_phase = 1'b0;
+    reg        spi_read_mode = 1'b0;
+    reg [7:0]  spi_read_shift = 8'd0;
 
     wire       seq_delay;
     wire [11:0] seq_addr;
@@ -60,6 +74,30 @@ module hmc7044_init #(
     assign seq_addr = seq_reg_addr(step_index);
     assign seq_data = seq_reg_data(step_index);
     assign seq_delay_cycles = seq_delay_us(step_index) * US_CYCLES;
+
+    wire [11:0] read_addr = readback_reg_addr(readback_index);
+
+    function [11:0] readback_reg_addr;
+        input [3:0] idx;
+        begin
+            case (idx)
+                4'd0:  readback_reg_addr = 12'h078; // Product ID LSB
+                4'd1:  readback_reg_addr = 12'h079; // Product ID mid
+                4'd2:  readback_reg_addr = 12'h07A; // Product ID MSB
+                4'd3:  readback_reg_addr = 12'h07B; // Alarm signal
+                4'd4:  readback_reg_addr = 12'h07C; // PLL1 alarm readback
+                4'd5:  readback_reg_addr = 12'h07D; // Combined alarm readback
+                4'd6:  readback_reg_addr = 12'h07E; // Latched alarm readback
+                4'd7:  readback_reg_addr = 12'h082; // PLL1 best/active/FSM
+                4'd8:  readback_reg_addr = 12'h083; // PLL1 holdover average
+                4'd9:  readback_reg_addr = 12'h084; // PLL1 holdover current
+                4'd10: readback_reg_addr = 12'h085; // PLL1 LOS/VCXO status
+                4'd11: readback_reg_addr = 12'h08C; // PLL2 autotune value
+                4'd12: readback_reg_addr = 12'h08F; // PLL2/SYSREF FSM state
+                default: readback_reg_addr = 12'h000;
+            endcase
+        end
+    endfunction
 
     function seq_is_delay;
         input [7:0] idx;
@@ -358,16 +396,36 @@ module hmc7044_init #(
             step_index <= 8'd0;
             last_addr <= 12'd0;
             last_data <= 8'd0;
+            readback_done <= 1'b0;
+            readback_sdio_stuck <= 1'b0;
+            readback_index <= 4'd0;
+            readback_last_addr <= 12'd0;
+            readback_last_data <= 8'd0;
+            readback_id_word <= 32'd0;
+            readback_alarm_word <= 32'd0;
+            readback_pll1_word <= 32'd0;
+            readback_pll2_word <= 32'd0;
             delay_count <= 32'd0;
             spi_div_count <= 32'd0;
             spi_shift <= 24'd0;
             spi_bits_left <= 6'd0;
             spi_half_phase <= 1'b0;
+            spi_read_mode <= 1'b0;
+            spi_read_shift <= 8'd0;
         end else begin
             case (state)
                 ST_IDLE: begin
                     busy <= 1'b1;
                     done <= 1'b0;
+                    readback_done <= 1'b0;
+                    readback_sdio_stuck <= 1'b0;
+                    readback_index <= 4'd0;
+                    readback_last_addr <= 12'd0;
+                    readback_last_data <= 8'd0;
+                    readback_id_word <= 32'd0;
+                    readback_alarm_word <= 32'd0;
+                    readback_pll1_word <= 32'd0;
+                    readback_pll2_word <= 32'd0;
                     reset_out <= 1'b1;
                     spi_cs_n <= 1'b1;
                     spi_sclk <= 1'b0;
@@ -398,8 +456,10 @@ module hmc7044_init #(
                 ST_LOAD: begin
                     spi_sclk <= 1'b0;
                     spi_sdio_oe <= 1'b0;
+                    spi_read_mode <= 1'b0;
                     if (step_index >= SEQ_LEN) begin
-                        state <= ST_DONE;
+                        readback_index <= 4'd0;
+                        state <= ST_READ_LOAD;
                     end else if (seq_delay) begin
                         delay_count <= seq_delay_cycles;
                         step_index <= step_index + 1'b1;
@@ -418,6 +478,29 @@ module hmc7044_init #(
                     end
                 end
 
+                ST_READ_LOAD: begin
+                    spi_sclk <= 1'b0;
+                    spi_sdio_oe <= 1'b0;
+                    if (readback_index >= READ_LEN) begin
+                        readback_done <= 1'b1;
+                        readback_sdio_stuck <= (readback_id_word[23:0] == 24'h000000) ||
+                                               (readback_id_word[23:0] == 24'hffffff);
+                        state <= ST_DONE;
+                    end else begin
+                        readback_last_addr <= read_addr;
+                        spi_shift <= {1'b1, 2'b00, read_addr, 8'h00};
+                        spi_read_shift <= 8'd0;
+                        spi_bits_left <= 6'd24;
+                        spi_half_phase <= 1'b0;
+                        spi_read_mode <= 1'b1;
+                        spi_div_count <= SPI_HALF_CYCLES[31:0] - 1'b1;
+                        spi_cs_n <= 1'b0;
+                        spi_sdio_oe <= 1'b1;
+                        spi_sdio_o <= 1'b1; // First read-command bit; stable before first SCLK edge.
+                        state <= ST_SPI;
+                    end
+                end
+
                 ST_SPI: begin
                     if (spi_div_count != 32'd0) begin
                         spi_div_count <= spi_div_count - 1'b1;
@@ -426,16 +509,46 @@ module hmc7044_init #(
                         if (!spi_half_phase) begin
                             spi_sclk <= 1'b1;
                             spi_half_phase <= 1'b1;
+                            if (spi_read_mode && (spi_bits_left <= 6'd8)) begin
+                                spi_read_shift <= {spi_read_shift[6:0], spi_sdio_i};
+                            end
                         end else begin
                             spi_sclk <= 1'b0;
                             spi_half_phase <= 1'b0;
                             if (spi_bits_left == 6'd1) begin
                                 spi_cs_n <= 1'b1;
                                 spi_sdio_oe <= 1'b0;
-                                step_index <= step_index + 1'b1;
-                                state <= ST_LOAD;
+                                if (spi_read_mode) begin
+                                    readback_last_data <= spi_read_shift;
+                                    case (readback_index)
+                                        4'd0:  readback_id_word[7:0] <= spi_read_shift;
+                                        4'd1:  readback_id_word[15:8] <= spi_read_shift;
+                                        4'd2:  readback_id_word[23:16] <= spi_read_shift;
+                                        4'd3:  readback_alarm_word[7:0] <= spi_read_shift;
+                                        4'd4:  readback_alarm_word[15:8] <= spi_read_shift;
+                                        4'd5:  readback_alarm_word[23:16] <= spi_read_shift;
+                                        4'd6:  readback_alarm_word[31:24] <= spi_read_shift;
+                                        4'd7:  readback_pll1_word[7:0] <= spi_read_shift;
+                                        4'd8:  readback_pll1_word[15:8] <= spi_read_shift;
+                                        4'd9:  readback_pll1_word[23:16] <= spi_read_shift;
+                                        4'd10: readback_pll1_word[31:24] <= spi_read_shift;
+                                        4'd11: readback_pll2_word[7:0] <= spi_read_shift;
+                                        4'd12: readback_pll2_word[15:8] <= spi_read_shift;
+                                        default: begin end
+                                    endcase
+                                    readback_index <= readback_index + 1'b1;
+                                    state <= ST_READ_LOAD;
+                                end else begin
+                                    step_index <= step_index + 1'b1;
+                                    state <= ST_LOAD;
+                                end
+                            end else if (spi_read_mode && (spi_bits_left == 6'd9)) begin
+                                spi_sdio_oe <= 1'b0;
+                                spi_bits_left <= spi_bits_left - 1'b1;
                             end else begin
-                                spi_sdio_o <= spi_shift[22];
+                                if (!spi_read_mode || (spi_bits_left > 6'd9)) begin
+                                    spi_sdio_o <= spi_shift[22];
+                                end
                                 spi_shift <= {spi_shift[22:0], 1'b0};
                                 spi_bits_left <= spi_bits_left - 1'b1;
                             end
@@ -454,6 +567,7 @@ module hmc7044_init #(
                 ST_DONE: begin
                     busy <= 1'b0;
                     done <= 1'b1;
+                    readback_done <= 1'b1;
                     reset_out <= 1'b0;
                     spi_cs_n <= 1'b1;
                     spi_sclk <= 1'b0;

@@ -148,6 +148,16 @@ module top #(
     wire [7:0] hmc_auto_step;
     wire [11:0] hmc_auto_last_addr;
     wire [7:0] hmc_auto_last_data;
+    wire hmc_sdio_in = HMC_CLK_SDIO;
+    wire hmc_readback_done;
+    wire hmc_readback_sdio_stuck;
+    wire [3:0] hmc_readback_index;
+    wire [11:0] hmc_readback_last_addr;
+    wire [7:0] hmc_readback_last_data;
+    wire [31:0] hmc_readback_id_word;
+    wire [31:0] hmc_readback_alarm_word;
+    wire [31:0] hmc_readback_pll1_word;
+    wire [31:0] hmc_readback_pll2_word;
     wire hmc_auto_owns = ~manual_spi_enable;
 
     hmc7044_init #(
@@ -158,6 +168,7 @@ module top #(
     ) u_hmc7044_init (
         .clk         (clk_200),
         .rst         (fabric_rst),
+        .spi_sdio_i  (hmc_sdio_in),
         .busy        (hmc_auto_busy),
         .done        (hmc_auto_done),
         .reset_out   (hmc_auto_reset),
@@ -167,7 +178,16 @@ module top #(
         .spi_sdio_oe (hmc_auto_sdio_oe),
         .step_index  (hmc_auto_step),
         .last_addr   (hmc_auto_last_addr),
-        .last_data   (hmc_auto_last_data)
+        .last_data   (hmc_auto_last_data),
+        .readback_done       (hmc_readback_done),
+        .readback_sdio_stuck (hmc_readback_sdio_stuck),
+        .readback_index      (hmc_readback_index),
+        .readback_last_addr  (hmc_readback_last_addr),
+        .readback_last_data  (hmc_readback_last_data),
+        .readback_id_word    (hmc_readback_id_word),
+        .readback_alarm_word (hmc_readback_alarm_word),
+        .readback_pll1_word  (hmc_readback_pll1_word),
+        .readback_pll2_word  (hmc_readback_pll2_word)
     );
 
     assign HMC_CLK_RESET = hmc_auto_owns ? hmc_auto_reset : rw_reg0[1];
@@ -190,7 +210,6 @@ module top #(
     assign HMC_CLK_SDIO  = hmc_auto_owns ?
                            (hmc_auto_sdio_oe ? hmc_auto_sdio_o : 1'bz) :
                            (rw_reg0[22] ? rw_reg0[21] : 1'bz);
-    wire hmc_sdio_in = HMC_CLK_SDIO;
 
     wire clk_fmc_ibuf;
     IBUFDS #(
@@ -593,6 +612,18 @@ module top #(
         hmc_auto_last_addr,
         hmc_auto_last_data
     };
+    wire hmc_id_rev_e = hmc_readback_id_word[23:0] == 24'h045201;
+    wire hmc_id_legacy = hmc_readback_id_word[23:0] == 24'h301651;
+    wire [31:0] hmc_readback_summary_reg = {
+        4'd0,
+        hmc_readback_done,
+        hmc_readback_sdio_stuck,
+        hmc_id_rev_e,
+        hmc_id_legacy,
+        hmc_readback_index,
+        hmc_readback_last_addr,
+        hmc_readback_last_data
+    };
 
     wire [31:0] raw_pin_reg = {
         12'd0,
@@ -615,28 +646,35 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0002;
+    wire [31:0] build_id = 32'hDA01_0003;
 
     always @* begin
-        case (rw_reg1[2:0])
-            3'd0: selected_count = hmc_auto_status_reg;
-            3'd1: selected_count = hmc_auto_last_write_reg;
-            3'd2: selected_count = raw_pin_reg;
-            3'd3: selected_count = build_id;
-            3'd4: selected_count = gth_status_reg;
-            3'd5: selected_count = gth_rx_status_reg;
-            3'd6: selected_count = litejesd_status_reg;
-            3'd7: selected_count = litejesd_triangle_word;
+        case (rw_reg1[3:0])
+            4'd0:  selected_count = hmc_auto_status_reg;
+            4'd1:  selected_count = hmc_auto_last_write_reg;
+            4'd2:  selected_count = raw_pin_reg;
+            4'd3:  selected_count = build_id;
+            4'd4:  selected_count = gth_status_reg;
+            4'd5:  selected_count = gth_rx_status_reg;
+            4'd6:  selected_count = litejesd_status_reg;
+            4'd7:  selected_count = litejesd_triangle_word;
+            4'd8:  selected_count = hmc_readback_summary_reg;
+            4'd9:  selected_count = hmc_readback_id_word;
+            4'd10: selected_count = hmc_readback_alarm_word;
+            4'd11: selected_count = hmc_readback_pll1_word;
+            4'd12: selected_count = hmc_readback_pll2_word;
             default: selected_count = 32'd0;
         endcase
     end
 
     assign status_reg = {
-        5'd0,
+        2'd0,
+        hmc_readback_sdio_stuck,
+        hmc_readback_done,
         hmc_auto_done,
         hmc_auto_busy,
         hmc_auto_owns,
-        rw_reg1[2:0],
+        rw_reg1[3:0],
         litejesd_ready,
         litejesd_active,
         gth_rx_ready,
@@ -661,7 +699,8 @@ module top #(
     };
 
     wire [31:0] ila_debug_flags = {
-        2'd0,
+        hmc_readback_sdio_stuck,
+        hmc_readback_done,
         hmc_auto_done,
         hmc_auto_busy,
         hmc_auto_reset,
@@ -699,12 +738,12 @@ module top #(
         .probe7  (raw_pin_reg),
         .probe8  (gth_status_reg),
         .probe9  (gth_rx_status_reg),
-        .probe10 (litejesd_status_reg),
-        .probe11 (litejesd_triangle_word),
+        .probe10 (hmc_readback_alarm_word),
+        .probe11 (hmc_readback_pll1_word),
         .probe12 (gth_tx_clk_count),
         .probe13 (gth_rx_clk_count),
-        .probe14 ({24'd0, gth_txctrl2_lane0_debug}),
-        .probe15 (gth_txdata_lane0_debug),
+        .probe14 (hmc_readback_pll2_word),
+        .probe15 (hmc_readback_id_word),
         .probe16 (ila_debug_flags)
     );
 

@@ -72,15 +72,20 @@ WRTE n value
 ```
 
 `RO0` is packed status. `RO1` is the latest one-second `CLK_FMC` sampled-edge
-count. `RO2` is the latest one-second `SYSREF_FMC` sampled-edge count. `RO3` is selected by
-`RW1[2:0]`: `0=HMC7044 auto-init status`, `1=HMC7044 last auto write`, `2=raw pins`, `3=build ID`,
-`4=GTH status`, `5=GTH RX lane status`, `6=LiteJESD status`,
-`7=triangle sample word`.
+count. `RO2` is the latest one-second `SYSREF_FMC` sampled-edge count. `RO3`
+is selected by `RW1[3:0]`: `0=HMC7044 auto-init status`,
+`1=HMC7044 last auto write`, `2=raw pins`, `3=build ID`, `4=GTH status`,
+`5=GTH RX lane status`, `6=LiteJESD status`, `7=triangle sample word`,
+`8=HMC7044 readback summary`, `9=HMC7044 product ID`, `10=HMC7044 alarm
+readbacks`, `11=HMC7044 PLL1 status readbacks`, `12=HMC7044 PLL2/SYSREF
+status readbacks`.
 
-`RO0[26]` is the HMC7044 auto-init done bit, `RO0[25]` is auto-init busy, and
-`RO0[24]` is auto-init ownership of the HMC SPI pins. In the default startup
-state, `RW0[30] = 0`, the bitstream owns the HMC SPI bus, pulses the HMC reset,
-programs the DAQ clock tree, and then releases the GTH reset helper. Set
+`RO0[28]` means HMC SDIO readback looked stuck at all zeroes or all ones,
+`RO0[27]` means HMC readback completed, `RO0[26]` is the HMC7044 auto-init done
+bit, `RO0[25]` is auto-init busy, and `RO0[24]` is auto-init ownership of the
+HMC SPI pins. In the default startup state, `RW0[30] = 0`, the bitstream owns
+the HMC SPI bus, pulses the HMC reset, programs the DAQ clock tree, reads back
+HMC ID/status registers, and then releases the GTH reset helper. Set
 `RW0[30] = 1` only when deliberately taking manual control of the HMC SPI pins.
 
 The FMC fabric clocks are sampled by the 200 MHz fabric clock. The MGT
@@ -219,6 +224,21 @@ WRTE 1 7
 RDRO 3
 ```
 
+For clock-chip bring-up, use these HMC readback selectors:
+
+```text
+WRTE 1 8
+RDRO 3
+WRTE 1 9
+RDRO 3
+WRTE 1 10
+RDRO 3
+WRTE 1 11
+RDRO 3
+WRTE 1 12
+RDRO 3
+```
+
 The build also instantiates hardware debug cores:
 
 | ILA | Clock | Purpose |
@@ -227,8 +247,13 @@ The build also instantiates hardware debug cores:
 | `ila_gth_tx_debug` | `gth_tx_usrclk2` | Optional JESD/TX-side view: lane 0/1 TX words, TX charisk/control, LiteJESD status, triangle word, sync/sysref samples |
 
 Start with `ila_fabric_debug`. If LEDs remain 0/1/2 only, trigger on
-`probe8` (`gth_status_reg`) or `probe16` (`ila_debug_flags`) and check whether
-the GTH QPLL/user-clock bits ever assert. The GTH/JESD status probes are
+`probe0` (`status_reg`) or `probe16` (`ila_debug_flags`) first. For the HMC7044
+clock source, read `probe10` (alarm readbacks), `probe11` (PLL1 readbacks),
+`probe14` (PLL2/SYSREF readbacks), and `probe15` (product ID readback). If
+`probe15[23:0]` is `0x000000` or `0xffffff`, the FPGA is not getting valid SDIO
+readback from the HMC, so the failure is on SPI/reset/power rather than JESD.
+If the ID is valid but `LED3`/`LED4` remain low, the HMC is reachable but its
+reference/PLL/output-enable state is wrong. The GTH/JESD status probes are
 synchronized into `clk_200` before they reach this ILA.
 
 The wide TX-side ILA is intentionally disabled in the default staged build
