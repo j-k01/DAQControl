@@ -87,6 +87,19 @@ HMC SPI pins. In the default startup state, `RW0[30] = 0`, the bitstream owns
 the HMC SPI bus, pulses the HMC reset, programs the DAQ clock tree, reads back
 HMC ID/status registers, and then releases the GTH reset helper. Set
 `RW0[30] = 1` only when deliberately taking manual control of the HMC SPI pins.
+Pulse `RW3[0]` to rerun the HMC7044 auto-init/readback sequence after UART and
+ILA are up:
+
+```text
+WRTE 1 0
+WRTE 3 0
+WRTE 3 1
+WRTE 3 0
+```
+
+With selector `RW1[3:0] = 0`, `RO3`/`ila_fabric_debug.probe4` shows
+`{restart_pulse, manual_spi_enable, done, busy, reset, cs_n, sclk, sdio_oe,
+sdio_o, step[7:0]}` in its low status field.
 
 The FMC fabric clocks are sampled by the 200 MHz fabric clock. The MGT
 reference-clock `ODIV2` pins are intentionally not routed into fabric; on
@@ -248,8 +261,9 @@ The build also instantiates hardware debug cores:
 | `ila_fabric_debug` | `clk_200` | Always-on bring-up view: RW/RO registers, raw pins, fabric clock counters, GTH status, LiteJESD status, UART RX/TX activity, LED-equivalent flags |
 | `ila_gth_tx_debug` | `gth_tx_usrclk2` | Optional JESD/TX-side view: lane 0/1 TX words, TX charisk/control, LiteJESD status, triangle word, sync/sysref samples |
 
-Start with `ila_fabric_debug`. If LEDs remain 0/1/2 only, trigger on
-`probe0` (`status_reg`) or `probe16` (`ila_debug_flags`) first. For the HMC7044
+Start with `ila_fabric_debug`. If LEDs remain 0/1/2 only, set `RW1=0`, trigger
+on `probe4[13]` rising (`hmc_auto_busy`) or `probe4[10]` toggling
+(`hmc_auto_sclk`), then pulse `RW3[0]` to rerun the HMC7044 sequence. For the HMC7044
 clock source, read `probe10` (alarm readbacks), `probe11` (PLL1 readbacks),
 `probe14` (PLL2/SYSREF readbacks), and `probe15` (product ID readback). If
 selector `13` does not read back `0x000000AD`, the basic HMC7044 scratchpad

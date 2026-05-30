@@ -219,6 +219,15 @@ module top #(
     wire [31:0] hmc_readback_pll1_word;
     wire [31:0] hmc_readback_pll2_word;
     wire hmc_auto_owns = ~manual_spi_enable;
+    reg  hmc_restart_req_d = 1'b0;
+    always @(posedge clk_200) begin
+        if (fabric_rst) begin
+            hmc_restart_req_d <= 1'b0;
+        end else begin
+            hmc_restart_req_d <= rw_reg3[0];
+        end
+    end
+    wire hmc_restart_pulse = ~fabric_rst & rw_reg3[0] & ~hmc_restart_req_d;
 
     hmc7044_init #(
         .CLK_HZ           (200_000_000),
@@ -228,6 +237,7 @@ module top #(
     ) u_hmc7044_init (
         .clk         (clk_200),
         .rst         (fabric_rst),
+        .restart     (hmc_restart_pulse),
         .spi_sdio_i  (hmc_sdio_in),
         .busy        (hmc_auto_busy),
         .done        (hmc_auto_done),
@@ -657,7 +667,8 @@ module top #(
     wire dac_alarm_level = dac_alarm_pipe[2];
 
     wire [31:0] hmc_auto_status_reg = {
-        16'd0,
+        15'd0,
+        hmc_restart_pulse,
         manual_spi_enable,
         hmc_auto_done,
         hmc_auto_busy,

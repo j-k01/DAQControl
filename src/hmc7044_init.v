@@ -16,6 +16,7 @@ module hmc7044_init #(
 ) (
     input  wire        clk,
     input  wire        rst,
+    input  wire        restart,
     input  wire        spi_sdio_i,
     output reg         busy,
     output reg         done,
@@ -388,7 +389,7 @@ module hmc7044_init #(
     endfunction
 
     always @(posedge clk) begin
-        if (rst) begin
+        if (rst || restart) begin
             state <= ST_IDLE;
             busy <= 1'b0;
             done <= 1'b0;
