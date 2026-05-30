@@ -228,6 +228,24 @@
                 "VT": "AC",
                 "BA": "0x44A00000",
                 "HA": "0x44A0FFFF",
+                "BP": "C_S00_AXI_BASEADDR",
+                "HP": "C_S00_AXI_HIGHADDR",
+                "MA": "Data",
+                "MX": "/microblaze_0",
+                "MI": "M_AXI_DP",
+                "MS": "SEG_AXI4_register_file_0_S00_AXI_reg",
+                "MV": "xilinx.com:ip:microblaze:11.0",
+                "SX": "/AXI4_register_file_0",
+                "SI": "S00_AXI",
+                "SS": "S00_AXI_reg",
+                "SV": "xilinx.com:user:AXI4_register_file:1.0",
+                "TM": "data",
+                "TU": "register"
+            },
+            "V6": {
+                "VT": "AC",
+                "BA": "0x44A10000",
+                "HA": "0x44A1FFFF",
                 "BP": "C_BASEADDR",
                 "HP": "C_HIGHADDR",
                 "MA": "Data",
@@ -264,6 +282,11 @@
             },
             {
                 "src": "V5",
+                "trg": "V2",
+                "EH": "2"
+            },
+            {
+                "src": "V6",
                 "trg": "V2",
                 "EH": "2"
             }
