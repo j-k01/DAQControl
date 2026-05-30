@@ -2,6 +2,7 @@
 .Xil/
 project/
 hw/
+bd/
 xsim.dir/
 sim/work/
 *.jou
