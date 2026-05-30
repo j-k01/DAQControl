@@ -52,13 +52,20 @@ set target_id [select_microblaze_target]
 puts "Selected MicroBlaze target: $target_id"
 
 puts "Stopping processor..."
-catch {stop}
-catch {rst -processor}
+if {[catch {stop} stop_result]} {
+    puts "WARNING: stop failed: $stop_result"
+}
+
+puts "Resetting processor..."
+rst -processor
 
 puts "Downloading ELF: $elf_file"
 dow $elf_file
 
 puts "Starting processor..."
 con
+
+puts "Targets after start:"
+catch {targets}
 
 puts "MicroBlaze firmware loaded and running."

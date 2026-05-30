@@ -62,6 +62,7 @@ module top #(
     );
 
     wire fabric_rst = CPU_RESET | ~mmcm_locked;
+    wire microblaze_reset = 1'b0;
 
     wire [31:0] rw_reg0;
     wire [31:0] rw_reg1;
@@ -86,7 +87,7 @@ module top #(
 
     microblaze_bd_wrapper u_microblaze (
         .Clk                  (clk_200),
-        .reset                (CPU_RESET),
+        .reset                (microblaze_reset),
         .rs232_uart_txd       (UART_TXD),
         .rs232_uart_rxd       (UART_RXD),
         .RW_REG0_0            (rw_reg0),
@@ -786,6 +787,7 @@ module top #(
         clk_fmc_seen,
         fabric_rst,
         CPU_RESET,
+        microblaze_reset,
         mmcm_locked
     };
 

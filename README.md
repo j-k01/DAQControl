@@ -360,6 +360,11 @@ stage `2` means `main()` reached the launch-default register writes, stages
 `3`-`6` mean UART setup is progressing, and stage `8` means the ready banner was
 fully sent. If `probe1`/`RW0` remains `0` and `probe2`/`RW1` has no
 `0xC0DE...` marker after `load_mb_firmware.tcl`, the ELF did not actually run.
+For this launch design the MicroBlaze reset input is tied deasserted in the PL
+wrapper so the external ZCU102 CPU_RESET pushbutton cannot hold the debug CPU in
+reset during JTAG firmware loading. This reset-path change is in the bitstream,
+so rebuild/reprogram the FPGA before expecting the firmware loader behavior to
+change.
 
 For ILA debug, the bitstream and probes file must come from the same
 implementation run. `build.tcl` copies the matching probes file to
