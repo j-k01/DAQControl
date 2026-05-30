@@ -354,6 +354,13 @@ Programming only `top.bit` from Vivado Hardware Manager does not start the UART
 firmware unless the ELF has been baked into BRAM. Use `load_mb_firmware.tcl`
 afterward, or use `program_and_load.tcl`.
 
+The firmware writes progress markers into `RW1` before it tries to print. In
+`ila_fabric_debug`, `probe2` should show `0xC0DE00n0` after the ELF starts:
+stage `2` means `main()` reached the launch-default register writes, stages
+`3`-`6` mean UART setup is progressing, and stage `8` means the ready banner was
+fully sent. If `probe1`/`RW0` remains `0` and `probe2`/`RW1` has no
+`0xC0DE...` marker after `load_mb_firmware.tcl`, the ELF did not actually run.
+
 For ILA debug, the bitstream and probes file must come from the same
 implementation run. `build.tcl` copies the matching probes file to
 `hw/DAQ_LAUNCH.ltx`, and `program.tcl` attaches it automatically when

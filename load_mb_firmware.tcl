@@ -24,22 +24,24 @@ if {![file exists $elf_file]} {
 }
 
 proc select_microblaze_target {} {
+    puts "Available JTAG targets:"
+    catch {targets}
+
     set filters [list \
-        {name =~ "*MicroBlaze*"} \
         {name =~ "*microblaze*"} \
         {name =~ "*microblaze_0*"} \
+        {name =~ "MicroBlaze #*"} \
+        {name =~ "*MicroBlaze #*"} \
+        {name =~ "*MicroBlaze*"} \
     ]
 
     foreach filter $filters {
-        if {![catch {set matches [targets -filter $filter]} result] && [llength $matches] > 0} {
-            set target_id [lindex $matches 0]
-            targets $target_id
-            return $target_id
+        if {![catch {targets -set -filter $filter} result]} {
+            puts "Selected MicroBlaze target with filter: $filter"
+            return $filter
         }
     }
 
-    puts "Available JTAG targets:"
-    catch {targets}
     error "No MicroBlaze target found. Program the FPGA bitstream first, then rerun this script."
 }
 

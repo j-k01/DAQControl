@@ -41,6 +41,11 @@ static XUartNs550 uart;
 static char cmd[96];
 static int cmd_idx = 0;
 
+static void firmware_marker(u32 stage)
+{
+    Xil_Out32(RW_REG1, 0xC0DE0000u | ((stage & 0xFFu) << 4));
+}
+
 static void send_byte(u8 c)
 {
     while ((XUartNs550_GetLineStatusReg(uart.BaseAddress) & XUN_LSR_TX_BUFFER_EMPTY) == 0)
@@ -173,7 +178,6 @@ static void launch_defaults(void)
     u32 ctrl = CTRL_DAC_CS_N | CTRL_HMC_CS_N;
 
     Xil_Out32(RW_REG0, ctrl);
-    Xil_Out32(RW_REG1, 0);
     Xil_Out32(RW_REG2, 0);
     Xil_Out32(RW_REG3, 0);
 }
@@ -203,21 +207,29 @@ static void process_cmd(void)
 
 int main(void)
 {
+    firmware_marker(1);
+    launch_defaults();
+    firmware_marker(2);
+
     XUartNs550_Initialize(&uart, XPAR_AXI_UART16550_0_DEVICE_ID);
+    firmware_marker(3);
     XUartNs550_SetLineControlReg(&uart, XUN_LCR_8_DATA_BITS);
+    firmware_marker(4);
 
     u32 base = uart.BaseAddress;
     u32 divisor = uart_divisor();
     Xil_Out32(base + 0x0C, Xil_In32(base + 0x0C) | 0x80);
+    firmware_marker(5);
     Xil_Out32(base + 0x00, divisor & 0xFF);
     Xil_Out32(base + 0x04, (divisor >> 8) & 0xFF);
     Xil_Out32(base + 0x0C, Xil_In32(base + 0x0C) & ~0x80);
-
-    launch_defaults();
+    firmware_marker(6);
 
     send_str("DAQ_LAUNCH MicroBlaze ready\r\n");
+    firmware_marker(7);
     print_uart_config();
     send_str("Type HELP or STAT\r\n");
+    firmware_marker(8);
 
     u8 c;
     while (1) {
