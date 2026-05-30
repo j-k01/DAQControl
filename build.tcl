@@ -56,6 +56,47 @@ proc validate_clock_contract {} {
     }
 }
 
+proc validate_source_contract {script_dir} {
+    set expected_top [file normalize [file join $script_dir src top.v]]
+    set project_top_files [get_files -quiet top.v]
+
+    if {[llength $project_top_files] == 0} {
+        error "Source contract failure: top.v is not in the project. Re-run create_project.tcl."
+    }
+
+    set project_top [file normalize [lindex $project_top_files 0]]
+    if {$project_top ne $expected_top} {
+        error "Source contract failure: project top.v is '$project_top', but repo top.v is '$expected_top'. Re-run create_project.tcl so Vivado does not build a stale imported source copy."
+    }
+}
+
+proc copy_debug_probes {script_dir project_name} {
+    set impl_dir [file join $script_dir project ${project_name}.runs impl_1]
+    set hw_dir [file join $script_dir hw]
+    file mkdir $hw_dir
+
+    set fabric_ila_cells [get_cells -hier -quiet *u_ila_fabric_debug*]
+    if {[llength $fabric_ila_cells] == 0} {
+        error "Debug contract failure: implemented design does not contain u_ila_fabric_debug. Re-run create_project.tcl and build the regenerated project."
+    }
+
+    set gth_tx_ila_cells [get_cells -hier -quiet *u_ila_gth_tx_debug*]
+    if {[llength $gth_tx_ila_cells] == 0} {
+        puts "WARNING: implemented design does not contain u_ila_gth_tx_debug. This is expected only for non-LiteJESD builds."
+    }
+
+    set ltx_files [glob -nocomplain -directory $impl_dir *.ltx]
+    if {[llength $ltx_files] == 0} {
+        puts "WARNING: no debug probes .ltx file found in $impl_dir."
+        return
+    }
+
+    set ltx_file [lindex $ltx_files 0]
+    set stable_ltx [file join $hw_dir ${project_name}.ltx]
+    file copy -force $ltx_file $stable_ltx
+    puts "Debug probes: $stable_ltx"
+}
+
 set actual_vivado [version -short]
 if {![vivado_version_at_least $actual_vivado $required_vivado]} {
     error "This build flow targets Vivado $required_vivado or newer. Detected Vivado $actual_vivado."
@@ -85,6 +126,7 @@ for {set i 0} {$i < [llength $::argv]} {incr i} {
 }
 
 validate_ips_unlocked
+validate_source_contract $script_dir
 validate_clock_contract
 
 if {$bake_elf} {
@@ -111,6 +153,7 @@ wait_on_run impl_1
 
 file mkdir $script_dir/hw
 open_run impl_1
+copy_debug_probes $script_dir $project_name
 write_hw_platform -fixed -include_bit -force $script_dir/hw/${project_name}.xsa
 
 puts "Bitstream: $script_dir/project/${project_name}.runs/impl_1/top.bit"

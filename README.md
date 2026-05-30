@@ -171,6 +171,18 @@ vivado.bat -mode batch -source create_project.tcl
 vivado.bat -mode batch -source build.tcl
 ```
 
+Or use the single-shot rebuild wrapper, which always regenerates the project
+before synthesis/implementation:
+
+```powershell
+vivado.bat -mode batch -source rebuild.tcl -tclargs --with-staged-gt --jobs 8
+```
+
+Always rerun `create_project.tcl` after pulling HDL/Tcl changes. The old flow
+used imported source copies under `project/DAQ_LAUNCH.srcs/`, so running only
+`build.tcl` after a pull can rebuild stale HDL. `build.tcl` now checks for this
+and stops with a source-contract error.
+
 `create_project.tcl` creates the local `clk_wiz_0` instance and regenerates the
 MicroBlaze block design from Tcl using the installed Vivado IP catalog. The
 flow does not import the checked-in 2023.1 MicroBlaze BD products, because
@@ -275,6 +287,14 @@ xsct.bat program_and_load.tcl path/to/top.bit path/to/firmware.elf
 Programming only `top.bit` from Vivado Hardware Manager does not start the UART
 firmware unless the ELF has been baked into BRAM. Use `load_mb_firmware.tcl`
 afterward, or use `program_and_load.tcl`.
+
+For ILA debug, the bitstream and probes file must come from the same
+implementation run. `build.tcl` copies the matching probes file to
+`hw/DAQ_LAUNCH.ltx`, and `program.tcl` attaches it automatically when
+programming through Vivado Hardware Manager. If Hardware Manager reports that
+it is dropping `u_ila_fabric_debug` or `u_ila_gth_tx_debug` from the probes
+file, the board was programmed with a bitstream that does not contain those
+cores, or a stale/mismatched `.ltx` was loaded.
 
 Re-run implementation with the firmware baked into the bitstream:
 

@@ -285,7 +285,7 @@ update_ip_catalog
 
 foreach ext {*.v *.sv *.vhd} {
     foreach f [glob -nocomplain -directory $script_dir/src $ext] {
-        import_files -fileset sources_1 $f
+        add_files -fileset sources_1 -norecurse $f
     }
 }
 
@@ -296,10 +296,10 @@ if {$include_litejesd} {
         error "LiteJESD import requested, but no generated RTL was found under $litejesd_dir."
     }
     foreach f $litejesd_rtl {
-        import_files -fileset sources_1 $f
+        add_files -fileset sources_1 -norecurse $f
     }
     foreach f [glob -nocomplain -directory $litejesd_dir *.init] {
-        import_files -fileset sources_1 $f
+        add_files -fileset sources_1 -norecurse $f
         set imported [get_files -quiet [file tail $f]]
         if {[llength $imported] > 0} {
             set_property file_type {Memory Initialization Files} $imported
@@ -308,7 +308,7 @@ if {$include_litejesd} {
 }
 
 foreach f [glob -nocomplain -directory $script_dir/constraints *.xdc] {
-    import_files -fileset constrs_1 $f
+    add_files -fileset constrs_1 -norecurse $f
 }
 
 set ip_dir $project_dir/${project_name}.srcs/sources_1/ip

@@ -2,6 +2,7 @@ set script_dir [file dirname [file normalize [info script]]]
 
 set bit_file [file join $script_dir project DAQ_LAUNCH.runs impl_1 top.bit]
 set elf_file [file join $script_dir sw workspace firmware Debug firmware.elf]
+set probes_file [file join $script_dir hw DAQ_LAUNCH.ltx]
 
 if {[llength $argv] > 0} {
     set bit_file [file normalize [lindex $argv 0]]
@@ -48,6 +49,12 @@ if {[catch {targets -set -filter {name =~ "*xczu9eg*"}}]} {
 
 puts "Programming bitstream: $bit_file"
 fpga -file $bit_file
+if {[file exists $probes_file]} {
+    puts "Matching debug probes file for Hardware Manager: $probes_file"
+} else {
+    puts "WARNING: matching debug probes file not found: $probes_file"
+    puts "WARNING: rerun Vivado build.tcl after create_project.tcl to generate the .ltx."
+}
 
 after 1000
 
