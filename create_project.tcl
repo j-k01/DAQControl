@@ -237,6 +237,9 @@ if {$include_staged_gt} {
     puts "Build variant: simple bring-up without staged GTH XCI import."
 }
 if {$include_litejesd} {
+    if {!$include_staged_gt} {
+        error "--with-litejesd requires --with-staged-gt so the JESD TX block has a GTH PHY to drive."
+    }
     puts "LiteJESD204B generated RTL import enabled."
 }
 
@@ -246,8 +249,15 @@ create_project $project_name $project_dir -part $part -force
 set_first_available_board_part $board_candidates
 set_property target_language Verilog [current_project]
 set_property XPM_LIBRARIES {XPM_CDC} [current_project]
+set verilog_defines {}
 if {$include_staged_gt} {
-    set_property verilog_define {DAQ_WITH_GTH=1} [current_fileset]
+    lappend verilog_defines DAQ_WITH_GTH=1
+}
+if {$include_litejesd} {
+    lappend verilog_defines DAQ_WITH_LITEJESD=1
+}
+if {[llength $verilog_defines] > 0} {
+    set_property verilog_define $verilog_defines [current_fileset]
 }
 set_property ip_repo_paths [list $script_dir/ip_repo] [current_project]
 update_ip_catalog

@@ -78,7 +78,7 @@ module top #(
     wire [31:0] sysref_count;
     reg  [31:0] selected_count;
 
-    // ZCU102 HPC1 routes FMC power/presence through fixed board logic and
+    // ZCU102 HPC0 routes FMC power/presence through fixed board logic and
     // I2C/system-controller paths, not simple PL GPIO pins as on VC709.
     wire fmc_present = 1'b1;
     wire fmc_pg_m2c = 1'b1;
@@ -107,11 +107,27 @@ module top #(
         .RO_REG3_RDINT_0      (ro_reg3_rdint)
     );
 
+    wire [31:0] gth_status_reg;
+    wire [31:0] gth_rx_status_reg;
+    wire        gth_qpll_locked;
+    wire        gth_tx_ready;
+    wire        gth_rx_ready;
+    wire        gth_unused_reduce;
+    wire        litejesd_active;
+    wire        litejesd_ready;
+    wire [31:0] litejesd_status_reg;
+    wire [31:0] litejesd_triangle_word;
+
     wire manual_spi_enable = rw_reg0[30];
 
     assign HMC_CLK_RESET = rw_reg0[1];
+`ifdef DAQ_WITH_LITEJESD
+    assign DAC_RESET_N   = ~fabric_rst;
+    assign DAC_TXEN      = gth_tx_ready;
+`else
     assign DAC_RESET_N   = rw_reg0[2];
     assign DAC_TXEN      = rw_reg0[3];
+`endif
     assign ADC1_RESET    = rw_reg0[4];
     assign ADC2_RESET    = rw_reg0[5];
 
@@ -196,13 +212,6 @@ module top #(
         .seen       (sysref_seen)
     );
 
-    wire [31:0] gth_status_reg;
-    wire [31:0] gth_rx_status_reg;
-    wire        gth_qpll_locked;
-    wire        gth_tx_ready;
-    wire        gth_rx_ready;
-    wire        gth_unused_reduce;
-
 `ifdef DAQ_WITH_GTH
     wire        gth_reset_all = fabric_rst | rw_reg2[0];
     wire        gth_tx_userclk_active;
@@ -229,11 +238,72 @@ module top #(
     wire [127:0] gth_rxctrl1;
     wire [63:0]  gth_rxctrl2;
     wire [63:0]  gth_rxctrl3;
+    wire [255:0] gth_userdata_tx;
+    wire [63:0]  gth_txctrl2;
 
-    wire [63:0] gth_txctrl2_comma = {
+`ifdef DAQ_WITH_LITEJESD
+    wire [255:0] litejesd_txdata;
+    wire [31:0]  litejesd_txcharisk;
+    wire         litejesd_reset = gth_reset_all | ~gth_reset_tx_done |
+                                  ~gth_tx_userclk_active;
+    wire [7:0]   litejesd_phy_tx_rst = {8{litejesd_reset}};
+
+    (* ASYNC_REG = "TRUE" *) reg [2:0] litejesd_sync_pipe = 3'b111;
+    (* ASYNC_REG = "TRUE" *) reg [2:0] litejesd_sysref_pipe = 3'b000;
+
+    always @(posedge gth_tx_usrclk2) begin
+        if (litejesd_reset) begin
+            litejesd_sync_pipe <= 3'b111;
+            litejesd_sysref_pipe <= 3'b000;
+        end else begin
+            litejesd_sync_pipe <= {litejesd_sync_pipe[1:0], dac_sync_raw};
+            litejesd_sysref_pipe <= {litejesd_sysref_pipe[1:0], sysref_ibuf};
+        end
+    end
+
+    assign litejesd_active = ~litejesd_reset;
+
+    daq_litejesd_dac_tx_path u_litejesd_dac_tx_path (
+        .jesd_clk         (gth_tx_usrclk2),
+        .jesd_rst         (litejesd_reset),
+        .phy_tx_clk       (gth_tx_usrclk2),
+        .phy_tx_rst       (litejesd_phy_tx_rst),
+        .enable           (litejesd_active),
+        .stpl_enable      (1'b0),
+        .sysref           (litejesd_sysref_pipe[2]),
+        .sync_n           (litejesd_sync_pipe[2]),
+        .active_converter (3'd0),
+        .triangle_step    (16'd256),
+        .litejesd_ready   (litejesd_ready),
+        .status           (litejesd_status_reg),
+        .triangle_word    (litejesd_triangle_word),
+        .gth_txdata       (litejesd_txdata),
+        .gth_txcharisk    (litejesd_txcharisk)
+    );
+
+    assign gth_userdata_tx = litejesd_txdata;
+    assign gth_txctrl2 = {
+        4'd0, litejesd_txcharisk[31:28],
+        4'd0, litejesd_txcharisk[27:24],
+        4'd0, litejesd_txcharisk[23:20],
+        4'd0, litejesd_txcharisk[19:16],
+        4'd0, litejesd_txcharisk[15:12],
+        4'd0, litejesd_txcharisk[11:8],
+        4'd0, litejesd_txcharisk[7:4],
+        4'd0, litejesd_txcharisk[3:0]
+    };
+`else
+    assign litejesd_active = 1'b0;
+    assign litejesd_ready = 1'b0;
+    assign litejesd_status_reg = 32'd0;
+    assign litejesd_triangle_word = 32'd0;
+
+    assign gth_userdata_tx = {8{32'hbcbc_bcbc}};
+    assign gth_txctrl2 = {
         8'h0f, 8'h0f, 8'h0f, 8'h0f,
         8'h0f, 8'h0f, 8'h0f, 8'h0f
     };
+`endif
 
     gtwizard_ultrascale_0 u_gth (
         .gtwiz_userclk_tx_reset_in              (gth_reset_all),
@@ -255,7 +325,7 @@ module top #(
         .gtwiz_reset_rx_cdr_stable_out          (gth_reset_rx_cdr_stable),
         .gtwiz_reset_tx_done_out                (gth_reset_tx_done),
         .gtwiz_reset_rx_done_out                (gth_reset_rx_done),
-        .gtwiz_userdata_tx_in                   ({8{32'hbcbc_bcbc}}),
+        .gtwiz_userdata_tx_in                   (gth_userdata_tx),
         .gtwiz_userdata_rx_out                  (gth_userdata_rx),
         .gtrefclk00_in                          ({gbt1_refclk, gbt0_refclk}),
         .qpll0lock_out                          (gth_qpll0lock),
@@ -271,7 +341,7 @@ module top #(
         .tx8b10ben_in                           (8'hff),
         .txctrl0_in                             (128'd0),
         .txctrl1_in                             (128'd0),
-        .txctrl2_in                             (gth_txctrl2_comma),
+        .txctrl2_in                             (gth_txctrl2),
         .txpolarity_in                          (rw_reg2[15:8]),
         .gthtxn_out                             (DAQ_GTH_TX_N),
         .gthtxp_out                             (DAQ_GTH_TX_P),
@@ -358,6 +428,10 @@ module top #(
     assign gth_tx_ready = 1'b0;
     assign gth_rx_ready = 1'b0;
     assign gth_unused_reduce = 1'b0;
+    assign litejesd_active = 1'b0;
+    assign litejesd_ready = 1'b0;
+    assign litejesd_status_reg = 32'd0;
+    assign litejesd_triangle_word = 32'd0;
 `endif
 
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_sync_pipe = 3'b000;
@@ -401,13 +475,17 @@ module top #(
             3'd3: selected_count = build_id;
             3'd4: selected_count = gth_status_reg;
             3'd5: selected_count = gth_rx_status_reg;
+            3'd6: selected_count = litejesd_status_reg;
+            3'd7: selected_count = litejesd_triangle_word;
             default: selected_count = 32'd0;
         endcase
     end
 
     assign status_reg = {
-        10'd0,
+        8'd0,
         rw_reg1[2:0],
+        litejesd_ready,
+        litejesd_active,
         gth_rx_ready,
         gth_tx_ready,
         gth_qpll_locked,
@@ -448,7 +526,11 @@ module top #(
 `ifdef DAQ_WITH_GTH
     assign GPIO_LED[5] = gth_qpll_locked;
     assign GPIO_LED[6] = gth_tx_ready;
+`ifdef DAQ_WITH_LITEJESD
+    assign GPIO_LED[7] = litejesd_ready;
+`else
     assign GPIO_LED[7] = gth_rx_ready;
+`endif
 `else
     assign GPIO_LED[5] = gbt0_seen | gbt1_seen;
     assign GPIO_LED[6] = ~dac_alarm_level;

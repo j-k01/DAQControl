@@ -6,7 +6,7 @@ on the ZCU102 FMC HPC0 connector J5.
 This branch ports the original VC709 launch design to the Zynq UltraScale+
 XCZU9EG target. The user request said "ZCU101 Rev 1.1"; no AMD/Xilinx ZCU101
 user guide was found, so this port uses the official ZCU102 UG1182 Rev 1.7
-HPC1 mapping, whose revision history includes Rev 1.1 board updates.
+HPC0/J5 mapping, whose revision history includes Rev 1.1 board updates.
 
 The default launch top intentionally does not instantiate JESD204 or GTH data
 channels. It proves the board-health layer first:
@@ -27,6 +27,11 @@ continuous K28.5 comma characters on all TX lanes, and reports
 QPLL/user-clock/reset/RX-align status through LEDs and UART registers. It still
 does not drive DAC samples.
 
+The optional `--with-staged-gt --with-litejesd` project flow replaces the
+GTH comma generator with the generated LiteJESD204B DAC TX block. That build
+starts automatically after the GTH TX reset completes, sends a continuous
+triangle wave on converter 0, and holds converters 1 through 7 at midscale.
+
 ## ZCU102 FMC Power Note
 
 Unlike the VC709 port, ZCU102 HPC0 does not expose FMC power/presence as simple
@@ -41,16 +46,16 @@ Power monitoring can be added later through the ZCU102 I2C/PMBus path.
 
 ## LED Map
 
-| LED | Default Build | `--with-staged-gt` Build |
-| --- | --- | --- |
-| 0 | ZCU102 PL fabric heartbeat | ZCU102 PL fabric heartbeat |
-| 1 | FMC present status placeholder, forced high | FMC present status placeholder, forced high |
-| 2 | FMC power-good status placeholder, forced high | FMC power-good status placeholder, forced high |
-| 3 | `CLK_FMC` activity seen | `CLK_FMC` activity seen |
-| 4 | `SYSREF_FMC` activity seen | `SYSREF_FMC` activity seen |
-| 5 | Reserved, forced low | GTH QPLL lock |
-| 6 | DAC alarm not asserted | GTH TX ready |
-| 7 | DAC alarm asserted | GTH RX ready |
+| LED | Default Build | `--with-staged-gt` Build | `--with-staged-gt --with-litejesd` Build |
+| --- | --- | --- | --- |
+| 0 | ZCU102 PL fabric heartbeat | ZCU102 PL fabric heartbeat | ZCU102 PL fabric heartbeat |
+| 1 | FMC present status placeholder, forced high | FMC present status placeholder, forced high | FMC present status placeholder, forced high |
+| 2 | FMC power-good status placeholder, forced high | FMC power-good status placeholder, forced high | FMC power-good status placeholder, forced high |
+| 3 | `CLK_FMC` activity seen | `CLK_FMC` activity seen | `CLK_FMC` activity seen |
+| 4 | `SYSREF_FMC` activity seen | `SYSREF_FMC` activity seen | `SYSREF_FMC` activity seen |
+| 5 | Reserved, forced low | GTH QPLL lock | GTH QPLL lock |
+| 6 | DAC alarm not asserted | GTH TX ready | GTH TX ready |
+| 7 | DAC alarm asserted | GTH RX ready | LiteJESD ready |
 
 ## UART Commands
 
@@ -67,7 +72,8 @@ WRTE n value
 `RO0` is packed status. `RO1` is the latest one-second `CLK_FMC` sampled-edge
 count. `RO2` is the latest one-second `SYSREF_FMC` sampled-edge count. `RO3` is selected by
 `RW1[2:0]`: `0=reserved`, `1=reserved`, `2=raw pins`, `3=build ID`,
-`4=GTH status`, `5=GTH RX lane status`.
+`4=GTH status`, `5=GTH RX lane status`, `6=LiteJESD status`,
+`7=triangle sample word`.
 
 The FMC fabric clocks are sampled by the 200 MHz fabric clock. The MGT
 reference-clock `ODIV2` pins are intentionally not routed into fabric; on
@@ -78,7 +84,7 @@ selected sites. Use GTH QPLL lock to confirm the MGT refclocks.
 
 | Bit | Function |
 | --- | --- |
-| 0 | Unused on ZCU102 HPC1 |
+| 0 | Unused on ZCU102 HPC0 |
 | 1 | HMC7044 reset |
 | 2 | DAC reset_n |
 | 3 | DAC TX enable |
@@ -92,7 +98,7 @@ selected sites. Use GTH QPLL lock to confirm the MGT refclocks.
 | 21 | HMC SDIO output value |
 | 22 | HMC SDIO output-enable |
 | 30 | Manual SPI enable |
-| 31 | Unused on ZCU102 HPC1 |
+| 31 | Unused on ZCU102 HPC0 |
 
 ## RW2 GTH Control Bits
 
@@ -122,6 +128,15 @@ Expected result:
 ```text
 TEST PASSED
 ```
+
+Run the LiteJESD/GTH top-level compile check:
+
+```tcl
+vivado -mode batch -source scripts/run_litejesd_compile.tcl
+```
+
+This uses behavioral stubs for the GTH Wizard and checks the optional
+`DAQ_WITH_GTH` plus `DAQ_WITH_LITEJESD` wiring. It does not run implementation.
 
 ## Bitstream Build
 
@@ -167,18 +182,17 @@ Use `WRTE 2 1` to hold the GTH reset helper in reset, then `WRTE 2 0` to
 release it. If the lanes need polarity inversion later, write the TX invert mask
 to `RW2[15:8]` and the RX invert mask to `RW2[23:16]`.
 
-The generated LiteJESD204B DAC TX RTL is also staged outside the default
-bring-up build. Import it explicitly when working on the JESD path:
-
-```powershell
-vivado.bat -mode batch -source create_project.tcl -tclargs --with-litejesd
-```
-
-For the combined GTH plus LiteJESD project:
+The generated LiteJESD204B DAC TX RTL is staged outside the default bring-up
+build. Import it with the GTH Wizard to send the startup triangle-wave test:
 
 ```powershell
 vivado.bat -mode batch -source create_project.tcl -tclargs --with-staged-gt --with-litejesd
 ```
+
+`--with-litejesd` requires `--with-staged-gt`, because the generated JESD
+block drives the GTH Wizard TX datapath directly. In that build, `DAC_RESET_N`
+is released after fabric reset and `DAC_TXEN` follows GTH TX ready. No UART
+write is required to start the FPGA-side waveform.
 
 `src/jesd/litejesd_dac_tx.v` is checked in, so Vivado does not need LiteX or
 Migen. The generator source and provenance are under `third_party/litejesd204b`,
