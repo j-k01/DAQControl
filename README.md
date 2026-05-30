@@ -12,7 +12,9 @@ The default launch top intentionally does not instantiate JESD204 or GTH data
 channels. It proves the board-health layer first:
 
 - ZCU102 PL fabric heartbeat from USER_SI570.
-- DAQ `CLK_FMC`, `SYSREF_FMC`, `GBTCLK0`, and `GBTCLK1` activity monitors.
+- DAQ `CLK_FMC` and `SYSREF_FMC` activity monitors.
+- DAQ `GBTCLK0` and `GBTCLK1` feed the GTH Wizard directly; in the GTH build,
+  QPLL lock is the MGT reference-clock health indication.
 - HMC7044 reset and manual SPI pins.
 - DAC39J84 reset, TX enable, alarm, sync, and manual SPI pins.
 - MicroBlaze/UART register access using the same style as the NAPSAC reference design.
@@ -46,7 +48,7 @@ Power monitoring can be added later through the ZCU102 I2C/PMBus path.
 | 2 | FMC power-good status placeholder, forced high | FMC power-good status placeholder, forced high |
 | 3 | `CLK_FMC` activity seen | `CLK_FMC` activity seen |
 | 4 | `SYSREF_FMC` activity seen | `SYSREF_FMC` activity seen |
-| 5 | `GBTCLK0` or `GBTCLK1` activity seen via `IBUFDS_GTE4` `ODIV2` | GTH QPLL lock |
+| 5 | Reserved, forced low | GTH QPLL lock |
 | 6 | DAC alarm not asserted | GTH TX ready |
 | 7 | DAC alarm asserted | GTH RX ready |
 
@@ -64,14 +66,13 @@ WRTE n value
 
 `RO0` is packed status. `RO1` is the latest one-second `CLK_FMC` sampled-edge
 count. `RO2` is the latest one-second `SYSREF_FMC` sampled-edge count. `RO3` is selected by
-`RW1[2:0]`: `0=GBTCLK0`, `1=GBTCLK1`, `2=raw pins`, `3=build ID`,
+`RW1[2:0]`: `0=reserved`, `1=reserved`, `2=raw pins`, `3=build ID`,
 `4=GTH status`, `5=GTH RX lane status`.
 
-The FMC fabric clocks and MGT `ODIV2` monitor outputs are sampled by the
-200 MHz fabric clock. They are intentionally not routed through BUFG/BUFG_GT
-resources, because several FMC pins are not legal clock-buffer sources on the
-ZCU102. These counts are bring-up activity indicators, not precision frequency
-meters.
+The FMC fabric clocks are sampled by the 200 MHz fabric clock. The MGT
+reference-clock `ODIV2` pins are intentionally not routed into fabric; on
+UltraScale+ GTH resources they do not provide a general fabric route from the
+selected sites. Use GTH QPLL lock to confirm the MGT refclocks.
 
 ## RW0 Control Bits
 

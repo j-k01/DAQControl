@@ -62,9 +62,9 @@ set_property PACKAGE_PIN AC6 [get_ports HMC_CLK_SCLK]
 set_property PACKAGE_PIN Y10 [get_ports HMC_CLK_CS_N]
 set_property IOSTANDARD LVCMOS18 [get_ports {HMC_CLK_RESET HMC_CLK_SDIO HMC_CLK_SCLK HMC_CLK_CS_N}]
 
-# FMC MGT reference clocks. The ODIV2 outputs are sampled by the 200 MHz fabric
-# monitor; they are not promoted into BUFG_GT resources. The optional GTH health
-# build also feeds the IBUFDS_GTE4 O outputs into the wizard.
+# FMC MGT reference clocks. The IBUFDS_GTE4 O outputs feed the GTH Wizard
+# directly. ODIV2 is intentionally left unconnected because it is not routable
+# to general fabric from the selected GTH sites.
 set_property PACKAGE_PIN G8 [get_ports FMC1_HPC_GBTCLK0_M2C_C_P]
 set_property PACKAGE_PIN G7 [get_ports FMC1_HPC_GBTCLK0_M2C_C_N]
 create_clock -name DAQ_GBTCLK0 -period 8.000 [get_ports FMC1_HPC_GBTCLK0_M2C_C_P]

@@ -154,29 +154,27 @@ module top #(
 
     wire gbt0_refclk;
     wire gbt1_refclk;
-    wire gbt0_odiv2;
-    wire gbt1_odiv2;
 
     IBUFDS_GTE4 u_gbtclk0_ibuf (
         .I     (FMC1_HPC_GBTCLK0_M2C_C_P),
         .IB    (FMC1_HPC_GBTCLK0_M2C_C_N),
         .CEB   (1'b0),
         .O     (gbt0_refclk),
-        .ODIV2 (gbt0_odiv2)
+        .ODIV2 ()
     );
     IBUFDS_GTE4 u_gbtclk1_ibuf (
         .I     (FMC1_HPC_GBTCLK1_M2C_C_P),
         .IB    (FMC1_HPC_GBTCLK1_M2C_C_N),
         .CEB   (1'b0),
         .O     (gbt1_refclk),
-        .ODIV2 (gbt1_odiv2)
+        .ODIV2 ()
     );
-    wire [31:0] gbt0_count;
-    wire [31:0] gbt1_count;
+    wire [31:0] gbt0_count = 32'd0;
+    wire [31:0] gbt1_count = 32'd0;
     wire        clk_fmc_seen;
     wire        sysref_seen;
-    wire        gbt0_seen;
-    wire        gbt1_seen;
+    wire        gbt0_seen = 1'b0;
+    wire        gbt1_seen = 1'b0;
 
     signal_activity_monitor #(
         .REF_WINDOW_CYCLES (MONITOR_WINDOW_CYCLES)
@@ -196,26 +194,6 @@ module top #(
         .test_signal(sysref_ibuf),
         .last_count (sysref_count),
         .seen       (sysref_seen)
-    );
-
-    signal_activity_monitor #(
-        .REF_WINDOW_CYCLES (MONITOR_WINDOW_CYCLES)
-    ) u_gbt0_monitor (
-        .ref_clk    (clk_200),
-        .ref_rst    (fabric_rst),
-        .test_signal(gbt0_odiv2),
-        .last_count (gbt0_count),
-        .seen       (gbt0_seen)
-    );
-
-    signal_activity_monitor #(
-        .REF_WINDOW_CYCLES (MONITOR_WINDOW_CYCLES)
-    ) u_gbt1_monitor (
-        .ref_clk    (clk_200),
-        .ref_rst    (fabric_rst),
-        .test_signal(gbt1_odiv2),
-        .last_count (gbt1_count),
-        .seen       (gbt1_seen)
     );
 
     wire [31:0] gth_status_reg;
