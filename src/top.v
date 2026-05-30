@@ -524,11 +524,13 @@ module top #(
     assign GPIO_LED[3] = clk_fmc_seen;
     assign GPIO_LED[4] = sysref_seen;
 `ifdef DAQ_WITH_GTH
-    assign GPIO_LED[5] = gth_qpll_locked;
-    assign GPIO_LED[6] = gth_tx_ready;
 `ifdef DAQ_WITH_LITEJESD
+    assign GPIO_LED[5] = gth_qpll0lock[0];
+    assign GPIO_LED[6] = gth_qpll0lock[1];
     assign GPIO_LED[7] = litejesd_ready;
 `else
+    assign GPIO_LED[5] = gth_qpll_locked;
+    assign GPIO_LED[6] = gth_tx_ready;
     assign GPIO_LED[7] = gth_rx_ready;
 `endif
 `else

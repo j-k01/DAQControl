@@ -20,17 +20,11 @@ channels. It proves the board-health layer first:
 - MicroBlaze/UART register access using the same style as the NAPSAC reference design.
 
 The optional `--with-staged-gt` project flow instantiates the checked-in
-8-lane GTH Wizard XCI as a first transceiver health test. The staged wizard is
-for the HPC0/J5 GT column, `GTHE4_CHANNEL_X1Y4` through `X1Y11`. That build
-uses the DAQ MGT reference clocks, releases the GT reset helper, drives
-continuous K28.5 comma characters on all TX lanes, and reports
-QPLL/user-clock/reset/RX-align status through LEDs and UART registers. It still
-does not drive DAC samples.
-
-The optional `--with-staged-gt --with-litejesd` project flow replaces the
-GTH comma generator with the generated LiteJESD204B DAC TX block. That build
-starts automatically after the GTH TX reset completes, sends a continuous
-triangle wave on converter 0, and holds converters 1 through 7 at midscale.
+8-lane GTH Wizard XCI and the generated LiteJESD204B DAC TX block. The staged
+wizard is for the HPC0/J5 GT column, `GTHE4_CHANNEL_X1Y4` through `X1Y11`.
+That build starts automatically after the GTH TX reset completes, sends a
+continuous triangle wave on converter 0, and holds converters 1 through 7 at
+midscale.
 
 ## ZCU102 FMC Power Note
 
@@ -46,16 +40,16 @@ Power monitoring can be added later through the ZCU102 I2C/PMBus path.
 
 ## LED Map
 
-| LED | Default Build | `--with-staged-gt` Build | `--with-staged-gt --with-litejesd` Build |
-| --- | --- | --- | --- |
-| 0 | ZCU102 PL fabric heartbeat | ZCU102 PL fabric heartbeat | ZCU102 PL fabric heartbeat |
-| 1 | FMC present status placeholder, forced high | FMC present status placeholder, forced high | FMC present status placeholder, forced high |
-| 2 | FMC power-good status placeholder, forced high | FMC power-good status placeholder, forced high | FMC power-good status placeholder, forced high |
-| 3 | `CLK_FMC` activity seen | `CLK_FMC` activity seen | `CLK_FMC` activity seen |
-| 4 | `SYSREF_FMC` activity seen | `SYSREF_FMC` activity seen | `SYSREF_FMC` activity seen |
-| 5 | Reserved, forced low | GTH QPLL lock | GTH QPLL lock |
-| 6 | DAC alarm not asserted | GTH TX ready | GTH TX ready |
-| 7 | DAC alarm asserted | GTH RX ready | LiteJESD ready |
+| LED | Default Build | `--with-staged-gt` Build |
+| --- | --- | --- |
+| 0 | ZCU102 PL fabric heartbeat | ZCU102 PL fabric heartbeat |
+| 1 | FMC present status placeholder, forced high | FMC present status placeholder, forced high |
+| 2 | FMC power-good status placeholder, forced high | FMC power-good status placeholder, forced high |
+| 3 | `CLK_FMC` activity seen | `CLK_FMC` activity seen |
+| 4 | `SYSREF_FMC` activity seen | `SYSREF_FMC` activity seen |
+| 5 | Reserved, forced low | GTH QPLL0 lock bit 0 |
+| 6 | DAC alarm not asserted | GTH QPLL0 lock bit 1 |
+| 7 | DAC alarm asserted | LiteJESD ready |
 
 ## UART Commands
 
@@ -157,9 +151,9 @@ MicroBlaze block design from Tcl using the installed Vivado IP catalog. The
 flow does not import the checked-in 2023.1 MicroBlaze BD products, because
 those can be locked in Vivado 2024.1 before the upgrade step can repair them.
 
-Staged GTH XCIs are intentionally excluded from the simple default build. To
-build the first GTH health test, import the checked-in wizard XCI and compile
-the `DAQ_WITH_GTH` top:
+Staged GTH XCIs and LiteJESD RTL are intentionally excluded from the simple
+default build. To build the startup triangle-wave test, import the checked-in
+wizard XCI and compile the `DAQ_WITH_GTH` plus `DAQ_WITH_LITEJESD` top:
 
 ```powershell
 vivado.bat -mode batch -source create_project.tcl -tclargs --with-staged-gt
@@ -169,12 +163,16 @@ Checked-in generated IP instances, including the GTH Wizard XCI, live under
 `ip_repo/<ip_name>/`. Do not create a separate `ip/` directory for imported
 XCIs.
 
-In the GTH health build, use UART to select the GT status words:
+In the GTH/LiteJESD build, use UART to select the GT and JESD status words:
 
 ```text
 WRTE 1 4
 RDRO 3
 WRTE 1 5
+RDRO 3
+WRTE 1 6
+RDRO 3
+WRTE 1 7
 RDRO 3
 ```
 
@@ -182,17 +180,10 @@ Use `WRTE 2 1` to hold the GTH reset helper in reset, then `WRTE 2 0` to
 release it. If the lanes need polarity inversion later, write the TX invert mask
 to `RW2[15:8]` and the RX invert mask to `RW2[23:16]`.
 
-The generated LiteJESD204B DAC TX RTL is staged outside the default bring-up
-build. Import it with the GTH Wizard to send the startup triangle-wave test:
-
-```powershell
-vivado.bat -mode batch -source create_project.tcl -tclargs --with-staged-gt --with-litejesd
-```
-
-`--with-litejesd` requires `--with-staged-gt`, because the generated JESD
-block drives the GTH Wizard TX datapath directly. In that build, `DAC_RESET_N`
-is released after fabric reset and `DAC_TXEN` follows GTH TX ready. No UART
-write is required to start the FPGA-side waveform.
+The generated LiteJESD204B DAC TX RTL is now included automatically whenever
+`--with-staged-gt` is used. `DAC_RESET_N` is released after fabric reset and
+`DAC_TXEN` follows GTH TX ready. No UART write is required to start the
+FPGA-side waveform.
 
 `src/jesd/litejesd_dac_tx.v` is checked in, so Vivado does not need LiteX or
 Migen. The generator source and provenance are under `third_party/litejesd204b`,

@@ -232,7 +232,10 @@ proc create_microblaze_bd {bd_name} {
 
 require_vivado_version $required_vivado
 if {$include_staged_gt} {
-    puts "Build variant: simple bring-up plus staged GTH XCI import."
+    set include_litejesd 1
+}
+if {$include_staged_gt} {
+    puts "Build variant: staged GTH plus LiteJESD startup triangle."
 } else {
     puts "Build variant: simple bring-up without staged GTH XCI import."
 }
