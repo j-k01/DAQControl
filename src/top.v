@@ -368,7 +368,10 @@ module top #(
         .gtwiz_reset_rx_done_out                (gth_reset_rx_done),
         .gtwiz_userdata_tx_in                   (gth_userdata_tx),
         .gtwiz_userdata_rx_out                  (gth_userdata_rx),
-        .gtrefclk00_in                          ({gbt1_refclk, gbt0_refclk}),
+        // ZCU102 HPC0: GBTCLK1 feeds quad 228/X1Y1/DP[4:7],
+        // GBTCLK0 feeds quad 229/X1Y2/DP[0:3].  The GTH Wizard
+        // vector index follows the common order X1Y1 then X1Y2.
+        .gtrefclk00_in                          ({gbt0_refclk, gbt1_refclk}),
         .qpll0lock_out                          (gth_qpll0lock),
         .qpll0outclk_out                        (gth_qpll0outclk),
         .qpll0outrefclk_out                     (gth_qpll0outrefclk),
