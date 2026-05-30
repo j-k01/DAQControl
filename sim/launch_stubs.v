@@ -25,7 +25,11 @@ endmodule
 
 module microblaze_bd_wrapper (
     input  wire        Clk,
+    input  wire        locked,
     input  wire        reset,
+    output wire        DBG_MB_RESET_0,
+    output wire        DBG_PERIPHERAL_ARESETN_0,
+    output wire        DBG_INTERCONNECT_ARESETN_0,
     output wire        rs232_uart_txd,
     input  wire        rs232_uart_rxd,
     output reg  [31:0] RW_REG0_0,
@@ -56,12 +60,15 @@ module microblaze_bd_wrapper (
     end
 
     assign rs232_uart_txd = 1'b1;
+    assign DBG_MB_RESET_0 = reset | ~locked;
+    assign DBG_PERIPHERAL_ARESETN_0 = locked & ~reset;
+    assign DBG_INTERCONNECT_ARESETN_0 = locked & ~reset;
     assign RO_REG0_RDINT_0 = 1'b0;
     assign RO_REG1_RDINT_0 = 1'b0;
     assign RO_REG2_RDINT_0 = 1'b0;
     assign RO_REG3_RDINT_0 = 1'b0;
 
-    wire unused = Clk ^ reset ^ rs232_uart_rxd ^ RO_REG0_WE_0 ^ RO_REG1_WE_0 ^
+    wire unused = Clk ^ locked ^ reset ^ rs232_uart_rxd ^ RO_REG0_WE_0 ^ RO_REG1_WE_0 ^
                   RO_REG2_WE_0 ^ RO_REG3_WE_0 ^ ^RO_REG0_IN_0 ^
                   ^RO_REG1_IN_0 ^ ^RO_REG2_IN_0 ^ ^RO_REG3_IN_0;
 endmodule
@@ -251,12 +258,14 @@ module ila_fabric_debug (
     input  wire [31:0] probe16,
     input  wire [31:0] probe17,
     input  wire [31:0] probe18,
-    input  wire [31:0] probe19
+    input  wire [31:0] probe19,
+    input  wire [31:0] probe20
 );
     wire unused = clk ^ ^probe0 ^ ^probe1 ^ ^probe2 ^ ^probe3 ^ ^probe4 ^
                   ^probe5 ^ ^probe6 ^ ^probe7 ^ ^probe8 ^ ^probe9 ^
                   ^probe10 ^ ^probe11 ^ ^probe12 ^ ^probe13 ^ ^probe14 ^
-                  ^probe15 ^ ^probe16 ^ ^probe17 ^ ^probe18 ^ ^probe19;
+                  ^probe15 ^ ^probe16 ^ ^probe17 ^ ^probe18 ^ ^probe19 ^
+                  ^probe20;
 endmodule
 
 module ila_gth_tx_debug (

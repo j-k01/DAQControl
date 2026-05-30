@@ -143,6 +143,8 @@ proc create_microblaze_bd {bd_name} {
     create_bd_port -dir I -type clk Clk
     set_property CONFIG.FREQ_HZ $fabric_clk_hz [get_bd_ports Clk]
 
+    create_bd_port -dir I locked
+
     create_bd_port -dir I -type rst reset
     set_property CONFIG.POLARITY ACTIVE_HIGH [get_bd_ports reset]
 
@@ -160,6 +162,9 @@ proc create_microblaze_bd {bd_name} {
     foreach port_name {RO_REG0_RDINT_0 RO_REG1_RDINT_0 RO_REG2_RDINT_0 RO_REG3_RDINT_0} {
         create_bd_port -dir O $port_name
     }
+    create_bd_port -dir O DBG_MB_RESET_0
+    create_bd_port -dir O DBG_PERIPHERAL_ARESETN_0
+    create_bd_port -dir O DBG_INTERCONNECT_ARESETN_0
 
     create_bd_cell -type ip -vlnv xilinx.com:ip:microblaze:* microblaze_0
     set_property -dict [list \
@@ -191,6 +196,14 @@ proc create_microblaze_bd {bd_name} {
         catch {set_property CONFIG.C_S_AXI_ACLK_FREQ_HZ $fabric_clk_hz $dbg_cell}
     }
 
+    set dcm_locked_pins [get_bd_pins -quiet -hierarchical */dcm_locked]
+    if {[llength $dcm_locked_pins] == 0} {
+        error "MicroBlaze automation did not create a proc_sys_reset dcm_locked input."
+    }
+    foreach dcm_locked_pin $dcm_locked_pins {
+        safe_connect_bd_net [get_bd_ports locked] $dcm_locked_pin
+    }
+
     create_bd_cell -type ip -vlnv xilinx.com:ip:axi_uart16550:* axi_uart16550_0
     set_property CONFIG.C_S_AXI_ACLK_FREQ_HZ $fabric_clk_hz [get_bd_cells axi_uart16550_0]
     create_bd_cell -type ip -vlnv xilinx.com:user:AXI4_register_file:1.0 AXI4_register_file_0
@@ -218,6 +231,14 @@ proc create_microblaze_bd {bd_name} {
         error "MicroBlaze automation did not create a peripheral_aresetn reset output."
     }
     set resetn_pin [lindex $resetn_pin 0]
+    set mb_reset_pin [lindex [get_bd_pins -quiet -hierarchical */mb_reset] 0]
+    set interconnect_resetn_pin [lindex [get_bd_pins -quiet -hierarchical */interconnect_aresetn] 0]
+    if {$mb_reset_pin eq "" || $interconnect_resetn_pin eq ""} {
+        error "MicroBlaze automation did not create expected proc_sys_reset debug pins."
+    }
+    safe_connect_bd_net $mb_reset_pin [get_bd_ports DBG_MB_RESET_0]
+    safe_connect_bd_net $resetn_pin [get_bd_ports DBG_PERIPHERAL_ARESETN_0]
+    safe_connect_bd_net $interconnect_resetn_pin [get_bd_ports DBG_INTERCONNECT_ARESETN_0]
     foreach pin_name {ARESETN S00_ARESETN M00_ARESETN M01_ARESETN} {
         safe_connect_bd_net $resetn_pin [get_bd_pins microblaze_0_axi_periph/$pin_name]
     }
@@ -340,9 +361,9 @@ set_property -dict [list \
 create_ip -name ila -vendor xilinx.com -library ip -module_name ila_fabric_debug -dir $ip_dir
 set fabric_ila_props [list \
     CONFIG.C_DATA_DEPTH    {2048} \
-    CONFIG.C_NUM_OF_PROBES {20} \
+    CONFIG.C_NUM_OF_PROBES {21} \
 ]
-set fabric_ila_widths [list 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32]
+set fabric_ila_widths [list 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32]
 for {set i 0} {$i < [llength $fabric_ila_widths]} {incr i} {
     lappend fabric_ila_props CONFIG.C_PROBE${i}_WIDTH [lindex $fabric_ila_widths $i]
 }

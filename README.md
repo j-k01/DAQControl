@@ -278,12 +278,19 @@ For UART bring-up without working firmware, use the always-on fabric ILA:
 | `probe17` | UART debug word: `0xA5`, RX edge count low byte, TX edge count low byte, line/status bits |
 | `probe18` | Full UART RX edge count sampled in `clk_200` |
 | `probe19` | Full UART TX edge count sampled in `clk_200` |
+| `probe20` | MicroBlaze reset debug word |
 
 In `probe17`, the low byte is `{rx_low_seen, tx_low_seen, ro3_rdint,
 ro0_rdint, UART_TXD_raw, UART_TXD_sync, UART_RXD_raw, UART_RXD_sync}`. If you
 type on the correct CP2108 channel, `probe18` must increment even if
 MicroBlaze firmware is not running. If firmware is running and printing,
 `probe19` must increment.
+
+`probe20` starts with marker `0xDA51` in bits `[31:16]`. Its low bits are:
+`[0]=CPU_RESET`, `[1]=mmcm_locked`, `[2]=MicroBlaze BD reset input`,
+`[3]=proc_sys_reset/mb_reset`, `[4]=peripheral_aresetn`,
+`[5]=interconnect_aresetn`, `[6]=fabric_rst`. For firmware loading,
+`probe20[3]` must be `0` and `probe20[4]`/`probe20[5]` must be `1`.
 
 Use `WRTE 2 1` to hold the GTH reset helper in reset, then `WRTE 2 0` to
 release it. If the lanes need polarity inversion later, write the TX invert mask
@@ -362,9 +369,11 @@ fully sent. If `probe1`/`RW0` remains `0` and `probe2`/`RW1` has no
 `0xC0DE...` marker after `load_mb_firmware.tcl`, the ELF did not actually run.
 For this launch design the MicroBlaze reset input is tied deasserted in the PL
 wrapper so the external ZCU102 CPU_RESET pushbutton cannot hold the debug CPU in
-reset during JTAG firmware loading. This reset-path change is in the bitstream,
-so rebuild/reprogram the FPGA before expecting the firmware loader behavior to
-change.
+reset during JTAG firmware loading. The MicroBlaze BD also receives the
+`clk_wiz_0.locked` signal on its `locked` port so the internal `proc_sys_reset`
+block can release `mb_reset` after the 200 MHz fabric clock is stable. This
+reset-path change is in the generated BD/bitstream, so rerun `rebuild.tcl` and
+reprogram the FPGA before expecting the firmware loader behavior to change.
 
 For ILA debug, the bitstream and probes file must come from the same
 implementation run. `build.tcl` copies the matching probes file to
