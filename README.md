@@ -82,6 +82,23 @@ reference-clock `ODIV2` pins are intentionally not routed into fabric; on
 UltraScale+ GTH resources they do not provide a general fabric route from the
 selected sites. Use GTH QPLL lock to confirm the MGT refclocks.
 
+## Clock Contract
+
+`SYSCLK_P/N` is the ZCU102 USER_SI570 input and is constrained as 300 MHz.
+`clk_wiz_0` generates:
+
+| Clock | Frequency | Used for |
+| --- | --- | --- |
+| `clk_out1` / `clk_200` | 200 MHz | MicroBlaze, AXI interconnect, UART16550, register file, fabric monitors |
+| `clk_out2` / `clk_100` | 100 MHz | Reserved |
+| `clk_out3` / `clk_125` | 125 MHz | GTH freerun clock |
+
+`create_project.tcl` now asserts that the MicroBlaze BD clock port and the
+AXI UART16550 `C_S_AXI_ACLK_FREQ_HZ` are both 200 MHz. The firmware also has a
+compile-time guard against any BSP/XSA that reports a UART clock other than
+200 MHz, and `HELP`/`STAT` print the UART clock, target baud, divisor, and
+actual baud.
+
 ## RW0 Control Bits
 
 | Bit | Function |
@@ -183,6 +200,18 @@ RDRO 3
 WRTE 1 7
 RDRO 3
 ```
+
+The build also instantiates hardware debug cores:
+
+| ILA | Clock | Purpose |
+| --- | --- | --- |
+| `ila_fabric_debug` | `clk_200` | Always-on bring-up view: RW/RO registers, raw pins, fabric clock counters, GTH status, LiteJESD status, LED-equivalent flags |
+| `ila_gth_tx_debug` | `gth_tx_usrclk2` | JESD/TX-side view: lane 0/1 TX words, TX charisk/control, LiteJESD status, triangle word, sync/sysref samples |
+
+Start with `ila_fabric_debug`. If LEDs remain 0/1/2 only, trigger on
+`probe8` (`gth_status_reg`) or `probe16` (`ila_debug_flags`) and check whether
+the GTH QPLL/user-clock bits ever assert. `ila_gth_tx_debug` will only capture
+after the GTH TX user clock is alive.
 
 Use `WRTE 2 1` to hold the GTH reset helper in reset, then `WRTE 2 0` to
 release it. If the lanes need polarity inversion later, write the TX invert mask

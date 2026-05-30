@@ -5,6 +5,11 @@
 #include <string.h>
 
 #define UART_BAUD_RATE 115200
+#define EXPECTED_UART_CLOCK_HZ 200000000U
+
+#if XPAR_AXI_UART16550_0_CLOCK_FREQ_HZ != EXPECTED_UART_CLOCK_HZ
+#error "AXI UART16550 clock mismatch: regenerate the XSA/BSP from create_project.tcl so the UART clock is 200 MHz."
+#endif
 
 #define REG_BASE  XPAR_AXI4_REGISTER_FILE_0_S00_AXI_BASEADDR
 #define RW_REG0   (REG_BASE + 0x00)
@@ -57,6 +62,49 @@ static void send_hex(u32 val)
         send_byte((u8)"0123456789ABCDEF"[(val >> (i * 4)) & 0xF]);
 }
 
+static void send_uint(u32 val)
+{
+    char buf[11];
+    int pos = 0;
+
+    if (val == 0) {
+        send_byte('0');
+        return;
+    }
+
+    while (val != 0 && pos < (int)sizeof(buf)) {
+        buf[pos++] = (char)('0' + (val % 10));
+        val /= 10;
+    }
+
+    while (pos > 0)
+        send_byte((u8)buf[--pos]);
+}
+
+static u32 uart_divisor(void)
+{
+    return (XPAR_AXI_UART16550_0_CLOCK_FREQ_HZ + (8u * UART_BAUD_RATE)) /
+           (16u * UART_BAUD_RATE);
+}
+
+static u32 uart_actual_baud(void)
+{
+    return XPAR_AXI_UART16550_0_CLOCK_FREQ_HZ / (16u * uart_divisor());
+}
+
+static void print_uart_config(void)
+{
+    send_str("UART: clk=");
+    send_uint(XPAR_AXI_UART16550_0_CLOCK_FREQ_HZ);
+    send_str(" baud=");
+    send_uint(UART_BAUD_RATE);
+    send_str(" divisor=");
+    send_uint(uart_divisor());
+    send_str(" actual=");
+    send_uint(uart_actual_baud());
+    send_str("\r\n");
+}
+
 static u32 rw_addr(unsigned int idx)
 {
     return RW_REG0 + (idx & 3u) * 4u;
@@ -93,6 +141,7 @@ static void cmd_help(void)
     send_str("  [31] FMC_C2M_PG override enable\r\n");
     send_str("RW1[2:0] selects RO3: 0/1=reserved, 2=raw pins, 3=build ID\r\n");
     send_str("                 4=GTH, 5=GTH lanes, 6=LiteJESD, 7=triangle\r\n");
+    print_uart_config();
 }
 
 static void cmd_status(void)
@@ -116,6 +165,7 @@ static void cmd_status(void)
     send_str((s & (1u << 14)) ? "dac_alarm " : "no_dac_alarm ");
     send_str((s & (1u << 15)) ? "dac_sync_high" : "dac_sync_low");
     send_str("\r\n");
+    print_uart_config();
 }
 
 static void launch_defaults(void)
@@ -157,7 +207,7 @@ int main(void)
     XUartNs550_SetLineControlReg(&uart, XUN_LCR_8_DATA_BITS);
 
     u32 base = uart.BaseAddress;
-    u32 divisor = XPAR_AXI_UART16550_0_CLOCK_FREQ_HZ / (16 * UART_BAUD_RATE);
+    u32 divisor = uart_divisor();
     Xil_Out32(base + 0x0C, Xil_In32(base + 0x0C) | 0x80);
     Xil_Out32(base + 0x00, divisor & 0xFF);
     Xil_Out32(base + 0x04, (divisor >> 8) & 0xFF);
@@ -166,6 +216,7 @@ int main(void)
     launch_defaults();
 
     send_str("DAQ_LAUNCH MicroBlaze ready\r\n");
+    print_uart_config();
     send_str("Type HELP or STAT\r\n");
 
     u8 c;

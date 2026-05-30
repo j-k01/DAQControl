@@ -35,6 +35,27 @@ proc validate_ips_unlocked {} {
     }
 }
 
+proc validate_clock_contract {} {
+    set expected_clk_hz 200000000
+    set bd_files [get_files -quiet microblaze_bd.bd]
+
+    if {[llength $bd_files] == 0} {
+        error "Clock contract failure: microblaze_bd.bd was not found in the project. Re-run create_project.tcl."
+    }
+
+    open_bd_design [lindex $bd_files 0]
+
+    set bd_clk_hz [get_property CONFIG.FREQ_HZ [get_bd_ports Clk]]
+    if {$bd_clk_hz ne "$expected_clk_hz"} {
+        error "Clock contract failure: MicroBlaze BD Clk is $bd_clk_hz Hz, expected $expected_clk_hz Hz."
+    }
+
+    set uart_clk_hz [get_property CONFIG.C_S_AXI_ACLK_FREQ_HZ [get_bd_cells axi_uart16550_0]]
+    if {$uart_clk_hz ne "$expected_clk_hz"} {
+        error "Clock contract failure: AXI UART16550 clock is $uart_clk_hz Hz, expected $expected_clk_hz Hz."
+    }
+}
+
 set actual_vivado [version -short]
 if {![vivado_version_at_least $actual_vivado $required_vivado]} {
     error "This build flow targets Vivado $required_vivado or newer. Detected Vivado $actual_vivado."
@@ -64,6 +85,7 @@ for {set i 0} {$i < [llength $::argv]} {incr i} {
 }
 
 validate_ips_unlocked
+validate_clock_contract
 
 if {$bake_elf} {
     set elf_file $script_dir/sw/workspace/firmware/Debug/firmware.elf

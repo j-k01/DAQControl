@@ -117,6 +117,10 @@ module top #(
     wire        litejesd_ready;
     wire [31:0] litejesd_status_reg;
     wire [31:0] litejesd_triangle_word;
+    wire [31:0] gth_tx_clk_count;
+    wire [31:0] gth_rx_clk_count;
+    wire [31:0] gth_txdata_lane0_debug;
+    wire [7:0]  gth_txctrl2_lane0_debug;
 
     wire manual_spi_enable = rw_reg0[30];
 
@@ -292,6 +296,26 @@ module top #(
         4'd0, litejesd_txcharisk[7:4],
         4'd0, litejesd_txcharisk[3:0]
     };
+
+    ila_gth_tx_debug u_ila_gth_tx_debug (
+        .clk    (gth_tx_usrclk2),
+        .probe0 (gth_userdata_tx[31:0]),
+        .probe1 (gth_userdata_tx[63:32]),
+        .probe2 (gth_txctrl2),
+        .probe3 (litejesd_status_reg),
+        .probe4 (litejesd_triangle_word),
+        .probe5 ({
+            19'd0,
+            litejesd_sysref_pipe,
+            litejesd_sync_pipe,
+            litejesd_ready,
+            litejesd_active,
+            gth_qpll0lock,
+            gth_tx_userclk_active,
+            gth_reset_tx_done,
+            litejesd_reset
+        })
+    );
 `else
     assign litejesd_active = 1'b0;
     assign litejesd_ready = 1'b0;
@@ -304,6 +328,9 @@ module top #(
         8'h0f, 8'h0f, 8'h0f, 8'h0f
     };
 `endif
+
+    assign gth_txdata_lane0_debug = gth_userdata_tx[31:0];
+    assign gth_txctrl2_lane0_debug = gth_txctrl2[7:0];
 
     gtwizard_ultrascale_0 u_gth (
         .gtwiz_userclk_tx_reset_in              (gth_reset_all),
@@ -358,8 +385,6 @@ module top #(
         .txpmaresetdone_out                     (gth_txpmaresetdone)
     );
 
-    wire [31:0] gth_tx_clk_count;
-    wire [31:0] gth_rx_clk_count;
     wire        gth_tx_clk_seen;
     wire        gth_rx_clk_seen;
 
@@ -432,6 +457,10 @@ module top #(
     assign litejesd_ready = 1'b0;
     assign litejesd_status_reg = 32'd0;
     assign litejesd_triangle_word = 32'd0;
+    assign gth_tx_clk_count = 32'd0;
+    assign gth_rx_clk_count = 32'd0;
+    assign gth_txdata_lane0_debug = 32'd0;
+    assign gth_txctrl2_lane0_debug = 8'd0;
 `endif
 
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_sync_pipe = 3'b000;
@@ -506,6 +535,50 @@ module top #(
         fmc_present,
         mmcm_locked
     };
+
+    wire [31:0] ila_debug_flags = {
+        6'd0,
+        GPIO_LED,
+        litejesd_ready,
+        litejesd_active,
+        gth_rx_ready,
+        gth_tx_ready,
+        gth_qpll_locked,
+        dac_sync_raw,
+        dac_sync_level,
+        DAC_ALARM,
+        dac_alarm_level,
+        manual_spi_enable,
+        DAC_TXEN,
+        DAC_RESET_N,
+        HMC_CLK_RESET,
+        sysref_seen,
+        clk_fmc_seen,
+        fabric_rst,
+        CPU_RESET,
+        mmcm_locked
+    };
+
+    ila_fabric_debug u_ila_fabric_debug (
+        .clk     (clk_200),
+        .probe0  (status_reg),
+        .probe1  (rw_reg0),
+        .probe2  (rw_reg1),
+        .probe3  (rw_reg2),
+        .probe4  (selected_count),
+        .probe5  (clk_fmc_count),
+        .probe6  (sysref_count),
+        .probe7  (raw_pin_reg),
+        .probe8  (gth_status_reg),
+        .probe9  (gth_rx_status_reg),
+        .probe10 (litejesd_status_reg),
+        .probe11 (litejesd_triangle_word),
+        .probe12 (gth_tx_clk_count),
+        .probe13 (gth_rx_clk_count),
+        .probe14 ({24'd0, gth_txctrl2_lane0_debug}),
+        .probe15 (gth_txdata_lane0_debug),
+        .probe16 (ila_debug_flags)
+    );
 
     reg [27:0] fabric_clk_cnt = 28'd0;
     reg        fabric_led = 1'b0;

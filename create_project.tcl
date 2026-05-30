@@ -131,11 +131,13 @@ proc safe_connect_bd_intf_net {args} {
 }
 
 proc create_microblaze_bd {bd_name} {
+    set fabric_clk_hz 200000000
+
     create_bd_design $bd_name
     current_bd_design $bd_name
 
     create_bd_port -dir I -type clk Clk
-    set_property CONFIG.FREQ_HZ 200000000 [get_bd_ports Clk]
+    set_property CONFIG.FREQ_HZ $fabric_clk_hz [get_bd_ports Clk]
 
     create_bd_port -dir I -type rst reset
     set_property CONFIG.POLARITY ACTIVE_HIGH [get_bd_ports reset]
@@ -181,7 +183,12 @@ proc create_microblaze_bd {bd_name} {
         error "MicroBlaze block automation failed: $mb_auto_error"
     }
 
+    foreach dbg_cell [get_bd_cells -quiet -hierarchical mdm_*] {
+        catch {set_property CONFIG.C_S_AXI_ACLK_FREQ_HZ $fabric_clk_hz $dbg_cell}
+    }
+
     create_bd_cell -type ip -vlnv xilinx.com:ip:axi_uart16550:* axi_uart16550_0
+    set_property CONFIG.C_S_AXI_ACLK_FREQ_HZ $fabric_clk_hz [get_bd_cells axi_uart16550_0]
     create_bd_cell -type ip -vlnv xilinx.com:user:AXI4_register_file:1.0 AXI4_register_file_0
 
     if {[llength [get_bd_cells -quiet microblaze_0_axi_periph]] == 0} {
@@ -227,6 +234,17 @@ proc create_microblaze_bd {bd_name} {
     catch {set_property range 64K [get_bd_addr_segs microblaze_0/Data/SEG_AXI4_register_file_0_S00_AXI_reg]}
 
     validate_bd_design
+
+    set bd_clk_hz [get_property CONFIG.FREQ_HZ [get_bd_ports Clk]]
+    if {$bd_clk_hz ne "$fabric_clk_hz"} {
+        error "Clock contract failure: MicroBlaze BD Clk is $bd_clk_hz Hz, expected $fabric_clk_hz Hz."
+    }
+
+    set uart_clk_hz [get_property CONFIG.C_S_AXI_ACLK_FREQ_HZ [get_bd_cells axi_uart16550_0]]
+    if {$uart_clk_hz ne "$fabric_clk_hz"} {
+        error "Clock contract failure: AXI UART16550 clock is $uart_clk_hz Hz, expected $fabric_clk_hz Hz."
+    }
+
     save_bd_design
 }
 
@@ -308,6 +326,30 @@ set_property -dict [list \
     CONFIG.USE_LOCKED                 {true} \
     CONFIG.USE_RESET                  {false} \
 ] [get_ips clk_wiz_0]
+
+create_ip -name ila -vendor xilinx.com -library ip -module_name ila_fabric_debug -dir $ip_dir
+set fabric_ila_props [list \
+    CONFIG.C_DATA_DEPTH    {2048} \
+    CONFIG.C_NUM_OF_PROBES {17} \
+]
+set fabric_ila_widths [list 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32 32]
+for {set i 0} {$i < [llength $fabric_ila_widths]} {incr i} {
+    lappend fabric_ila_props CONFIG.C_PROBE${i}_WIDTH [lindex $fabric_ila_widths $i]
+}
+set_property -dict $fabric_ila_props [get_ips ila_fabric_debug]
+
+if {$include_litejesd} {
+    create_ip -name ila -vendor xilinx.com -library ip -module_name ila_gth_tx_debug -dir $ip_dir
+    set gth_tx_ila_props [list \
+        CONFIG.C_DATA_DEPTH    {2048} \
+        CONFIG.C_NUM_OF_PROBES {6} \
+    ]
+    set gth_tx_ila_widths [list 32 32 64 32 32 32]
+    for {set i 0} {$i < [llength $gth_tx_ila_widths]} {incr i} {
+        lappend gth_tx_ila_props CONFIG.C_PROBE${i}_WIDTH [lindex $gth_tx_ila_widths $i]
+    }
+    set_property -dict $gth_tx_ila_props [get_ips ila_gth_tx_debug]
+}
 
 if {$include_staged_gt} {
     foreach xci [glob -nocomplain -directory $script_dir/ip_repo {*/*.xci}] {
