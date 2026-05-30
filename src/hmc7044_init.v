@@ -488,7 +488,7 @@ module hmc7044_init #(
                         state <= ST_DONE;
                     end else begin
                         readback_last_addr <= read_addr;
-                        spi_shift <= {1'b1, 2'b00, read_addr, 8'h00};
+                        spi_shift <= {1'b1, 3'b000, read_addr, 8'h00};
                         spi_read_shift <= 8'd0;
                         spi_bits_left <= 6'd24;
                         spi_half_phase <= 1'b0;

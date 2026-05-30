@@ -59,6 +59,8 @@ module hmc7044_init_tb;
     integer errors = 0;
     integer bit_count = 0;
     reg [23:0] first_word = 24'd0;
+    integer read_cmd_bit_count = 0;
+    reg [15:0] first_read_cmd = 16'd0;
     time sdio_change_time = 0;
 
     always @(spi_sdio_o) begin
@@ -76,6 +78,11 @@ module hmc7044_init_tb;
         if (!spi_cs_n && bit_count < 24) begin
             first_word = {first_word[22:0], spi_sdio_o};
             bit_count = bit_count + 1;
+        end
+        if (!spi_cs_n && spi_sdio_oe && step_index >= 8'd127 &&
+            read_cmd_bit_count < 16) begin
+            first_read_cmd = {first_read_cmd[14:0], spi_sdio_o};
+            read_cmd_bit_count = read_cmd_bit_count + 1;
         end
     end
 
@@ -96,6 +103,16 @@ module hmc7044_init_tb;
         if (!readback_done) begin
             $display("FAIL: HMC readback did not complete");
             errors = errors + 1;
+        end
+        if (read_cmd_bit_count !== 16) begin
+            $display("FAIL: first HMC read command captured %0d bits", read_cmd_bit_count);
+            errors = errors + 1;
+        end
+        if (first_read_cmd !== 16'h8078) begin
+            $display("FAIL: first HMC read command expected 0x8078 got 0x%04x", first_read_cmd);
+            errors = errors + 1;
+        end else begin
+            $display("PASS: first HMC read command = 0x%04x", first_read_cmd);
         end
         if (!readback_sdio_stuck) begin
             $display("FAIL: stuck-high SDIO readback was not detected");
