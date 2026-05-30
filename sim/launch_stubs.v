@@ -28,7 +28,6 @@ module microblaze_bd_wrapper (
     input  wire        locked,
     input  wire        reset,
     output wire        DBG_MB_RESET_0,
-    output wire        DBG_EXT_RESET_IN_0,
     output wire        DBG_PERIPHERAL_ARESETN_0,
     output wire        DBG_INTERCONNECT_ARESETN_0,
     output wire        rs232_uart_txd,
@@ -62,7 +61,6 @@ module microblaze_bd_wrapper (
 
     assign rs232_uart_txd = 1'b1;
     assign DBG_MB_RESET_0 = reset | ~locked;
-    assign DBG_EXT_RESET_IN_0 = reset;
     assign DBG_PERIPHERAL_ARESETN_0 = locked & ~reset;
     assign DBG_INTERCONNECT_ARESETN_0 = locked & ~reset;
     assign RO_REG0_RDINT_0 = 1'b0;

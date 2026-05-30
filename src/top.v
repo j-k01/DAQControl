@@ -74,7 +74,6 @@ module top #(
     wire ro_reg2_rdint;
     wire ro_reg3_rdint;
     wire mb_dbg_mb_reset;
-    wire mb_dbg_ext_reset_in;
     wire mb_dbg_peripheral_aresetn;
     wire mb_dbg_interconnect_aresetn;
 
@@ -94,7 +93,6 @@ module top #(
         .locked               (mmcm_locked),
         .reset                (microblaze_reset),
         .DBG_MB_RESET_0       (mb_dbg_mb_reset),
-        .DBG_EXT_RESET_IN_0   (mb_dbg_ext_reset_in),
         .DBG_PERIPHERAL_ARESETN_0  (mb_dbg_peripheral_aresetn),
         .DBG_INTERCONNECT_ARESETN_0 (mb_dbg_interconnect_aresetn),
         .rs232_uart_txd       (UART_TXD),
@@ -176,12 +174,11 @@ module top #(
     };
     wire [31:0] mb_reset_debug_reg = {
         16'hDA51,
-        8'd0,
+        9'd0,
         fabric_rst,
         mb_dbg_interconnect_aresetn,
         mb_dbg_peripheral_aresetn,
         mb_dbg_mb_reset,
-        mb_dbg_ext_reset_in,
         microblaze_reset,
         mmcm_locked,
         CPU_RESET

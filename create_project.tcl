@@ -163,7 +163,6 @@ proc create_microblaze_bd {bd_name} {
         create_bd_port -dir O $port_name
     }
     create_bd_port -dir O DBG_MB_RESET_0
-    create_bd_port -dir O DBG_EXT_RESET_IN_0
     create_bd_port -dir O DBG_PERIPHERAL_ARESETN_0
     create_bd_port -dir O DBG_INTERCONNECT_ARESETN_0
 
@@ -195,14 +194,6 @@ proc create_microblaze_bd {bd_name} {
 
     foreach dbg_cell [get_bd_cells -quiet -hierarchical mdm_*] {
         catch {set_property CONFIG.C_S_AXI_ACLK_FREQ_HZ $fabric_clk_hz $dbg_cell}
-    }
-
-    set ext_reset_pins [get_bd_pins -quiet -hierarchical */ext_reset_in]
-    if {[llength $ext_reset_pins] == 0} {
-        error "MicroBlaze automation did not create a proc_sys_reset ext_reset_in input."
-    }
-    foreach ext_reset_pin $ext_reset_pins {
-        safe_connect_bd_net [get_bd_ports reset] $ext_reset_pin
     }
 
     set dcm_locked_pins [get_bd_pins -quiet -hierarchical */dcm_locked]
@@ -241,13 +232,11 @@ proc create_microblaze_bd {bd_name} {
     }
     set resetn_pin [lindex $resetn_pin 0]
     set mb_reset_pin [lindex [get_bd_pins -quiet -hierarchical */mb_reset] 0]
-    set ext_reset_pin [lindex [get_bd_pins -quiet -hierarchical */ext_reset_in] 0]
     set interconnect_resetn_pin [lindex [get_bd_pins -quiet -hierarchical */interconnect_aresetn] 0]
-    if {$mb_reset_pin eq "" || $ext_reset_pin eq "" || $interconnect_resetn_pin eq ""} {
+    if {$mb_reset_pin eq "" || $interconnect_resetn_pin eq ""} {
         error "MicroBlaze automation did not create expected proc_sys_reset debug pins."
     }
     safe_connect_bd_net $mb_reset_pin [get_bd_ports DBG_MB_RESET_0]
-    safe_connect_bd_net $ext_reset_pin [get_bd_ports DBG_EXT_RESET_IN_0]
     safe_connect_bd_net $resetn_pin [get_bd_ports DBG_PERIPHERAL_ARESETN_0]
     safe_connect_bd_net $interconnect_resetn_pin [get_bd_ports DBG_INTERCONNECT_ARESETN_0]
     foreach pin_name {ARESETN S00_ARESETN M00_ARESETN M01_ARESETN} {
