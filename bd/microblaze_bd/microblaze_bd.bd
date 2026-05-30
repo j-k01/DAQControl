@@ -1,7 +1,7 @@
 {
   "design": {
     "design_info": {
-      "boundary_crc": "0xA063B92EEE004302",
+      "boundary_crc": "0x8B224D4ADDDD79F8",
       "device": "xczu9eg-ffvb1156-2-e",
       "gen_directory": "../../../../DAQ_LAUNCH.gen/sources_1/bd/microblaze_bd",
       "name": "microblaze_bd",
@@ -197,19 +197,6 @@
       },
       "RO_REG3_RDINT_0": {
         "direction": "O"
-      },
-      "reset_0": {
-        "type": "rst",
-        "direction": "I",
-        "parameters": {
-          "INSERT_VIP": {
-            "value": "0",
-            "value_src": "default"
-          },
-          "POLARITY": {
-            "value": "ACTIVE_HIGH"
-          }
-        }
       }
     },
     "components": {
@@ -1029,9 +1016,9 @@
           "AXI4_register_file_0/s00_axi_aclk"
         ]
       },
-      "reset_0_1": {
+      "reset_1": {
         "ports": [
-          "reset_0",
+          "reset",
           "rst_Clk_200M/ext_reset_in"
         ]
       },
