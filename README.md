@@ -210,6 +210,17 @@ Then build the MicroBlaze firmware from Vitis/XSCT after the XSA exists:
 xsct.bat build_sw.tcl
 ```
 
+To load the firmware into a currently programmed FPGA over JTAG without
+rebuilding the bitstream:
+
+```powershell
+xsct.bat load_mb_firmware.tcl
+```
+
+The loader auto-selects the MicroBlaze target and downloads
+`sw/workspace/firmware/Debug/firmware.elf`. You can also pass an explicit ELF
+path as the first argument.
+
 Re-run implementation with the firmware baked into the bitstream:
 
 ```powershell
