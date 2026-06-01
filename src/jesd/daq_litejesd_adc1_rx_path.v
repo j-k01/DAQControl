@@ -132,6 +132,18 @@ module daq_litejesd_adc1_rx_path (
         |rx_disperr1 | |rx_notintable1,
         |rx_disperr0 | |rx_notintable0
     };
+    wire [3:0] lane_notintable = {
+        |rx_notintable3,
+        |rx_notintable2,
+        |rx_notintable1,
+        |rx_notintable0
+    };
+    wire [3:0] lane_disperr = {
+        |rx_disperr3,
+        |rx_disperr2,
+        |rx_disperr1,
+        |rx_disperr0
+    };
 
     always @(posedge jesd_clk) begin
         if (jesd_rst) begin
@@ -196,14 +208,11 @@ module daq_litejesd_adc1_rx_path (
         4'h1,
         rx_align,
         err_seen,
-        rx_notintable0,
-        rx_notintable1,
-        rx_notintable2,
-        rx_notintable3,
-        rx_disperr0,
-        rx_disperr1,
-        rx_disperr2,
-        rx_disperr3
+        lane_notintable,
+        lane_disperr,
+        rx_byteisaligned,
+        rx_cdrlock,
+        rx_pmaresetdone
     };
 
     assign event_counts = {
