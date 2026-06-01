@@ -16,6 +16,8 @@ exec xvlog.bat -sv -d DAQ_WITH_GTH -d DAQ_WITH_LITEJESD \
     ../../src/ads54j60_init.v \
     ../../src/jesd/litejesd_dac_tx.v \
     ../../src/jesd/daq_litejesd_dac_tx_path.v \
+    ../../src/jesd/litejesd_adc1_rx.v \
+    ../../src/jesd/daq_litejesd_adc1_rx_path.v \
     ../../src/top.v
 
 exec xelab.bat top -snapshot top_litejesd_compile

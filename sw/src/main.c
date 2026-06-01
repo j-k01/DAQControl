@@ -179,6 +179,9 @@ static void cmd_help(void)
     send_str("                 E=DAC status, F=DAC last write\r\n");
     send_str("                 16/0x10=ADC status, 17..19/0x11..0x13=ADC1\r\n");
     send_str("                 20..22/0x14..0x16=ADC2, 23/0x17=ADC write, 24/0x18=ADC read\r\n");
+    send_str("                 25..31/0x19..0x1F=ADC1 JESD RX debug/sample\r\n");
+    send_str("RW2 ADC1 JESD RX: [24] bypass ILAS check, [25] STPL check, [26] DP order\r\n");
+    send_str("                  [29:28] raw RX lane shown in selector 31/0x1F\r\n");
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
     print_uart_config();
 }

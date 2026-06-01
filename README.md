@@ -237,6 +237,31 @@ WRTE 1 7
 RDRO 3
 ```
 
+ADC1 JESD RX debug is exposed through selectors `25..31`:
+
+```text
+WRTE 1 25
+RDRO 3
+WRTE 1 26
+RDRO 3
+WRTE 1 27
+RDRO 3
+WRTE 1 28
+RDRO 3
+WRTE 1 29
+RDRO 3
+WRTE 1 30
+RDRO 3
+WRTE 1 31
+RDRO 3
+```
+
+Selector `25` is the ADC1 RX summary, `26` is per-lane alignment/error
+status, `27` is event counters, `28..30` are captured converter sample words,
+and `31` is raw lane data selected by `RW2[29:28]`. `RW2[24]=1` bypasses ILAS
+checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL checker, and
+`RW2[26]=1` switches ADC1 from Sundance signal order to physical DP0-DP3 order.
+
 For clock-chip bring-up, use these HMC readback selectors:
 
 ```text
@@ -258,7 +283,7 @@ The build also instantiates hardware debug cores:
 
 | ILA | Clock | Purpose |
 | --- | --- | --- |
-| `ila_fabric_debug` | `clk_200` | Always-on bring-up view: RW/RO registers, raw pins, fabric clock counters, GTH status, LiteJESD status, UART RX/TX activity, LED-equivalent flags |
+| `ila_fabric_debug` | `clk_200` | Always-on bring-up view: RW/RO registers, raw pins, fabric clock counters, GTH status, LiteJESD status, ADC1 RX status, UART RX/TX activity, LED-equivalent flags |
 | `ila_gth_tx_debug` | `gth_tx_usrclk2` | Optional JESD/TX-side view: lane 0/1 TX words, TX charisk/control, LiteJESD status, triangle word, sync/sysref samples |
 
 Start with `ila_fabric_debug`. If LEDs remain 0/1/2 only, set `RW1=0`, trigger
