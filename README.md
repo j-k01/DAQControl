@@ -23,8 +23,8 @@ The optional `--with-staged-gt` project flow instantiates the checked-in
 8-lane GTH Wizard XCI and the generated LiteJESD204B DAC TX block. The staged
 wizard is for the HPC0/J5 GT column, `GTHE4_CHANNEL_X1Y4` through `X1Y11`.
 That build starts automatically after the GTH TX reset completes, sends a
-continuous triangle wave on converter 0, and holds converters 1 through 7 at
-midscale.
+continuous triangle wave on converter 0, sends a programmable DDS sine wave on
+converter 1, and holds the remaining DAC converters at midscale.
 
 ## ZCU102 FMC Power Note
 
@@ -73,12 +73,21 @@ WRTE n value
 
 `RO0` is packed status. `RO1` is the latest one-second `CLK_FMC` sampled-edge
 count. `RO2` is the latest one-second `SYSREF_FMC` sampled-edge count. `RO3`
-is selected by `RW1[3:0]`: `0=HMC7044 auto-init status`,
+is selected by `RW1[4:0]`: `0=HMC7044 auto-init status`,
 `1=HMC7044 last auto write`, `2=raw pins`, `3=build ID`, `4=GTH status`,
-`5=GTH RX lane status`, `6=LiteJESD status`, `7=triangle sample word`,
+`5=GTH RX lane status`, `6=LiteJESD status`, `7=DAC waveform debug`,
 `8=HMC7044 readback summary`, `9=HMC7044 product ID`, `10=HMC7044 alarm
 readbacks`, `11=HMC7044 PLL1 status readbacks`, `12=HMC7044 PLL2/SYSREF
 status readbacks`, `13=HMC7044 scratchpad readback`.
+
+Selector `7` returns `{dac_converter1_sine_sample[15:0],
+dac_converter0_triangle_sample[15:0]}`. Converter 0 is the startup triangle.
+Converter 1 is a DDS sine wave. Its phase increment is `RW3[31:8]`; a zero
+increment selects the hardware default `0x010000`. The output frequency is:
+
+```text
+f_sine = dac_converter_sample_rate * phase_increment / 2^24
+```
 
 `RO0[28]` means HMC SDIO readback looked stuck at all zeroes or all ones,
 `RO0[27]` means HMC readback completed, `RO0[26]` is the HMC7044 auto-init done
@@ -152,6 +161,15 @@ These bits are only used by the `--with-staged-gt` build.
 | 0 | Assert GTH reset-all while high |
 | 15:8 | Per-lane TX polarity invert |
 | 23:16 | Per-lane RX polarity invert |
+
+## RW3 Runtime Control Bits
+
+| Bits | Function |
+| --- | --- |
+| 0 | Pulse HMC7044 auto-init/readback restart |
+| 1 | Pulse DAC39J84 auto-init restart |
+| 2 | Pulse ADS54J60 auto-init/readback restart |
+| 31:8 | DAC converter-1 sine DDS phase increment, zero selects default `0x010000` |
 
 ## Build
 
@@ -237,6 +255,11 @@ WRTE 1 7
 RDRO 3
 ```
 
+Selector `7` packs the DAC debug samples as upper 16 bits = converter-1 sine
+sample, lower 16 bits = converter-0 triangle sample. Set the sine frequency by
+writing `RW3[31:8]`; for example `WRTE 3 0x02000000` sets the phase increment
+to `0x020000`.
+
 ADC1 JESD RX debug is exposed through selectors `25..31`:
 
 ```text
@@ -261,6 +284,9 @@ status, `27` is event counters, `28..30` are captured converter sample words,
 and `31` is raw lane data selected by `RW2[29:28]`. `RW2[24]=1` bypasses ILAS
 checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL checker, and
 `RW2[26]=1` switches ADC1 from Sundance signal order to physical DP0-DP3 order.
+The MicroBlaze firmware defaults `RW2` to `0x01000000` because the ADS54J60 link
+comes up cleanly with ILAS checking bypassed; use `WRTE 2 0x00000000` to
+re-enable ILAS checking while debugging the expected ILAS fields.
 
 For clock-chip bring-up, use these HMC readback selectors:
 

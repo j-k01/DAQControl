@@ -192,6 +192,8 @@ module top #(
     wire [31:0] litejesd_status_reg;
     wire [31:0] litejesd_triangle_async;
     wire [31:0] litejesd_triangle_word;
+    wire [31:0] litejesd_sine_async;
+    wire [31:0] litejesd_sine_word;
     wire [31:0] gth_tx_clk_count;
     wire [31:0] gth_rx_clk_count;
     wire [15:0] gth_tx_clk_count_short;
@@ -564,6 +566,16 @@ module top #(
 
     assign litejesd_active_async = ~litejesd_reset;
 
+    wire [23:0] dac_sine_phase_inc_tx;
+    cdc_vector_sync #(
+        .WIDTH (24)
+    ) u_dac_sine_phase_inc_sync (
+        .dest_clk (gth_tx_usrclk2),
+        .dest_rst (litejesd_reset),
+        .src      (rw_reg3[31:8]),
+        .dest     (dac_sine_phase_inc_tx)
+    );
+
     daq_litejesd_dac_tx_path u_litejesd_dac_tx_path (
         .jesd_clk         (gth_tx_usrclk2),
         .jesd_rst         (litejesd_reset),
@@ -575,9 +587,11 @@ module top #(
         .sync_n           (litejesd_sync_pipe[2]),
         .active_converter (3'd0),
         .triangle_step    (16'd256),
+        .sine_phase_inc   (dac_sine_phase_inc_tx),
         .litejesd_ready   (litejesd_ready_async),
         .status           (litejesd_status_async),
         .triangle_word    (litejesd_triangle_async),
+        .sine_word        (litejesd_sine_async),
         .gth_txdata       (litejesd_txdata),
         .gth_txcharisk    (litejesd_txcharisk)
     );
@@ -601,7 +615,7 @@ module top #(
         .probe1 (gth_userdata_tx[63:32]),
         .probe2 (gth_txctrl2),
         .probe3 (litejesd_status_async),
-        .probe4 (litejesd_triangle_async),
+        .probe4 ({litejesd_sine_async[15:0], litejesd_triangle_async[15:0]}),
         .probe5 ({
             19'd0,
             litejesd_sysref_pipe,
@@ -620,6 +634,7 @@ module top #(
     assign litejesd_ready_async = 1'b0;
     assign litejesd_status_async = 32'd0;
     assign litejesd_triangle_async = 32'd0;
+    assign litejesd_sine_async = 32'd0;
 
     assign gth_userdata_tx = {8{32'hbcbc_bcbc}};
     assign gth_txctrl2 = {
@@ -879,6 +894,7 @@ module top #(
     assign litejesd_ready_async = 1'b0;
     assign litejesd_status_async = 32'd0;
     assign litejesd_triangle_async = 32'd0;
+    assign litejesd_sine_async = 32'd0;
     assign gth_tx_clk_count = 32'd0;
     assign gth_rx_clk_count = 32'd0;
     assign gth_tx_clk_count_short = 16'd0;
@@ -897,7 +913,7 @@ module top #(
     assign adc1_rx_raw_lane_async = 32'd0;
 `endif
 
-    localparam integer FABRIC_DEBUG_SYNC_WIDTH = 175;
+    localparam integer FABRIC_DEBUG_SYNC_WIDTH = 207;
     wire [FABRIC_DEBUG_SYNC_WIDTH-1:0] fabric_debug_sync;
     cdc_vector_sync #(
         .WIDTH (FABRIC_DEBUG_SYNC_WIDTH)
@@ -913,6 +929,7 @@ module top #(
             litejesd_active_async,
             gth_txctrl2_lane0_async,
             gth_txdata_lane0_async,
+            litejesd_sine_async,
             litejesd_triangle_async,
             litejesd_status_async,
             gth_rx_status_async,
@@ -930,6 +947,7 @@ module top #(
         litejesd_active,
         gth_txctrl2_lane0_debug,
         gth_txdata_lane0_debug,
+        litejesd_sine_word,
         litejesd_triangle_word,
         litejesd_status_reg,
         gth_rx_status_reg,
@@ -1098,7 +1116,11 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0006;
+    wire [31:0] build_id = 32'hDA01_0007;
+    wire [31:0] litejesd_wave_word = {
+        litejesd_sine_word[15:0],
+        litejesd_triangle_word[15:0]
+    };
 
     always @* begin
         case (rw_reg1[4:0])
@@ -1109,7 +1131,7 @@ module top #(
             5'd4:  selected_count = gth_status_reg;
             5'd5:  selected_count = gth_rx_status_reg;
             5'd6:  selected_count = litejesd_status_reg;
-            5'd7:  selected_count = litejesd_triangle_word;
+            5'd7:  selected_count = litejesd_wave_word;
             5'd8:  selected_count = hmc_readback_summary_reg;
             5'd9:  selected_count = hmc_readback_id_word;
             5'd10: selected_count = hmc_readback_alarm_word;

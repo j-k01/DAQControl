@@ -1,7 +1,8 @@
 `timescale 1ns/1ps
 
 module daq_litejesd_dac_tx_path #(
-    parameter [15:0] DEFAULT_STEP = 16'd256
+    parameter [15:0] DEFAULT_STEP = 16'd256,
+    parameter [23:0] DEFAULT_SINE_PHASE_INC = 24'h010000
 ) (
     input  wire          jesd_clk,
     input  wire          jesd_rst,
@@ -16,20 +17,26 @@ module daq_litejesd_dac_tx_path #(
 
     input  wire [2:0]    active_converter,
     input  wire [15:0]   triangle_step,
+    input  wire [23:0]   sine_phase_inc,
 
     output wire          litejesd_ready,
     output wire [31:0]   status,
     output wire [31:0]   triangle_word,
+    output wire [31:0]   sine_word,
 
     output wire [255:0]  gth_txdata,
     output wire [31:0]   gth_txcharisk
 );
 
     wire [15:0] step = (triangle_step == 16'd0) ? DEFAULT_STEP : triangle_step;
+    wire [23:0] sine_step = (sine_phase_inc == 24'd0) ?
+        DEFAULT_SINE_PHASE_INC : sine_phase_inc;
 
     reg  [15:0] triangle_sample = 16'd0;
     reg         triangle_up = 1'b1;
     reg  [31:0] triangle_word_r = 32'd0;
+    reg  [23:0] sine_phase = 24'd0;
+    reg  [31:0] sine_word_r = 32'd0;
 
     function [16:0] advance_triangle;
         input [15:0] sample;
@@ -52,24 +59,136 @@ module daq_litejesd_dac_tx_path #(
         end
     endfunction
 
+    function [15:0] sine_quarter;
+        input [5:0] index;
+        begin
+            case (index)
+            6'd0: sine_quarter = 16'd0;
+            6'd1: sine_quarter = 16'd817;
+            6'd2: sine_quarter = 16'd1633;
+            6'd3: sine_quarter = 16'd2449;
+            6'd4: sine_quarter = 16'd3263;
+            6'd5: sine_quarter = 16'd4074;
+            6'd6: sine_quarter = 16'd4884;
+            6'd7: sine_quarter = 16'd5690;
+            6'd8: sine_quarter = 16'd6493;
+            6'd9: sine_quarter = 16'd7291;
+            6'd10: sine_quarter = 16'd8085;
+            6'd11: sine_quarter = 16'd8875;
+            6'd12: sine_quarter = 16'd9658;
+            6'd13: sine_quarter = 16'd10436;
+            6'd14: sine_quarter = 16'd11207;
+            6'd15: sine_quarter = 16'd11971;
+            6'd16: sine_quarter = 16'd12728;
+            6'd17: sine_quarter = 16'd13477;
+            6'd18: sine_quarter = 16'd14217;
+            6'd19: sine_quarter = 16'd14949;
+            6'd20: sine_quarter = 16'd15671;
+            6'd21: sine_quarter = 16'd16383;
+            6'd22: sine_quarter = 16'd17086;
+            6'd23: sine_quarter = 16'd17778;
+            6'd24: sine_quarter = 16'd18458;
+            6'd25: sine_quarter = 16'd19128;
+            6'd26: sine_quarter = 16'd19785;
+            6'd27: sine_quarter = 16'd20430;
+            6'd28: sine_quarter = 16'd21062;
+            6'd29: sine_quarter = 16'd21681;
+            6'd30: sine_quarter = 16'd22287;
+            6'd31: sine_quarter = 16'd22879;
+            6'd32: sine_quarter = 16'd23457;
+            6'd33: sine_quarter = 16'd24020;
+            6'd34: sine_quarter = 16'd24568;
+            6'd35: sine_quarter = 16'd25101;
+            6'd36: sine_quarter = 16'd25618;
+            6'd37: sine_quarter = 16'd26120;
+            6'd38: sine_quarter = 16'd26605;
+            6'd39: sine_quarter = 16'd27073;
+            6'd40: sine_quarter = 16'd27525;
+            6'd41: sine_quarter = 16'd27960;
+            6'd42: sine_quarter = 16'd28377;
+            6'd43: sine_quarter = 16'd28777;
+            6'd44: sine_quarter = 16'd29158;
+            6'd45: sine_quarter = 16'd29522;
+            6'd46: sine_quarter = 16'd29867;
+            6'd47: sine_quarter = 16'd30194;
+            6'd48: sine_quarter = 16'd30502;
+            6'd49: sine_quarter = 16'd30791;
+            6'd50: sine_quarter = 16'd31061;
+            6'd51: sine_quarter = 16'd31311;
+            6'd52: sine_quarter = 16'd31542;
+            6'd53: sine_quarter = 16'd31754;
+            6'd54: sine_quarter = 16'd31945;
+            6'd55: sine_quarter = 16'd32117;
+            6'd56: sine_quarter = 16'd32269;
+            6'd57: sine_quarter = 16'd32401;
+            6'd58: sine_quarter = 16'd32513;
+            6'd59: sine_quarter = 16'd32604;
+            6'd60: sine_quarter = 16'd32675;
+            6'd61: sine_quarter = 16'd32726;
+            6'd62: sine_quarter = 16'd32757;
+            6'd63: sine_quarter = 16'd32767;
+            default: sine_quarter = 16'd0;
+            endcase
+        end
+    endfunction
+
+    function [15:0] sine_from_phase;
+        input [23:0] phase;
+        reg [15:0] mag;
+        begin
+            case (phase[23:22])
+            2'b00: begin
+                mag = sine_quarter(phase[21:16]);
+                sine_from_phase = 16'h8000 + mag;
+            end
+            2'b01: begin
+                mag = sine_quarter(~phase[21:16]);
+                sine_from_phase = 16'h8000 + mag;
+            end
+            2'b10: begin
+                mag = sine_quarter(phase[21:16]);
+                sine_from_phase = 16'h8000 - mag;
+            end
+            default: begin
+                mag = sine_quarter(~phase[21:16]);
+                sine_from_phase = 16'h8000 - mag;
+            end
+            endcase
+        end
+    endfunction
+
     wire [16:0] triangle_next0 = advance_triangle(triangle_sample, triangle_up, step);
     wire [16:0] triangle_next1 = advance_triangle(triangle_next0[15:0], triangle_next0[16], step);
     wire [16:0] triangle_next2 = advance_triangle(triangle_next1[15:0], triangle_next1[16], step);
     wire [16:0] triangle_next3 = advance_triangle(triangle_next2[15:0], triangle_next2[16], step);
+
+    wire [23:0] sine_phase1 = sine_phase + sine_step;
+    wire [23:0] sine_phase2 = sine_phase1 + sine_step;
+    wire [23:0] sine_phase3 = sine_phase2 + sine_step;
+    wire [23:0] sine_phase4 = sine_phase3 + sine_step;
+    wire [15:0] sine_sample0 = sine_from_phase(sine_phase);
+    wire [15:0] sine_sample1 = sine_from_phase(sine_phase1);
+    wire [15:0] sine_sample2 = sine_from_phase(sine_phase2);
+    wire [15:0] sine_sample3 = sine_from_phase(sine_phase3);
 
     always @(posedge jesd_clk) begin
         if (jesd_rst || !enable) begin
             triangle_sample <= 16'd0;
             triangle_up     <= 1'b1;
             triangle_word_r <= 32'd0;
+            sine_phase      <= 24'd0;
+            sine_word_r     <= 32'd0;
         end else begin
             triangle_word_r <= {triangle_next0[15:0], triangle_sample};
             triangle_sample <= triangle_next3[15:0];
             triangle_up     <= triangle_next3[16];
+            sine_word_r     <= {sine_sample1, sine_sample0};
+            sine_phase      <= sine_phase4;
         end
     end
 
     assign triangle_word = triangle_word_r;
+    assign sine_word = sine_word_r;
 
     wire [63:0] triangle_quad_word = {
         triangle_next2[15:0],
@@ -77,12 +196,18 @@ module daq_litejesd_dac_tx_path #(
         triangle_next0[15:0],
         triangle_sample
     };
+    wire [63:0] sine_quad_word = {
+        sine_sample3,
+        sine_sample2,
+        sine_sample1,
+        sine_sample0
+    };
     wire [63:0] midscale_quad_word = {4{16'h8000}};
 
-    wire [63:0] converter0 = (active_converter == 3'd0) ? triangle_quad_word : midscale_quad_word;
-    wire [63:0] converter1 = (active_converter == 3'd1) ? triangle_quad_word : midscale_quad_word;
-    wire [63:0] converter2 = (active_converter == 3'd2) ? triangle_quad_word : midscale_quad_word;
-    wire [63:0] converter3 = (active_converter == 3'd3) ? triangle_quad_word : midscale_quad_word;
+    wire [63:0] converter0 = triangle_quad_word;
+    wire [63:0] converter1 = sine_quad_word;
+    wire [63:0] converter2 = midscale_quad_word;
+    wire [63:0] converter3 = midscale_quad_word;
 
     wire [31:0] tx_data0;
     wire [31:0] tx_data1;
@@ -181,7 +306,8 @@ module daq_litejesd_dac_tx_path #(
         phy_tx_rst,
         triangle_up,
         jesd_rst,
-        6'd0
+        sine_step[3:0],
+        2'd0
     };
 
 endmodule

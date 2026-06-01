@@ -37,6 +37,9 @@
 #define CTRL_SPI_MANUAL_EN     (1u << 30)
 #define CTRL_FMC_PG_OVERRIDE   (1u << 31)
 
+#define RW2_ADC1_ILAS_BYPASS   (1u << 24)
+#define RW2_LAUNCH_DEFAULT     RW2_ADC1_ILAS_BYPASS
+
 static XUartNs550 uart;
 static char cmd[96];
 static int cmd_idx = 0;
@@ -149,6 +152,25 @@ static u32 parse_u32_token(const char *s, char **endp)
     return (u32)strtoul(p, endp, base);
 }
 
+static int parse_u32_arg(char **cursor, u32 *value)
+{
+    char *endp;
+    char *p = *cursor;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (*p == '\0')
+        return 0;
+
+    *value = parse_u32_token(p, &endp);
+    if (endp == p)
+        return 0;
+
+    *cursor = endp;
+    return 1;
+}
+
 static void print_reg(const char *name, unsigned int idx, u32 val)
 {
     send_str(name);
@@ -165,7 +187,7 @@ static void cmd_help(void)
     send_str("  STAT             dump status, counters, controls\r\n");
     send_str("  RDRO n           read RO register 0..3\r\n");
     send_str("  RDRW n           read RW register 0..3\r\n");
-    send_str("  WRTE n value     write RW register 0..3\r\n");
+    send_str("  WRTE n value     write RW register 0..3; use 0x prefix for hex masks\r\n");
     send_str("\r\n");
     send_str("RW0 control bits:\r\n");
     send_str("  [0]/[31] FMC_C2M_PG override unused on ZCU102 HPC0\r\n");
@@ -175,14 +197,16 @@ static void cmd_help(void)
     send_str("  [31] FMC_C2M_PG override enable\r\n");
     send_str("RW1[4:0] selects RO3: 0=HMC status, 1=HMC last write\r\n");
     send_str("                 2=raw pins, 3=build ID, 4=GTH, 5=GTH lanes\r\n");
-    send_str("                 6=LiteJESD, 7=triangle, 8..D=HMC readbacks\r\n");
+    send_str("                 6=LiteJESD, 7=DAC wave {sine,triangle}, 8..D=HMC readbacks\r\n");
     send_str("                 E=DAC status, F=DAC last write\r\n");
     send_str("                 16/0x10=ADC status, 17..19/0x11..0x13=ADC1\r\n");
     send_str("                 20..22/0x14..0x16=ADC2, 23/0x17=ADC write, 24/0x18=ADC read\r\n");
     send_str("                 25..31/0x19..0x1F=ADC1 JESD RX debug/sample\r\n");
     send_str("RW2 ADC1 JESD RX: [24] bypass ILAS check, [25] STPL check, [26] DP order\r\n");
+    send_str("                  firmware default is RW2=0x01000000 for ADC1 bring-up\r\n");
     send_str("                  [29:28] raw RX lane shown in selector 31/0x1F\r\n");
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
+    send_str("    [31:8] DAC converter-1 sine DDS step; 0 uses hardware default 0x010000\r\n");
     print_uart_config();
 }
 
@@ -215,7 +239,7 @@ static void launch_defaults(void)
     u32 ctrl = CTRL_DAC_CS_N | CTRL_HMC_CS_N;
 
     Xil_Out32(RW_REG0, ctrl);
-    Xil_Out32(RW_REG2, 0);
+    Xil_Out32(RW_REG2, RW2_LAUNCH_DEFAULT);
     Xil_Out32(RW_REG3, 0);
 }
 
@@ -226,15 +250,33 @@ static void process_cmd(void)
     } else if (strncmp(cmd, "STAT", 4) == 0) {
         cmd_status();
     } else if (strncmp(cmd, "RDRO", 4) == 0) {
-        unsigned int idx = (unsigned int)parse_u32_token(&cmd[5], NULL);
+        char *p = &cmd[5];
+        u32 idx;
+        if (!parse_u32_arg(&p, &idx) || idx > 3u) {
+            send_str("ERR RDRO expects register 0..3\r\n");
+            return;
+        }
         print_reg("RO", idx, Xil_In32(ro_addr(idx)));
     } else if (strncmp(cmd, "RDRW", 4) == 0) {
-        unsigned int idx = (unsigned int)parse_u32_token(&cmd[5], NULL);
+        char *p = &cmd[5];
+        u32 idx;
+        if (!parse_u32_arg(&p, &idx) || idx > 3u) {
+            send_str("ERR RDRW expects register 0..3\r\n");
+            return;
+        }
         print_reg("RW", idx, Xil_In32(rw_addr(idx)));
     } else if (strncmp(cmd, "WRTE", 4) == 0) {
         char *p = &cmd[5];
-        unsigned int idx = (unsigned int)parse_u32_token(p, &p);
-        u32 val = parse_u32_token(p, NULL);
+        u32 idx;
+        u32 val;
+        if (!parse_u32_arg(&p, &idx) || idx > 3u) {
+            send_str("ERR WRTE expects register 0..3 and value\r\n");
+            return;
+        }
+        if (!parse_u32_arg(&p, &val)) {
+            send_str("ERR WRTE expects register 0..3 and value\r\n");
+            return;
+        }
         Xil_Out32(rw_addr(idx), val);
         send_str("OK\r\n");
     } else {
