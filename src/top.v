@@ -613,9 +613,10 @@ module top #(
     assign gth_txctrl2_lane0_async = 8'd0;
 `endif
 
-    wire [167:0] fabric_debug_sync;
+    localparam integer FABRIC_DEBUG_SYNC_WIDTH = 175;
+    wire [FABRIC_DEBUG_SYNC_WIDTH-1:0] fabric_debug_sync;
     cdc_vector_sync #(
-        .WIDTH (168)
+        .WIDTH (FABRIC_DEBUG_SYNC_WIDTH)
     ) u_fabric_debug_sync (
         .dest_clk (clk_200),
         .dest_rst (fabric_rst),
@@ -797,9 +798,7 @@ module top #(
         sysref_seen,
         clk_fmc_seen,
         fabric_rst,
-        CPU_RESET,
-        microblaze_reset,
-        mmcm_locked
+        microblaze_reset
     };
 
     ila_fabric_debug u_ila_fabric_debug (

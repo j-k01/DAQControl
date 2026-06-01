@@ -1,6 +1,10 @@
 # Debug and status CDC paths intentionally terminate at explicit two-flop
 # synchronizers.  Collect pins by object property rather than by name-filtered
 # get_pins calls; Vivado can rename vector flops and leave the old filter empty.
+proc daq_get_clocks_by_regexp {pattern} {
+    return [get_clocks -quiet -regexp $pattern]
+}
+
 proc daq_get_cell_pins_by_ref_name {cells ref_name} {
     set matched_pins {}
     foreach cell $cells {
@@ -11,6 +15,29 @@ proc daq_get_cell_pins_by_ref_name {cells ref_name} {
         }
     }
     return $matched_pins
+}
+
+# The launch design deliberately samples board-health and GT-status signals
+# into the 200 MHz fabric/debug domain.  None of those CDC paths are functional
+# timing paths; they terminate in explicit synchronizers or debug-only status
+# logic.  Cut the clock domains at the clock level so first-stage CDC flops do
+# not dominate route timing when Vivado renames or replicates the registers.
+set fabric_debug_clks [daq_get_clocks_by_regexp {^(USER_SI570_300|clk_out[0-9]+_clk_wiz_0_1)$}]
+set gth_tx_user_clks  [daq_get_clocks_by_regexp {.*gtwiz_userclk_tx.*}]
+set gth_rx_user_clks  [daq_get_clocks_by_regexp {.*gtwiz_userclk_rx.*}]
+set sampled_fmc_clks  [daq_get_clocks_by_regexp {^DAQ_CLK_FMC$}]
+
+if {[llength $fabric_debug_clks] > 0 && [llength $gth_tx_user_clks] > 0} {
+    set_clock_groups -asynchronous -group $fabric_debug_clks -group $gth_tx_user_clks
+}
+if {[llength $fabric_debug_clks] > 0 && [llength $gth_rx_user_clks] > 0} {
+    set_clock_groups -asynchronous -group $fabric_debug_clks -group $gth_rx_user_clks
+}
+if {[llength $gth_tx_user_clks] > 0 && [llength $gth_rx_user_clks] > 0} {
+    set_clock_groups -asynchronous -group $gth_tx_user_clks -group $gth_rx_user_clks
+}
+if {[llength $fabric_debug_clks] > 0 && [llength $sampled_fmc_clks] > 0} {
+    set_clock_groups -asynchronous -group $fabric_debug_clks -group $sampled_fmc_clks
 }
 
 set async_reg_cells [get_cells -hier -quiet -filter {ASYNC_REG == TRUE}]
