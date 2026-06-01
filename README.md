@@ -220,6 +220,15 @@ before synthesis/implementation:
 vivado.bat -mode batch -source rebuild.tcl -tclargs --with-staged-gt --jobs 8
 ```
 
+The BRAM DAC/ADC loopback dataplane is intentionally not part of that baseline
+bring-up build. Add it only when isolating the PC-loaded waveform/capture path:
+
+```powershell
+vivado.bat -mode batch -source rebuild.tcl -tclargs --with-bram-dataplane --jobs 8
+```
+
+`--with-bram-dataplane` implies `--with-staged-gt` and `--with-litejesd`.
+
 Always rerun `create_project.tcl` after pulling HDL/Tcl changes. The old flow
 used imported source copies under `project/DAQ_LAUNCH.srcs/`, so running only
 `build.tcl` after a pull can rebuild stale HDL. `build.tcl` now checks for this

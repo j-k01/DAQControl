@@ -12,8 +12,15 @@
 #endif
 
 #define REG_BASE              XPAR_AXI4_REGISTER_FILE_0_S00_AXI_BASEADDR
+
+#if defined(XPAR_DAC_PROGRAM_BRAM_CTRL_S_AXI_BASEADDR) && \
+    defined(XPAR_ADC_CAPTURE_BRAM_CTRL_S_AXI_BASEADDR)
+#define HAS_BRAM_DATAPLANE 1
 #define DAC_PROGRAM_BRAM_BASE XPAR_DAC_PROGRAM_BRAM_CTRL_S_AXI_BASEADDR
 #define ADC_CAPTURE_BRAM_BASE XPAR_ADC_CAPTURE_BRAM_CTRL_S_AXI_BASEADDR
+#else
+#define HAS_BRAM_DATAPLANE 0
+#endif
 #define RW_REG0   (REG_BASE + 0x00)
 #define RW_REG1   (REG_BASE + 0x04)
 #define RW_REG2   (REG_BASE + 0x08)
@@ -43,6 +50,7 @@
 #define RW2_CAPTURE_STATUS_SEL (1u << 31)
 #define RW2_LAUNCH_DEFAULT     RW2_ADC1_ILAS_BYPASS
 
+#if HAS_BRAM_DATAPLANE
 #define RW3_CAPTURE_START      (1u << 3)
 #define RW3_CAPTURE_SRC_SHIFT  4
 #define RW3_CAPTURE_SRC_MASK   (3u << RW3_CAPTURE_SRC_SHIFT)
@@ -56,6 +64,7 @@
 #define CAPTURE_STATUS_MARKER  0xC4000000u
 #define CAPTURE_STATUS_DONE    (1u << 19)
 #define CAPTURE_STATUS_BUSY    (1u << 18)
+#endif
 
 static XUartNs550 uart;
 static char cmd[96];
@@ -218,6 +227,7 @@ static void print_reg(const char *name, unsigned int idx, u32 val)
     send_str("\r\n");
 }
 
+#if HAS_BRAM_DATAPLANE
 static u32 capture_status_word(void)
 {
     u32 old_rw1 = Xil_In32(RW_REG1);
@@ -330,6 +340,7 @@ static void cmd_capture(u32 words, u32 source)
         send_byte((u8)((sample >> 24) & 0xFFu));
     }
 }
+#endif
 
 static void cmd_help(void)
 {
@@ -339,9 +350,13 @@ static void cmd_help(void)
     send_str("  RDRO n           read RO register 0..3\r\n");
     send_str("  RDRW n           read RW register 0..3\r\n");
     send_str("  WRTE n value     write RW register 0..3; use 0x prefix for hex masks\r\n");
+#if HAS_BRAM_DATAPLANE
     send_str("  PROG [n]         upload n little-endian 32-bit DAC program words after PGRD\r\n");
     send_str("  CAPS             print ADC BRAM capture status\r\n");
     send_str("  CAPT [n] [src]   restart DAC program, capture ADC BRAM, stream binary data\r\n");
+#else
+    send_str("  PROG/CAPS/CAPT   unavailable; rebuild with --with-bram-dataplane\r\n");
+#endif
     send_str("\r\n");
     send_str("RW0 control bits:\r\n");
     send_str("  [0]/[31] FMC_C2M_PG override unused on ZCU102 HPC0\r\n");
@@ -356,28 +371,37 @@ static void cmd_help(void)
     send_str("                 16/0x10=ADC status, 17..19/0x11..0x13=ADC1\r\n");
     send_str("                 20..22/0x14..0x16=ADC2, 23/0x17=ADC write, 24/0x18=ADC read\r\n");
     send_str("                 25..31/0x19..0x1F=ADC1 JESD RX debug/sample\r\n");
+#if HAS_BRAM_DATAPLANE
     send_str("                 selector 7 returns DAC program player status when RW3[6]=1\r\n");
+#endif
     send_str("RW2 ADC1 JESD RX: [24] bypass ILAS check, [25] STPL check, [26] DP order\r\n");
     send_str("                  firmware default is RW2=0x01000000 for ADC1 bring-up\r\n");
     send_str("                  [29:28] raw RX lane shown in selector 31/0x1F\r\n");
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
+#if HAS_BRAM_DATAPLANE
     send_str("    [3] ADC BRAM capture/DAC program restart pulse, [5:4] capture source\r\n");
     send_str("    [6] DAC program BRAM mode enable; CAPT sets this automatically\r\n");
+#endif
     send_str("    [31:8] DAC converter-1 sine DDS step; 0 uses hardware default 0x010000\r\n");
+#if HAS_BRAM_DATAPLANE
     send_str("Capture sources: 0=A low, 1=A high, 2=B low, 3=B high; full buffer is 262144 words\r\n");
+#endif
     print_uart_config();
 }
 
 static void cmd_status(void)
 {
     unsigned int i;
+    u32 s;
+    u32 rw2;
 
     for (i = 0; i < 4; i++)
         print_reg("RW", i, Xil_In32(rw_addr(i)));
     for (i = 0; i < 4; i++)
         print_reg("RO", i, Xil_In32(ro_addr(i)));
 
-    u32 s = Xil_In32(RO_REG0);
+    s = Xil_In32(RO_REG0);
+    rw2 = Xil_In32(RW_REG2);
     send_str("decoded: ");
     send_str((s & (1u << 0)) ? "mmcm " : "no_mmcm ");
     send_str((s & (1u << 1)) ? "present " : "not_present ");
@@ -388,6 +412,15 @@ static void cmd_status(void)
     send_str((s & (1u << 10)) ? "gbt1 " : "no_gbt1 ");
     send_str((s & (1u << 14)) ? "dac_alarm " : "no_dac_alarm ");
     send_str((s & (1u << 15)) ? "dac_sync_high" : "dac_sync_low");
+    send_str("\r\n");
+    send_str("gth_gate: ");
+    send_str((s & (1u << 27)) ? "hmc_done " : "hmc_not_done ");
+    send_str((rw2 & (1u << 0)) ? "sw_reset_asserted " : "sw_reset_released ");
+    send_str((s & (1u << 16)) ? "qpll_locked " : "qpll_unlocked ");
+    send_str((s & (1u << 17)) ? "tx_ready " : "tx_not_ready ");
+    send_str((s & (1u << 18)) ? "rx_ready " : "rx_not_ready ");
+    send_str((s & (1u << 19)) ? "litejesd_active " : "litejesd_in_reset ");
+    send_str((s & (1u << 20)) ? "litejesd_ready" : "litejesd_not_ready");
     send_str("\r\n");
     print_uart_config();
 }
@@ -437,6 +470,7 @@ static void process_cmd(void)
         }
         Xil_Out32(rw_addr(idx), val);
         send_str("OK\r\n");
+#if HAS_BRAM_DATAPLANE
     } else if (strncmp(cmd, "PROG", 4) == 0) {
         char *p = &cmd[4];
         u32 words = CAPTURE_WORDS;
@@ -451,6 +485,12 @@ static void process_cmd(void)
         parse_u32_arg(&p, &words);
         parse_u32_arg(&p, &source);
         cmd_capture(words, source);
+#else
+    } else if (strncmp(cmd, "PROG", 4) == 0 ||
+               strncmp(cmd, "CAPS", 4) == 0 ||
+               strncmp(cmd, "CAPT", 4) == 0) {
+        send_str("ERR BRAM dataplane not built; rebuild with --with-bram-dataplane\r\n");
+#endif
     } else {
         send_str("ERR unknown command; try HELP\r\n");
     }

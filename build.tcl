@@ -56,6 +56,44 @@ proc validate_clock_contract {} {
     }
 }
 
+proc validate_microblaze_bd_contract {} {
+    set bd_files [get_files -quiet microblaze_bd.bd]
+    set defines [get_property verilog_define [current_fileset]]
+    set expect_bram_dataplane [expr {[lsearch -glob $defines "DAQ_WITH_BRAM_DATAPLANE*"] >= 0}]
+
+    if {[llength $bd_files] == 0} {
+        error "MicroBlaze BD contract failure: microblaze_bd.bd was not found in the project. Re-run create_project.tcl."
+    }
+
+    open_bd_design [lindex $bd_files 0]
+
+    foreach cell_name {axi_uart16550_0 AXI4_register_file_0} {
+        if {[llength [get_bd_cells -quiet $cell_name]] != 1} {
+            error "MicroBlaze BD contract failure: missing expected BD cell '$cell_name'. Re-run create_project.tcl."
+        }
+    }
+
+    foreach cell_name {dac_program_bram_ctrl adc_capture_bram_ctrl dac_program_bram adc_capture_bram} {
+        set count [llength [get_bd_cells -quiet $cell_name]]
+        if {$expect_bram_dataplane && $count != 1} {
+            error "MicroBlaze BD contract failure: missing expected BRAM dataplane cell '$cell_name'. Re-run create_project.tcl --with-bram-dataplane."
+        }
+        if {!$expect_bram_dataplane && $count != 0} {
+            error "MicroBlaze BD contract failure: stale BRAM dataplane cell '$cell_name' exists in a non-BRAM build. Re-run create_project.tcl without --with-bram-dataplane."
+        }
+    }
+
+    foreach port_name {DAC_BRAM_PORTB_0 ADC_BRAM_PORTB_0} {
+        set count [llength [get_bd_intf_ports -quiet $port_name]]
+        if {$expect_bram_dataplane && $count != 1} {
+            error "MicroBlaze BD contract failure: missing expected external BRAM interface '$port_name'. Re-run create_project.tcl --with-bram-dataplane."
+        }
+        if {!$expect_bram_dataplane && $count != 0} {
+            error "MicroBlaze BD contract failure: stale external BRAM interface '$port_name' exists in a non-BRAM build. Re-run create_project.tcl without --with-bram-dataplane."
+        }
+    }
+}
+
 proc validate_source_contract {script_dir} {
     set expected_top [file normalize [file join $script_dir src top.v]]
     set project_top_files [get_files -quiet top.v]
@@ -128,6 +166,7 @@ for {set i 0} {$i < [llength $::argv]} {incr i} {
 validate_ips_unlocked
 validate_source_contract $script_dir
 validate_clock_contract
+validate_microblaze_bd_contract
 
 if {$bake_elf} {
     set elf_file $script_dir/sw/workspace/firmware/Debug/firmware.elf

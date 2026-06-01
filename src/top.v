@@ -81,6 +81,7 @@ module top #(
     wire ro_reg2_rdint;
     wire ro_reg3_rdint;
 
+`ifdef DAQ_WITH_BRAM_DATAPLANE
     wire [31:0] dac_bram_addr;
     wire        dac_bram_clk;
     wire [31:0] dac_bram_din;
@@ -96,6 +97,7 @@ module top #(
     wire        adc_bram_en;
     wire        adc_bram_rst;
     wire [3:0]  adc_bram_we;
+`endif
 
     wire [31:0] status_reg;
     wire [31:0] clk_fmc_count;
@@ -128,7 +130,9 @@ module top #(
         .RO_REG0_RDINT_0      (ro_reg0_rdint),
         .RO_REG1_RDINT_0      (ro_reg1_rdint),
         .RO_REG2_RDINT_0      (ro_reg2_rdint),
-        .RO_REG3_RDINT_0      (ro_reg3_rdint),
+        .RO_REG3_RDINT_0      (ro_reg3_rdint)
+`ifdef DAQ_WITH_BRAM_DATAPLANE
+        ,
         .DAC_BRAM_PORTB_0_addr (dac_bram_addr),
         .DAC_BRAM_PORTB_0_clk  (dac_bram_clk),
         .DAC_BRAM_PORTB_0_din  (dac_bram_din),
@@ -143,6 +147,7 @@ module top #(
         .ADC_BRAM_PORTB_0_en   (adc_bram_en),
         .ADC_BRAM_PORTB_0_rst  (adc_bram_rst),
         .ADC_BRAM_PORTB_0_we   (adc_bram_we)
+`endif
     );
 
     (* ASYNC_REG = "TRUE" *) reg [2:0] uart_rxd_sync = 3'b111;
@@ -619,6 +624,7 @@ module top #(
         .dest     (dac_sine_phase_inc_tx)
     );
 
+`ifdef DAQ_WITH_BRAM_DATAPLANE
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_program_req_sync = 3'b000;
     (* ASYNC_REG = "TRUE" *) reg [1:0] dac_program_enable_sync = 2'b00;
 
@@ -650,6 +656,11 @@ module top #(
         .program_word (dac_program_word_async),
         .status       (dac_program_status_async)
     );
+`else
+    wire dac_program_enable = 1'b0;
+    assign dac_program_word_async = 32'h8000_8000;
+    assign dac_program_status_async = 32'd0;
+`endif
 
     daq_litejesd_dac_tx_path u_litejesd_dac_tx_path (
         .jesd_clk         (gth_tx_usrclk2),
@@ -714,12 +725,14 @@ module top #(
     assign litejesd_sine_async = 32'd0;
     assign dac_program_word_async = 32'h8000_8000;
     assign dac_program_status_async = 32'd0;
+`ifdef DAQ_WITH_BRAM_DATAPLANE
     assign dac_bram_addr = 32'd0;
     assign dac_bram_clk = clk_200;
     assign dac_bram_din = 32'd0;
     assign dac_bram_en = 1'b0;
     assign dac_bram_rst = 1'b0;
     assign dac_bram_we = 4'd0;
+`endif
 
     assign gth_userdata_tx = {8{32'hbcbc_bcbc}};
     assign gth_txctrl2 = {
@@ -951,6 +964,7 @@ module top #(
         .raw_lane_data      (adc1_rx_raw_lane_async)
     );
 
+`ifdef DAQ_WITH_BRAM_DATAPLANE
     (* ASYNC_REG = "TRUE" *) reg [2:0] adc_capture_req_sync = 3'b000;
     (* ASYNC_REG = "TRUE" *) reg [1:0] adc_capture_source_meta = 2'b00;
     (* ASYNC_REG = "TRUE" *) reg [1:0] adc_capture_source_sync = 2'b00;
@@ -989,6 +1003,9 @@ module top #(
         .status        (adc_capture_status_async)
     );
 `else
+    assign adc_capture_status_async = 32'd0;
+`endif
+`else
     assign adc1_sync_n_async = 1'b0;
     assign adc1_litejesd_ready_async = 1'b0;
     assign adc1_rx_status_async = 32'd0;
@@ -1000,12 +1017,14 @@ module top #(
     assign adc1_rx_sample_b_high_async = 32'd0;
     assign adc1_rx_raw_lane_async = 32'd0;
     assign adc_capture_status_async = 32'd0;
+`ifdef DAQ_WITH_BRAM_DATAPLANE
     assign adc_bram_addr = 32'd0;
     assign adc_bram_clk = clk_200;
     assign adc_bram_din = 32'd0;
     assign adc_bram_en = 1'b0;
     assign adc_bram_rst = 1'b0;
     assign adc_bram_we = 4'd0;
+`endif
 `endif
 
     assign gth_unused_reduce = ^gth_userdata_rx ^ ^gth_rxctrl0 ^ ^gth_rxctrl1 ^
@@ -1044,6 +1063,7 @@ module top #(
     assign adc1_rx_sample_b_high_async = 32'd0;
     assign adc1_rx_raw_lane_async = 32'd0;
     assign adc_capture_status_async = 32'd0;
+`ifdef DAQ_WITH_BRAM_DATAPLANE
     assign dac_bram_addr = 32'd0;
     assign dac_bram_clk = clk_200;
     assign dac_bram_din = 32'd0;
@@ -1056,6 +1076,7 @@ module top #(
     assign adc_bram_en = 1'b0;
     assign adc_bram_rst = 1'b0;
     assign adc_bram_we = 4'd0;
+`endif
 `endif
 
     localparam integer FABRIC_DEBUG_SYNC_WIDTH = 239;
@@ -1265,7 +1286,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0009;
+    wire [31:0] build_id = 32'hDA01_000A;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]
