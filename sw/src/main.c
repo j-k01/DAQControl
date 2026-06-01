@@ -47,6 +47,13 @@
 #define CTRL_FMC_PG_OVERRIDE   (1u << 31)
 
 #define RW2_ADC1_ILAS_BYPASS   (1u << 24)
+#define RW2_ADC1_STPL_CHECK    (1u << 25)
+#define RW2_ADC1_DP_ORDER      (1u << 26)
+#define RW2_ADC1_RX_POL_SHIFT  16
+#define RW2_ADC1_RX_POL_MASK   (0xFFu << RW2_ADC1_RX_POL_SHIFT)
+#define RW2_ADC1_RAW_SHIFT     28
+#define RW2_ADC1_RAW_MASK      (3u << RW2_ADC1_RAW_SHIFT)
+#define RW2_GTH_RESET          (1u << 0)
 #define RW2_CAPTURE_STATUS_SEL (1u << 31)
 #define RW2_LAUNCH_DEFAULT     RW2_ADC1_ILAS_BYPASS
 
@@ -227,6 +234,221 @@ static void print_reg(const char *name, unsigned int idx, u32 val)
     send_str("\r\n");
 }
 
+static u32 read_selected_count(u32 selector)
+{
+    u32 old_rw1 = Xil_In32(RW_REG1);
+    u32 value;
+
+    Xil_Out32(RW_REG1, selector);
+    value = Xil_In32(RO_REG3);
+    Xil_Out32(RW_REG1, old_rw1);
+    return value;
+}
+
+static u32 read_adc1_raw_lane(u32 lane)
+{
+    u32 old_rw2 = Xil_In32(RW_REG2);
+    u32 value;
+
+    Xil_Out32(RW_REG2, (old_rw2 & ~RW2_ADC1_RAW_MASK) |
+                        ((lane & 3u) << RW2_ADC1_RAW_SHIFT));
+    value = read_selected_count(31u);
+    Xil_Out32(RW_REG2, old_rw2);
+    return value;
+}
+
+static void print_named_hex(const char *name, u32 value)
+{
+    send_str(name);
+    send_str("=");
+    send_hex(value);
+}
+
+static void print_adc1_rx_decode(u32 status, u32 lane)
+{
+    send_str("adc1_rx: ready=");
+    send_uint((status >> 23) & 1u);
+    send_str(" sync_n=");
+    send_uint((status >> 22) & 1u);
+    send_str(" ilas_check=");
+    send_uint((status >> 20) & 1u);
+    send_str(" bytealign=");
+    send_uint((status >> 18) & 1u);
+    send_str(" cdr=");
+    send_uint((status >> 17) & 1u);
+    send_str(" pma=");
+    send_uint((status >> 16) & 1u);
+    send_str(" link_ready=");
+    send_hex((status >> 12) & 0xFu);
+    send_str(" link_sync=");
+    send_hex((status >> 8) & 0xFu);
+    send_str(" k_seen=");
+    send_hex((status >> 4) & 0xFu);
+    send_str(" data_seen=");
+    send_hex(status & 0xFu);
+    send_str("\r\n");
+
+    send_str("adc1_lanes: align=");
+    send_hex((lane >> 24) & 0xFu);
+    send_str(" err_seen=");
+    send_hex((lane >> 20) & 0xFu);
+    send_str(" notintable=");
+    send_hex((lane >> 16) & 0xFu);
+    send_str(" disperr=");
+    send_hex((lane >> 12) & 0xFu);
+    send_str(" bytealigned=");
+    send_hex((lane >> 8) & 0xFu);
+    send_str(" cdrlock=");
+    send_hex((lane >> 4) & 0xFu);
+    send_str(" pma_done=");
+    send_hex(lane & 0xFu);
+    send_str("\r\n");
+}
+
+static void cmd_loop(void)
+{
+    u32 old_rw1 = Xil_In32(RW_REG1);
+    u32 old_rw2 = Xil_In32(RW_REG2);
+    u32 gth = read_selected_count(4u);
+    u32 gth_lanes = read_selected_count(5u);
+    u32 dac_tx = read_selected_count(6u);
+    u32 adc_init = read_selected_count(16u);
+    u32 adc1_analog = read_selected_count(17u);
+    u32 adc1_digital = read_selected_count(18u);
+    u32 adc1_rx = read_selected_count(25u);
+    u32 adc1_lanes = read_selected_count(26u);
+    u32 adc1_events = read_selected_count(27u);
+    u32 a_low = read_selected_count(28u);
+    u32 a_high = read_selected_count(29u);
+    u32 b_low = read_selected_count(30u);
+    u32 raw0 = read_adc1_raw_lane(0u);
+    u32 raw1 = read_adc1_raw_lane(1u);
+    u32 raw2 = read_adc1_raw_lane(2u);
+    u32 raw3 = read_adc1_raw_lane(3u);
+
+    send_str("LOOP ");
+    print_named_hex("build", read_selected_count(3u));
+    send_str(" ");
+    print_named_hex("rw2", old_rw2);
+    send_str("\r\n");
+
+    print_named_hex("gth", gth);
+    send_str(" ");
+    print_named_hex("gth_lanes", gth_lanes);
+    send_str(" ");
+    print_named_hex("dac_tx", dac_tx);
+    send_str("\r\n");
+
+    print_named_hex("adc_init", adc_init);
+    send_str(" ");
+    print_named_hex("adc1_analog", adc1_analog);
+    send_str(" ");
+    print_named_hex("adc1_digital", adc1_digital);
+    send_str("\r\n");
+
+    print_named_hex("adc1_rx", adc1_rx);
+    send_str(" ");
+    print_named_hex("adc1_lanes", adc1_lanes);
+    send_str(" ");
+    print_named_hex("events", adc1_events);
+    send_str("\r\n");
+    print_adc1_rx_decode(adc1_rx, adc1_lanes);
+
+    print_named_hex("adc_sample_a_lo", a_low);
+    send_str(" ");
+    print_named_hex("adc_sample_a_hi", a_high);
+    send_str(" ");
+    print_named_hex("adc_sample_b_lo", b_low);
+    send_str("\r\n");
+
+    print_named_hex("raw0", raw0);
+    send_str(" ");
+    print_named_hex("raw1", raw1);
+    send_str(" ");
+    print_named_hex("raw2", raw2);
+    send_str(" ");
+    print_named_hex("raw3", raw3);
+    send_str("\r\n");
+
+    Xil_Out32(RW_REG2, old_rw2);
+    Xil_Out32(RW_REG1, old_rw1);
+}
+
+static void short_delay(void)
+{
+    volatile u32 i;
+    for (i = 0; i < 1000000u; i++)
+        ;
+}
+
+static void cmd_rxsw(void)
+{
+    static const u32 bases[4] = {
+        0u,
+        RW2_ADC1_ILAS_BYPASS,
+        RW2_ADC1_DP_ORDER,
+        RW2_ADC1_ILAS_BYPASS | RW2_ADC1_DP_ORDER
+    };
+    static const char *names[4] = {
+        "ilas_on,sundance_order",
+        "ilas_bypass,sundance_order",
+        "ilas_on,physical_order",
+        "ilas_bypass,physical_order"
+    };
+    u32 old_rw1 = Xil_In32(RW_REG1);
+    u32 old_rw2 = Xil_In32(RW_REG2);
+    unsigned int mode;
+    unsigned int combo;
+
+    send_str("RXSW bit24=ILAS_bypass bit26=physical_DP_order\r\n");
+    for (mode = 0; mode < 4u; mode++) {
+        for (combo = 0; combo < 16u; combo++) {
+            u32 rxmask = (u32)combo << 4;
+            u32 rw2 = bases[mode] | (rxmask << RW2_ADC1_RX_POL_SHIFT);
+            u32 status;
+            u32 lane;
+            u32 events;
+
+            Xil_Out32(RW_REG2, rw2 | RW2_GTH_RESET);
+            short_delay();
+            Xil_Out32(RW_REG2, rw2);
+            short_delay();
+
+            status = read_selected_count(25u);
+            lane = read_selected_count(26u);
+            events = read_selected_count(27u);
+
+            send_str(names[mode]);
+            send_str(" rxmask=");
+            send_hex(rxmask);
+            send_str(" rw2=");
+            send_hex(rw2);
+            send_str(" ready=");
+            send_uint((status >> 23) & 1u);
+            send_str(" sync=");
+            send_uint((status >> 22) & 1u);
+            send_str(" link=");
+            send_hex((status >> 12) & 0xFu);
+            send_str(" err=");
+            send_hex((lane >> 20) & 0xFu);
+            send_str(" nit=");
+            send_hex((lane >> 16) & 0xFu);
+            send_str(" disp=");
+            send_hex((lane >> 12) & 0xFu);
+            send_str(" status=");
+            send_hex(status);
+            send_str(" lane=");
+            send_hex(lane);
+            send_str(" events=");
+            send_hex(events);
+            send_str("\r\n");
+        }
+    }
+
+    Xil_Out32(RW_REG2, old_rw2);
+    Xil_Out32(RW_REG1, old_rw1);
+}
+
 #if HAS_BRAM_DATAPLANE
 static u32 capture_status_word(void)
 {
@@ -347,6 +569,8 @@ static void cmd_help(void)
     send_str("DAQ_LAUNCH commands:\r\n");
     send_str("  HELP\r\n");
     send_str("  STAT             dump status, counters, controls\r\n");
+    send_str("  LOOP             dump DAC TX / ADC1 RX loopback diagnostics\r\n");
+    send_str("  RXSW             sweep ADC1 RX ILAS/order/polarity diagnostics\r\n");
     send_str("  RDRO n           read RO register 0..3\r\n");
     send_str("  RDRW n           read RW register 0..3\r\n");
     send_str("  WRTE n value     write RW register 0..3; use 0x prefix for hex masks\r\n");
@@ -440,6 +664,10 @@ static void process_cmd(void)
         cmd_help();
     } else if (strncmp(cmd, "STAT", 4) == 0) {
         cmd_status();
+    } else if (strncmp(cmd, "LOOP", 4) == 0) {
+        cmd_loop();
+    } else if (strncmp(cmd, "RXSW", 4) == 0) {
+        cmd_rxsw();
     } else if (strncmp(cmd, "RDRO", 4) == 0) {
         char *p = &cmd[5];
         u32 idx;
