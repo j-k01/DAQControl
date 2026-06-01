@@ -81,7 +81,7 @@ module hmc7044_init_tb;
             first_word = {first_word[22:0], spi_sdio_o};
             bit_count = bit_count + 1;
         end
-        if (!spi_cs_n && spi_sdio_oe && step_index >= 8'd127 &&
+        if (!spi_cs_n && spi_sdio_oe && step_index == 8'd128 &&
             read_cmd_bit_count < 16) begin
             first_read_cmd = {first_read_cmd[14:0], spi_sdio_o};
             read_cmd_bit_count = read_cmd_bit_count + 1;

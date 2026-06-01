@@ -81,13 +81,15 @@ class ExportPHY:
 class LiteJESDDacTX(Module):
     """TX-only JESD204B block for the DAQ DAC launch path.
 
-    Settings match the intended DAC39J84-style 8-lane, 16-bit, 8B/10B link:
+    Settings match the DAC39J84 quad-channel 8411 mode used by the Sundance
+    FMC-ADC500-CD example design:
 
     - L = 8 lanes
-    - M = 8 converters
+    - M = 4 converters
     - N = N' = 16 bits
-    - S = 2 samples per converter per frame
-    - F = 4 octets per frame per lane
+    - S = 1 sample per converter per frame
+    - F = 1 octet per frame per lane
+    - HD = 1 high-density mode
     - K = 32 frames per multiframe
     """
 
@@ -100,7 +102,7 @@ class LiteJESDDacTX(Module):
         self.stpl_enable = Signal(name="stpl_enable")
         self.ready = Signal(name="ready")
 
-        self.converters = [Signal(32, name=f"converter{i}") for i in range(8)]
+        self.converters = [Signal(64, name=f"converter{i}") for i in range(4)]
         self.tx_data = [Signal(32, name=f"tx_data{i}") for i in range(8)]
         self.tx_ctrl = [Signal(4, name=f"tx_ctrl{i}") for i in range(8)]
 
@@ -112,8 +114,8 @@ class LiteJESDDacTX(Module):
             self.phy_cds.append(cd)
             phys.append(ExportPHY(lane))
 
-        physical = JESD204BPhysicalSettings(l=8, m=8, n=16, np=16)
-        transport = JESD204BTransportSettings(f=4, s=2, k=32, cs=0)
+        physical = JESD204BPhysicalSettings(l=8, m=4, n=16, np=16)
+        transport = JESD204BTransportSettings(f=1, s=1, k=32, cs=0, hd=1)
         settings = JESD204BSettings(
             physical,
             transport,
@@ -126,7 +128,7 @@ class LiteJESDDacTX(Module):
         core = LiteJESD204BCoreTX(
             phys,
             settings,
-            converter_data_width=32,
+            converter_data_width=64,
             scrambling=True,
             stpl_random=False,
         )
@@ -140,9 +142,13 @@ class LiteJESDDacTX(Module):
             self.ready.eq(core.ready),
         ]
 
+        for converter in range(4):
+            self.comb += [
+                getattr(core.sink, f"converter{converter}").eq(self.converters[converter]),
+            ]
+
         for lane in range(8):
             self.comb += [
-                getattr(core.sink, f"converter{lane}").eq(self.converters[lane]),
                 phys[lane].sink.ready.eq(1),
                 self.tx_data[lane].eq(phys[lane].sink.data),
                 self.tx_ctrl[lane].eq(phys[lane].sink.ctrl),

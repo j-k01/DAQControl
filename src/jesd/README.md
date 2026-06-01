@@ -8,26 +8,29 @@ Generated configuration:
 - JESD204B TX only
 - 8B/10B line coding
 - `L = 8`
-- `M = 8`
+- `M = 4`
 - `N = 16`
 - `N' = 16`
-- `S = 2`
-- `F = 4`
+- `S = 1`
+- `F = 1`
 - `K = 32`
+- `HD = 1`
 - scrambling enabled
 - subclass-1 style `SYSREF` input
 
-The module exports one 32-bit converter input per converter:
+The module exports one 64-bit converter input per DAC converter:
 
 ```verilog
-converter0 ... converter7
+converter0 ... converter3
 ```
 
-Each converter word carries two 16-bit DAC samples:
+Each converter word carries four 16-bit DAC samples:
 
 ```verilog
-converterN[15:0]  = first sample
-converterN[31:16] = second sample
+converterN[15:0]  = sample 0
+converterN[31:16] = sample 1
+converterN[47:32] = sample 2
+converterN[63:48] = sample 3
 ```
 
 The block outputs one raw 8B/10B TX datapath per JESD lane:
@@ -55,6 +58,22 @@ data input. Connect `gth_txcharisk` to the 8B/10B `TXCTRL2` / charisk path,
 with `TXCTRL0` and `TXCTRL1` tied low unless the generated wrapper requires
 those ports for another control function. Keep `TX8B10BEN` asserted and
 `TX8B10BBYPASS` deasserted.
+
+`dac39j84_init.v` configures the DAC automatically after the HMC7044 clock
+startup is complete. It uses the Sundance `init8411_dac_remapped` register
+order, 500 kHz SPI, 10 ms spacing between writes, and the 1 s alarm-clear
+delay from the BSP. Register `0x4D` is deliberately programmed as `0x0300`
+instead of Sundance's remapped-table `0x9300`; TI defines that register's
+upper byte as `M-1`, and the 8411 mode requires `M=4`.
+
+Runtime selectors exposed through `RW1[3:0]`:
+
+```text
+0x6: LiteJESD status
+0x7: Triangle sample word
+0xE: DAC39J84 init status
+0xF: DAC39J84 last SPI write
+```
 
 Regenerate with:
 

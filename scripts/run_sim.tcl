@@ -12,6 +12,7 @@ exec xvlog.bat -sv \
     ../../src/clock_activity_monitor.v \
     ../../src/signal_activity_monitor.v \
     ../../src/hmc7044_init.v \
+    ../../src/dac39j84_init.v \
     ../../src/top.v \
     ../top_tb.sv
 
@@ -24,3 +25,10 @@ exec xvlog.bat -sv \
 
 exec xelab.bat hmc7044_init_tb -snapshot hmc7044_init_tb
 exec xsim.bat hmc7044_init_tb -runall
+
+exec xvlog.bat -sv \
+    ../../src/dac39j84_init.v \
+    ../dac39j84_init_tb.sv
+
+exec xelab.bat dac39j84_init_tb -snapshot dac39j84_init_tb
+exec xsim.bat dac39j84_init_tb -runall

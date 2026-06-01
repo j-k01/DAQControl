@@ -101,11 +101,12 @@ class JESD204BConfigurationData:
 # Settings -----------------------------------------------------------------------------------------
 
 class JESD204BTransportSettings:
-    def __init__(self, f, s, k, cs):
+    def __init__(self, f, s, k, cs, hd=0):
         self.f  = f  # octets/(lane and frame)
         self.s  = s  # samples/(converter and frame)
         self.k  = k  # frames/multiframe
         self.cs = cs # control bits/sample
+        self.hd = hd # high-density mode
 
 
 class JESD204BPhysicalSettings:
@@ -166,6 +167,7 @@ class JESD204BSettings:
         cd.k  = self.transport.k - 1
         cd.s  = self.transport.s - 1
         cd.cs = self.transport.cs
+        cd.hd = self.transport.hd
 
         cd.scr = int(self.scrambling)
 

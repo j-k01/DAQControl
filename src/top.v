@@ -197,6 +197,17 @@ module top #(
     wire [1:0]  gth_qpll0lock_sync;
 
     wire manual_spi_enable = rw_reg0[30];
+    wire dac_auto_busy;
+    wire dac_auto_done;
+    wire dac_auto_reset_n;
+    wire dac_auto_cs_n;
+    wire dac_auto_sclk;
+    wire dac_auto_sdin;
+    wire [5:0] dac_auto_step;
+    wire [7:0] dac_auto_last_addr;
+    wire [15:0] dac_auto_last_data;
+    wire [31:0] dac_auto_status_reg;
+    wire [31:0] dac_auto_last_write_reg;
     wire hmc_auto_busy;
     wire hmc_auto_done;
     wire hmc_auto_reset;
@@ -220,14 +231,19 @@ module top #(
     wire [31:0] hmc_readback_pll2_word;
     wire hmc_auto_owns = ~manual_spi_enable;
     reg  hmc_restart_req_d = 1'b0;
+    reg  dac_restart_req_d = 1'b0;
     always @(posedge clk_200) begin
         if (fabric_rst) begin
             hmc_restart_req_d <= 1'b0;
+            dac_restart_req_d <= 1'b0;
         end else begin
             hmc_restart_req_d <= rw_reg3[0];
+            dac_restart_req_d <= rw_reg3[1];
         end
     end
     wire hmc_restart_pulse = ~fabric_rst & rw_reg3[0] & ~hmc_restart_req_d;
+    wire dac_restart_pulse = ~fabric_rst & hmc_auto_done &
+                              rw_reg3[1] & ~dac_restart_req_d;
 
     hmc7044_init #(
         .CLK_HZ           (200_000_000),
@@ -261,10 +277,37 @@ module top #(
         .readback_pll2_word  (hmc_readback_pll2_word)
     );
 
+    dac39j84_init #(
+        .CLK_HZ               (200_000_000),
+        .SPI_HZ               (500_000),
+        .RESET_ASSERT_US      (10_000),
+        .RESET_RELEASE_US     (10_000),
+        .WRITE_GAP_US         (10_000),
+        .CLEAR_ALARM_DELAY_US (1_000_000)
+    ) u_dac39j84_init (
+        .clk        (clk_200),
+        .rst        (fabric_rst | ~hmc_auto_done),
+        .start      (1'b1),
+        .restart    (dac_restart_pulse),
+        .busy       (dac_auto_busy),
+        .done       (dac_auto_done),
+        .reset_n    (dac_auto_reset_n),
+        .spi_cs_n   (dac_auto_cs_n),
+        .spi_sclk   (dac_auto_sclk),
+        .spi_sdin   (dac_auto_sdin),
+        .step_index (dac_auto_step),
+        .last_addr  (dac_auto_last_addr),
+        .last_data  (dac_auto_last_data),
+        .status     (dac_auto_status_reg),
+        .last_write (dac_auto_last_write_reg)
+    );
+
     assign HMC_CLK_RESET = hmc_auto_owns ? hmc_auto_reset : rw_reg0[1];
 `ifdef DAQ_WITH_LITEJESD
-    assign DAC_RESET_N   = ~fabric_rst;
-    assign DAC_TXEN      = gth_tx_ready_async;
+    assign DAC_RESET_N   = manual_spi_enable ? rw_reg0[2] :
+                            dac_auto_reset_n;
+    assign DAC_TXEN      = manual_spi_enable ? rw_reg0[3] :
+                            (dac_auto_done & gth_tx_ready_async);
 `else
     assign DAC_RESET_N   = rw_reg0[2];
     assign DAC_TXEN      = rw_reg0[3];
@@ -272,9 +315,15 @@ module top #(
     assign ADC1_RESET    = rw_reg0[4];
     assign ADC2_RESET    = rw_reg0[5];
 
+`ifdef DAQ_WITH_LITEJESD
+    assign DAC_CS_N      = manual_spi_enable ? rw_reg0[16] : dac_auto_cs_n;
+    assign DAC_SCLK      = manual_spi_enable ? rw_reg0[17] : dac_auto_sclk;
+    assign DAC_SDIN      = manual_spi_enable ? rw_reg0[18] : dac_auto_sdin;
+`else
     assign DAC_CS_N      = manual_spi_enable ? rw_reg0[16] : 1'b1;
     assign DAC_SCLK      = manual_spi_enable ? rw_reg0[17] : 1'b0;
     assign DAC_SDIN      = manual_spi_enable ? rw_reg0[18] : 1'b0;
+`endif
 
     assign HMC_CLK_CS_N  = hmc_auto_owns ? hmc_auto_cs_n : rw_reg0[19];
     assign HMC_CLK_SCLK  = hmc_auto_owns ? hmc_auto_sclk : rw_reg0[20];
@@ -721,7 +770,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0003;
+    wire [31:0] build_id = 32'hDA01_0004;
 
     always @* begin
         case (rw_reg1[3:0])
@@ -739,12 +788,15 @@ module top #(
             4'd11: selected_count = hmc_readback_pll1_word;
             4'd12: selected_count = hmc_readback_pll2_word;
             4'd13: selected_count = hmc_readback_scratch_word;
+            4'd14: selected_count = dac_auto_status_reg;
+            4'd15: selected_count = dac_auto_last_write_reg;
             default: selected_count = 32'd0;
         endcase
     end
 
     assign status_reg = {
-        2'd0,
+        dac_auto_done,
+        dac_auto_busy,
         hmc_readback_sdio_stuck,
         hmc_readback_done,
         hmc_auto_done,
@@ -781,24 +833,25 @@ module top #(
         hmc_auto_busy,
         hmc_auto_reset,
         hmc_auto_cs_n,
+        dac_auto_done,
+        dac_auto_busy,
+        dac_auto_reset_n,
+        dac_auto_cs_n,
+        dac_auto_sclk,
+        dac_auto_sdin,
         GPIO_LED,
         litejesd_ready,
         litejesd_active,
         gth_rx_ready,
         gth_tx_ready,
         gth_qpll_locked,
-        dac_sync_raw,
         dac_sync_level,
-        DAC_ALARM,
         dac_alarm_level,
         manual_spi_enable,
         DAC_TXEN,
         DAC_RESET_N,
-        HMC_CLK_RESET,
         sysref_seen,
-        clk_fmc_seen,
-        fabric_rst,
-        microblaze_reset
+        clk_fmc_seen
     };
 
     ila_fabric_debug u_ila_fabric_debug (
@@ -859,6 +912,8 @@ module top #(
 
     wire unused = clk_100 ^ clk_125 ^ gth_unused_reduce ^
                   ro_reg0_rdint ^ ro_reg1_rdint ^ ro_reg2_rdint ^
-                  ro_reg3_rdint ^ rw_reg2[0] ^ rw_reg3[0];
+                  ro_reg3_rdint ^ rw_reg2[0] ^ rw_reg3[0] ^
+                  rw_reg3[1] ^ dac_auto_step[0] ^ dac_auto_last_addr[0] ^
+                  dac_auto_last_data[0] ^ microblaze_reset;
 
 endmodule

@@ -54,6 +54,8 @@ module daq_litejesd_dac_tx_path #(
 
     wire [16:0] triangle_next0 = advance_triangle(triangle_sample, triangle_up, step);
     wire [16:0] triangle_next1 = advance_triangle(triangle_next0[15:0], triangle_next0[16], step);
+    wire [16:0] triangle_next2 = advance_triangle(triangle_next1[15:0], triangle_next1[16], step);
+    wire [16:0] triangle_next3 = advance_triangle(triangle_next2[15:0], triangle_next2[16], step);
 
     always @(posedge jesd_clk) begin
         if (jesd_rst || !enable) begin
@@ -62,23 +64,25 @@ module daq_litejesd_dac_tx_path #(
             triangle_word_r <= 32'd0;
         end else begin
             triangle_word_r <= {triangle_next0[15:0], triangle_sample};
-            triangle_sample <= triangle_next1[15:0];
-            triangle_up     <= triangle_next1[16];
+            triangle_sample <= triangle_next3[15:0];
+            triangle_up     <= triangle_next3[16];
         end
     end
 
     assign triangle_word = triangle_word_r;
 
-    wire [31:0] midscale_word = {16'h8000, 16'h8000};
+    wire [63:0] triangle_quad_word = {
+        triangle_next2[15:0],
+        triangle_next1[15:0],
+        triangle_next0[15:0],
+        triangle_sample
+    };
+    wire [63:0] midscale_quad_word = {4{16'h8000}};
 
-    wire [31:0] converter0 = (active_converter == 3'd0) ? triangle_word_r : midscale_word;
-    wire [31:0] converter1 = (active_converter == 3'd1) ? triangle_word_r : midscale_word;
-    wire [31:0] converter2 = (active_converter == 3'd2) ? triangle_word_r : midscale_word;
-    wire [31:0] converter3 = (active_converter == 3'd3) ? triangle_word_r : midscale_word;
-    wire [31:0] converter4 = (active_converter == 3'd4) ? triangle_word_r : midscale_word;
-    wire [31:0] converter5 = (active_converter == 3'd5) ? triangle_word_r : midscale_word;
-    wire [31:0] converter6 = (active_converter == 3'd6) ? triangle_word_r : midscale_word;
-    wire [31:0] converter7 = (active_converter == 3'd7) ? triangle_word_r : midscale_word;
+    wire [63:0] converter0 = (active_converter == 3'd0) ? triangle_quad_word : midscale_quad_word;
+    wire [63:0] converter1 = (active_converter == 3'd1) ? triangle_quad_word : midscale_quad_word;
+    wire [63:0] converter2 = (active_converter == 3'd2) ? triangle_quad_word : midscale_quad_word;
+    wire [63:0] converter3 = (active_converter == 3'd3) ? triangle_quad_word : midscale_quad_word;
 
     wire [31:0] tx_data0;
     wire [31:0] tx_data1;
@@ -103,10 +107,6 @@ module daq_litejesd_dac_tx_path #(
         .converter1       (converter1),
         .converter2       (converter2),
         .converter3       (converter3),
-        .converter4       (converter4),
-        .converter5       (converter5),
-        .converter6       (converter6),
-        .converter7       (converter7),
         .enable           (enable),
         .jesd_clk         (jesd_clk),
         .jesd_rst         (jesd_rst),

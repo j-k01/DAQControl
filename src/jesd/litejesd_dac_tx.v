@@ -9,7 +9,7 @@
 // Filename   : litejesd_dac_tx.v
 // Device     : xczu9eg-ffvb1156-2-e
 // LiteX sha1 : --------
-// Date       : 2026-05-20 08:50:09
+// Date       : 2026-06-01 00:12:04
 //------------------------------------------------------------------------------
 
 `timescale 1ns / 1ps
@@ -19,14 +19,10 @@
 //------------------------------------------------------------------------------
 
 module litejesd_dac_tx (
-    input  wire   [31:0] converter0,
-    input  wire   [31:0] converter1,
-    input  wire   [31:0] converter2,
-    input  wire   [31:0] converter3,
-    input  wire   [31:0] converter4,
-    input  wire   [31:0] converter5,
-    input  wire   [31:0] converter6,
-    input  wire   [31:0] converter7,
+    input  wire   [63:0] converter0,
+    input  wire   [63:0] converter1,
+    input  wire   [63:0] converter2,
+    input  wire   [63:0] converter3,
     input  wire          enable,
     input  wire          jesd_clk,
     input  wire          jesd_phy0_tx_clk,
@@ -126,7 +122,7 @@ reg     [1:0] clockdomainsrenamer6_next_state = 2'd0;
 reg     [1:0] clockdomainsrenamer6_state = 2'd0;
 reg     [1:0] clockdomainsrenamer7_next_state = 2'd0;
 reg     [1:0] clockdomainsrenamer7_state = 2'd0;
-reg     [4:0] core_count = 5'd0;
+reg     [3:0] core_count = 4'd0;
 wire          core_enable;
 wire          core_jref0;
 reg           core_jref1 = 1'd0;
@@ -159,10 +155,10 @@ wire   [31:0] core_litejesd204blinktx0_framer_source_data;
 reg     [3:0] core_litejesd204blinktx0_framer_source_frame_last = 4'd0;
 reg           core_litejesd204blinktx0_framer_source_last = 1'd0;
 reg     [3:0] core_litejesd204blinktx0_framer_source_multiframe_last = 4'd0;
-reg     [7:0] core_litejesd204blinktx0_ilas_counter = 8'd0;
-wire    [6:0] core_litejesd204blinktx0_ilas_ctrl_port_adr;
+reg     [5:0] core_litejesd204blinktx0_ilas_counter = 6'd0;
+wire    [4:0] core_litejesd204blinktx0_ilas_ctrl_port_adr;
 wire    [3:0] core_litejesd204blinktx0_ilas_ctrl_port_dat_r;
-wire    [6:0] core_litejesd204blinktx0_ilas_data_port_adr;
+wire    [4:0] core_litejesd204blinktx0_ilas_data_port_adr;
 wire   [31:0] core_litejesd204blinktx0_ilas_data_port_dat_r;
 wire          core_litejesd204blinktx0_ilas_done;
 reg           core_litejesd204blinktx0_ilas_reset = 1'd0;
@@ -222,10 +218,10 @@ wire   [31:0] core_litejesd204blinktx1_framer_source_data;
 reg     [3:0] core_litejesd204blinktx1_framer_source_frame_last = 4'd0;
 reg           core_litejesd204blinktx1_framer_source_last = 1'd0;
 reg     [3:0] core_litejesd204blinktx1_framer_source_multiframe_last = 4'd0;
-reg     [7:0] core_litejesd204blinktx1_ilas_counter = 8'd0;
-wire    [6:0] core_litejesd204blinktx1_ilas_ctrl_port_adr;
+reg     [5:0] core_litejesd204blinktx1_ilas_counter = 6'd0;
+wire    [4:0] core_litejesd204blinktx1_ilas_ctrl_port_adr;
 wire    [3:0] core_litejesd204blinktx1_ilas_ctrl_port_dat_r;
-wire    [6:0] core_litejesd204blinktx1_ilas_data_port_adr;
+wire    [4:0] core_litejesd204blinktx1_ilas_data_port_adr;
 wire   [31:0] core_litejesd204blinktx1_ilas_data_port_dat_r;
 wire          core_litejesd204blinktx1_ilas_done;
 reg           core_litejesd204blinktx1_ilas_reset = 1'd0;
@@ -285,10 +281,10 @@ wire   [31:0] core_litejesd204blinktx2_framer_source_data;
 reg     [3:0] core_litejesd204blinktx2_framer_source_frame_last = 4'd0;
 reg           core_litejesd204blinktx2_framer_source_last = 1'd0;
 reg     [3:0] core_litejesd204blinktx2_framer_source_multiframe_last = 4'd0;
-reg     [7:0] core_litejesd204blinktx2_ilas_counter = 8'd0;
-wire    [6:0] core_litejesd204blinktx2_ilas_ctrl_port_adr;
+reg     [5:0] core_litejesd204blinktx2_ilas_counter = 6'd0;
+wire    [4:0] core_litejesd204blinktx2_ilas_ctrl_port_adr;
 wire    [3:0] core_litejesd204blinktx2_ilas_ctrl_port_dat_r;
-wire    [6:0] core_litejesd204blinktx2_ilas_data_port_adr;
+wire    [4:0] core_litejesd204blinktx2_ilas_data_port_adr;
 wire   [31:0] core_litejesd204blinktx2_ilas_data_port_dat_r;
 wire          core_litejesd204blinktx2_ilas_done;
 reg           core_litejesd204blinktx2_ilas_reset = 1'd0;
@@ -348,10 +344,10 @@ wire   [31:0] core_litejesd204blinktx3_framer_source_data;
 reg     [3:0] core_litejesd204blinktx3_framer_source_frame_last = 4'd0;
 reg           core_litejesd204blinktx3_framer_source_last = 1'd0;
 reg     [3:0] core_litejesd204blinktx3_framer_source_multiframe_last = 4'd0;
-reg     [7:0] core_litejesd204blinktx3_ilas_counter = 8'd0;
-wire    [6:0] core_litejesd204blinktx3_ilas_ctrl_port_adr;
+reg     [5:0] core_litejesd204blinktx3_ilas_counter = 6'd0;
+wire    [4:0] core_litejesd204blinktx3_ilas_ctrl_port_adr;
 wire    [3:0] core_litejesd204blinktx3_ilas_ctrl_port_dat_r;
-wire    [6:0] core_litejesd204blinktx3_ilas_data_port_adr;
+wire    [4:0] core_litejesd204blinktx3_ilas_data_port_adr;
 wire   [31:0] core_litejesd204blinktx3_ilas_data_port_dat_r;
 wire          core_litejesd204blinktx3_ilas_done;
 reg           core_litejesd204blinktx3_ilas_reset = 1'd0;
@@ -411,10 +407,10 @@ wire   [31:0] core_litejesd204blinktx4_framer_source_data;
 reg     [3:0] core_litejesd204blinktx4_framer_source_frame_last = 4'd0;
 reg           core_litejesd204blinktx4_framer_source_last = 1'd0;
 reg     [3:0] core_litejesd204blinktx4_framer_source_multiframe_last = 4'd0;
-reg     [7:0] core_litejesd204blinktx4_ilas_counter = 8'd0;
-wire    [6:0] core_litejesd204blinktx4_ilas_ctrl_port_adr;
+reg     [5:0] core_litejesd204blinktx4_ilas_counter = 6'd0;
+wire    [4:0] core_litejesd204blinktx4_ilas_ctrl_port_adr;
 wire    [3:0] core_litejesd204blinktx4_ilas_ctrl_port_dat_r;
-wire    [6:0] core_litejesd204blinktx4_ilas_data_port_adr;
+wire    [4:0] core_litejesd204blinktx4_ilas_data_port_adr;
 wire   [31:0] core_litejesd204blinktx4_ilas_data_port_dat_r;
 wire          core_litejesd204blinktx4_ilas_done;
 reg           core_litejesd204blinktx4_ilas_reset = 1'd0;
@@ -474,10 +470,10 @@ wire   [31:0] core_litejesd204blinktx5_framer_source_data;
 reg     [3:0] core_litejesd204blinktx5_framer_source_frame_last = 4'd0;
 reg           core_litejesd204blinktx5_framer_source_last = 1'd0;
 reg     [3:0] core_litejesd204blinktx5_framer_source_multiframe_last = 4'd0;
-reg     [7:0] core_litejesd204blinktx5_ilas_counter = 8'd0;
-wire    [6:0] core_litejesd204blinktx5_ilas_ctrl_port_adr;
+reg     [5:0] core_litejesd204blinktx5_ilas_counter = 6'd0;
+wire    [4:0] core_litejesd204blinktx5_ilas_ctrl_port_adr;
 wire    [3:0] core_litejesd204blinktx5_ilas_ctrl_port_dat_r;
-wire    [6:0] core_litejesd204blinktx5_ilas_data_port_adr;
+wire    [4:0] core_litejesd204blinktx5_ilas_data_port_adr;
 wire   [31:0] core_litejesd204blinktx5_ilas_data_port_dat_r;
 wire          core_litejesd204blinktx5_ilas_done;
 reg           core_litejesd204blinktx5_ilas_reset = 1'd0;
@@ -537,10 +533,10 @@ wire   [31:0] core_litejesd204blinktx6_framer_source_data;
 reg     [3:0] core_litejesd204blinktx6_framer_source_frame_last = 4'd0;
 reg           core_litejesd204blinktx6_framer_source_last = 1'd0;
 reg     [3:0] core_litejesd204blinktx6_framer_source_multiframe_last = 4'd0;
-reg     [7:0] core_litejesd204blinktx6_ilas_counter = 8'd0;
-wire    [6:0] core_litejesd204blinktx6_ilas_ctrl_port_adr;
+reg     [5:0] core_litejesd204blinktx6_ilas_counter = 6'd0;
+wire    [4:0] core_litejesd204blinktx6_ilas_ctrl_port_adr;
 wire    [3:0] core_litejesd204blinktx6_ilas_ctrl_port_dat_r;
-wire    [6:0] core_litejesd204blinktx6_ilas_data_port_adr;
+wire    [4:0] core_litejesd204blinktx6_ilas_data_port_adr;
 wire   [31:0] core_litejesd204blinktx6_ilas_data_port_dat_r;
 wire          core_litejesd204blinktx6_ilas_done;
 reg           core_litejesd204blinktx6_ilas_reset = 1'd0;
@@ -600,10 +596,10 @@ wire   [31:0] core_litejesd204blinktx7_framer_source_data;
 reg     [3:0] core_litejesd204blinktx7_framer_source_frame_last = 4'd0;
 reg           core_litejesd204blinktx7_framer_source_last = 1'd0;
 reg     [3:0] core_litejesd204blinktx7_framer_source_multiframe_last = 4'd0;
-reg     [7:0] core_litejesd204blinktx7_ilas_counter = 8'd0;
-wire    [6:0] core_litejesd204blinktx7_ilas_ctrl_port_adr;
+reg     [5:0] core_litejesd204blinktx7_ilas_counter = 6'd0;
+wire    [4:0] core_litejesd204blinktx7_ilas_ctrl_port_adr;
 wire    [3:0] core_litejesd204blinktx7_ilas_ctrl_port_dat_r;
-wire    [6:0] core_litejesd204blinktx7_ilas_data_port_adr;
+wire    [4:0] core_litejesd204blinktx7_ilas_data_port_adr;
 wire   [31:0] core_litejesd204blinktx7_ilas_data_port_dat_r;
 wire          core_litejesd204blinktx7_ilas_done;
 reg           core_litejesd204blinktx7_ilas_reset = 1'd0;
@@ -805,7 +801,7 @@ wire    [1:0] core_litejesd204btxcdc7_wrport_adr;
 wire   [35:0] core_litejesd204btxcdc7_wrport_dat_r;
 wire   [35:0] core_litejesd204btxcdc7_wrport_dat_w;
 wire          core_litejesd204btxcdc7_wrport_we;
-reg     [4:0] core_load = 5'd5;
+reg     [3:0] core_load = 4'd5;
 reg           core_ready = 1'd0;
 wire          core_reset0;
 wire          core_reset1;
@@ -815,22 +811,14 @@ wire          core_reset4;
 wire          core_reset5;
 wire          core_reset6;
 wire          core_reset7;
-wire   [31:0] core_sink_sink_converter0;
-wire   [31:0] core_sink_sink_converter1;
-wire   [31:0] core_sink_sink_converter2;
-wire   [31:0] core_sink_sink_converter3;
-wire   [31:0] core_sink_sink_converter4;
-wire   [31:0] core_sink_sink_converter5;
-wire   [31:0] core_sink_sink_converter6;
-wire   [31:0] core_sink_sink_converter7;
-reg    [31:0] core_source_converter0 = 32'd0;
-reg    [31:0] core_source_converter1 = 32'd0;
-reg    [31:0] core_source_converter2 = 32'd0;
-reg    [31:0] core_source_converter3 = 32'd0;
-reg    [31:0] core_source_converter4 = 32'd0;
-reg    [31:0] core_source_converter5 = 32'd0;
-reg    [31:0] core_source_converter6 = 32'd0;
-reg    [31:0] core_source_converter7 = 32'd0;
+wire   [63:0] core_sink_sink_converter0;
+wire   [63:0] core_sink_sink_converter1;
+wire   [63:0] core_sink_sink_converter2;
+wire   [63:0] core_sink_sink_converter3;
+reg    [63:0] core_source_converter0 = 64'd0;
+reg    [63:0] core_source_converter1 = 64'd0;
+reg    [63:0] core_source_converter2 = 64'd0;
+reg    [63:0] core_source_converter3 = 64'd0;
 wire          core_stpl_enable;
 wire    [3:0] core_transport_nibble0;
 wire    [3:0] core_transport_nibble1;
@@ -944,14 +932,10 @@ wire   [15:0] core_transport_sample6;
 wire   [15:0] core_transport_sample7;
 wire   [15:0] core_transport_sample8;
 wire   [15:0] core_transport_sample9;
-reg    [31:0] core_transport_sink_converter0 = 32'd0;
-reg    [31:0] core_transport_sink_converter1 = 32'd0;
-reg    [31:0] core_transport_sink_converter2 = 32'd0;
-reg    [31:0] core_transport_sink_converter3 = 32'd0;
-reg    [31:0] core_transport_sink_converter4 = 32'd0;
-reg    [31:0] core_transport_sink_converter5 = 32'd0;
-reg    [31:0] core_transport_sink_converter6 = 32'd0;
-reg    [31:0] core_transport_sink_converter7 = 32'd0;
+reg    [63:0] core_transport_sink_converter0 = 64'd0;
+reg    [63:0] core_transport_sink_converter1 = 64'd0;
+reg    [63:0] core_transport_sink_converter2 = 64'd0;
+reg    [63:0] core_transport_sink_converter3 = 64'd0;
 reg    [31:0] core_transport_source_lane0 = 32'd0;
 reg    [31:0] core_transport_source_lane1 = 32'd0;
 reg    [31:0] core_transport_source_lane2 = 32'd0;
@@ -1039,64 +1023,48 @@ assign core_enable = enable;
 assign core_stpl_enable = stpl_enable;
 assign ready = core_ready;
 assign core_sink_sink_converter0 = converter0;
+assign core_sink_sink_converter1 = converter1;
+assign core_sink_sink_converter2 = converter2;
+assign core_sink_sink_converter3 = converter3;
 assign exportphy0_sink_ready = 1'd1;
 assign tx_data0 = exportphy0_sink_payload_data;
 assign tx_ctrl0 = exportphy0_sink_payload_ctrl;
-assign core_sink_sink_converter1 = converter1;
 assign exportphy1_sink_ready = 1'd1;
 assign tx_data1 = exportphy1_sink_payload_data;
 assign tx_ctrl1 = exportphy1_sink_payload_ctrl;
-assign core_sink_sink_converter2 = converter2;
 assign exportphy2_sink_ready = 1'd1;
 assign tx_data2 = exportphy2_sink_payload_data;
 assign tx_ctrl2 = exportphy2_sink_payload_ctrl;
-assign core_sink_sink_converter3 = converter3;
 assign exportphy3_sink_ready = 1'd1;
 assign tx_data3 = exportphy3_sink_payload_data;
 assign tx_ctrl3 = exportphy3_sink_payload_ctrl;
-assign core_sink_sink_converter4 = converter4;
 assign exportphy4_sink_ready = 1'd1;
 assign tx_data4 = exportphy4_sink_payload_data;
 assign tx_ctrl4 = exportphy4_sink_payload_ctrl;
-assign core_sink_sink_converter5 = converter5;
 assign exportphy5_sink_ready = 1'd1;
 assign tx_data5 = exportphy5_sink_payload_data;
 assign tx_ctrl5 = exportphy5_sink_payload_ctrl;
-assign core_sink_sink_converter6 = converter6;
 assign exportphy6_sink_ready = 1'd1;
 assign tx_data6 = exportphy6_sink_payload_data;
 assign tx_ctrl6 = exportphy6_sink_payload_ctrl;
-assign core_sink_sink_converter7 = converter7;
 assign exportphy7_sink_ready = 1'd1;
 assign tx_data7 = exportphy7_sink_payload_data;
 assign tx_ctrl7 = exportphy7_sink_payload_ctrl;
 always @(*) begin
-    core_transport_sink_converter0 <= 32'd0;
-    core_transport_sink_converter1 <= 32'd0;
-    core_transport_sink_converter2 <= 32'd0;
-    core_transport_sink_converter3 <= 32'd0;
-    core_transport_sink_converter4 <= 32'd0;
-    core_transport_sink_converter5 <= 32'd0;
-    core_transport_sink_converter6 <= 32'd0;
-    core_transport_sink_converter7 <= 32'd0;
+    core_transport_sink_converter0 <= 64'd0;
+    core_transport_sink_converter1 <= 64'd0;
+    core_transport_sink_converter2 <= 64'd0;
+    core_transport_sink_converter3 <= 64'd0;
     if (core_stpl_enable) begin
         core_transport_sink_converter0 <= core_source_converter0;
         core_transport_sink_converter1 <= core_source_converter1;
         core_transport_sink_converter2 <= core_source_converter2;
         core_transport_sink_converter3 <= core_source_converter3;
-        core_transport_sink_converter4 <= core_source_converter4;
-        core_transport_sink_converter5 <= core_source_converter5;
-        core_transport_sink_converter6 <= core_source_converter6;
-        core_transport_sink_converter7 <= core_source_converter7;
     end else begin
         core_transport_sink_converter0 <= core_sink_sink_converter0;
         core_transport_sink_converter1 <= core_sink_sink_converter1;
         core_transport_sink_converter2 <= core_sink_sink_converter2;
         core_transport_sink_converter3 <= core_sink_sink_converter3;
-        core_transport_sink_converter4 <= core_sink_sink_converter4;
-        core_transport_sink_converter5 <= core_sink_sink_converter5;
-        core_transport_sink_converter6 <= core_sink_sink_converter6;
-        core_transport_sink_converter7 <= core_sink_sink_converter7;
     end
 end
 assign core_reset0 = (~core_enable);
@@ -1222,21 +1190,9 @@ assign exportphy7_sink_payload_ctrl = core_litejesd204btxcdc7_source_payload_ctr
 assign litejesd204bcoretx_jsync = sync_n;
 assign core_jref0 = sysref;
 assign core_transport_sample0 = core_transport_sink_converter0[15:0];
-assign core_transport_sample1 = core_transport_sink_converter0[31:16];
-assign core_transport_sample2 = core_transport_sink_converter1[15:0];
-assign core_transport_sample3 = core_transport_sink_converter1[31:16];
-assign core_transport_sample4 = core_transport_sink_converter2[15:0];
-assign core_transport_sample5 = core_transport_sink_converter2[31:16];
-assign core_transport_sample6 = core_transport_sink_converter3[15:0];
-assign core_transport_sample7 = core_transport_sink_converter3[31:16];
-assign core_transport_sample8 = core_transport_sink_converter4[15:0];
-assign core_transport_sample9 = core_transport_sink_converter4[31:16];
-assign core_transport_sample10 = core_transport_sink_converter5[15:0];
-assign core_transport_sample11 = core_transport_sink_converter5[31:16];
-assign core_transport_sample12 = core_transport_sink_converter6[15:0];
-assign core_transport_sample13 = core_transport_sink_converter6[31:16];
-assign core_transport_sample14 = core_transport_sink_converter7[15:0];
-assign core_transport_sample15 = core_transport_sink_converter7[31:16];
+assign core_transport_sample1 = core_transport_sink_converter1[15:0];
+assign core_transport_sample2 = core_transport_sink_converter2[15:0];
+assign core_transport_sample3 = core_transport_sink_converter3[15:0];
 assign core_transport_nibble0 = core_transport_sample0[15:12];
 assign core_transport_nibble1 = core_transport_sample0[11:8];
 assign core_transport_nibble2 = core_transport_sample0[7:4];
@@ -1253,6 +1209,18 @@ assign core_transport_nibble12 = core_transport_sample3[15:12];
 assign core_transport_nibble13 = core_transport_sample3[11:8];
 assign core_transport_nibble14 = core_transport_sample3[7:4];
 assign core_transport_nibble15 = core_transport_sample3[3:0];
+assign core_transport_octet0 = {core_transport_nibble0, core_transport_nibble1};
+assign core_transport_octet1 = {core_transport_nibble2, core_transport_nibble3};
+assign core_transport_octet2 = {core_transport_nibble4, core_transport_nibble5};
+assign core_transport_octet3 = {core_transport_nibble6, core_transport_nibble7};
+assign core_transport_octet4 = {core_transport_nibble8, core_transport_nibble9};
+assign core_transport_octet5 = {core_transport_nibble10, core_transport_nibble11};
+assign core_transport_octet6 = {core_transport_nibble12, core_transport_nibble13};
+assign core_transport_octet7 = {core_transport_nibble14, core_transport_nibble15};
+assign core_transport_sample4 = core_transport_sink_converter0[31:16];
+assign core_transport_sample5 = core_transport_sink_converter1[31:16];
+assign core_transport_sample6 = core_transport_sink_converter2[31:16];
+assign core_transport_sample7 = core_transport_sink_converter3[31:16];
 assign core_transport_nibble16 = core_transport_sample4[15:12];
 assign core_transport_nibble17 = core_transport_sample4[11:8];
 assign core_transport_nibble18 = core_transport_sample4[7:4];
@@ -1269,6 +1237,18 @@ assign core_transport_nibble28 = core_transport_sample7[15:12];
 assign core_transport_nibble29 = core_transport_sample7[11:8];
 assign core_transport_nibble30 = core_transport_sample7[7:4];
 assign core_transport_nibble31 = core_transport_sample7[3:0];
+assign core_transport_octet8 = {core_transport_nibble16, core_transport_nibble17};
+assign core_transport_octet9 = {core_transport_nibble18, core_transport_nibble19};
+assign core_transport_octet10 = {core_transport_nibble20, core_transport_nibble21};
+assign core_transport_octet11 = {core_transport_nibble22, core_transport_nibble23};
+assign core_transport_octet12 = {core_transport_nibble24, core_transport_nibble25};
+assign core_transport_octet13 = {core_transport_nibble26, core_transport_nibble27};
+assign core_transport_octet14 = {core_transport_nibble28, core_transport_nibble29};
+assign core_transport_octet15 = {core_transport_nibble30, core_transport_nibble31};
+assign core_transport_sample8 = core_transport_sink_converter0[47:32];
+assign core_transport_sample9 = core_transport_sink_converter1[47:32];
+assign core_transport_sample10 = core_transport_sink_converter2[47:32];
+assign core_transport_sample11 = core_transport_sink_converter3[47:32];
 assign core_transport_nibble32 = core_transport_sample8[15:12];
 assign core_transport_nibble33 = core_transport_sample8[11:8];
 assign core_transport_nibble34 = core_transport_sample8[7:4];
@@ -1285,6 +1265,18 @@ assign core_transport_nibble44 = core_transport_sample11[15:12];
 assign core_transport_nibble45 = core_transport_sample11[11:8];
 assign core_transport_nibble46 = core_transport_sample11[7:4];
 assign core_transport_nibble47 = core_transport_sample11[3:0];
+assign core_transport_octet16 = {core_transport_nibble32, core_transport_nibble33};
+assign core_transport_octet17 = {core_transport_nibble34, core_transport_nibble35};
+assign core_transport_octet18 = {core_transport_nibble36, core_transport_nibble37};
+assign core_transport_octet19 = {core_transport_nibble38, core_transport_nibble39};
+assign core_transport_octet20 = {core_transport_nibble40, core_transport_nibble41};
+assign core_transport_octet21 = {core_transport_nibble42, core_transport_nibble43};
+assign core_transport_octet22 = {core_transport_nibble44, core_transport_nibble45};
+assign core_transport_octet23 = {core_transport_nibble46, core_transport_nibble47};
+assign core_transport_sample12 = core_transport_sink_converter0[63:48];
+assign core_transport_sample13 = core_transport_sink_converter1[63:48];
+assign core_transport_sample14 = core_transport_sink_converter2[63:48];
+assign core_transport_sample15 = core_transport_sink_converter3[63:48];
 assign core_transport_nibble48 = core_transport_sample12[15:12];
 assign core_transport_nibble49 = core_transport_sample12[11:8];
 assign core_transport_nibble50 = core_transport_sample12[7:4];
@@ -1301,30 +1293,6 @@ assign core_transport_nibble60 = core_transport_sample15[15:12];
 assign core_transport_nibble61 = core_transport_sample15[11:8];
 assign core_transport_nibble62 = core_transport_sample15[7:4];
 assign core_transport_nibble63 = core_transport_sample15[3:0];
-assign core_transport_octet0 = {core_transport_nibble0, core_transport_nibble1};
-assign core_transport_octet1 = {core_transport_nibble2, core_transport_nibble3};
-assign core_transport_octet2 = {core_transport_nibble4, core_transport_nibble5};
-assign core_transport_octet3 = {core_transport_nibble6, core_transport_nibble7};
-assign core_transport_octet4 = {core_transport_nibble8, core_transport_nibble9};
-assign core_transport_octet5 = {core_transport_nibble10, core_transport_nibble11};
-assign core_transport_octet6 = {core_transport_nibble12, core_transport_nibble13};
-assign core_transport_octet7 = {core_transport_nibble14, core_transport_nibble15};
-assign core_transport_octet8 = {core_transport_nibble16, core_transport_nibble17};
-assign core_transport_octet9 = {core_transport_nibble18, core_transport_nibble19};
-assign core_transport_octet10 = {core_transport_nibble20, core_transport_nibble21};
-assign core_transport_octet11 = {core_transport_nibble22, core_transport_nibble23};
-assign core_transport_octet12 = {core_transport_nibble24, core_transport_nibble25};
-assign core_transport_octet13 = {core_transport_nibble26, core_transport_nibble27};
-assign core_transport_octet14 = {core_transport_nibble28, core_transport_nibble29};
-assign core_transport_octet15 = {core_transport_nibble30, core_transport_nibble31};
-assign core_transport_octet16 = {core_transport_nibble32, core_transport_nibble33};
-assign core_transport_octet17 = {core_transport_nibble34, core_transport_nibble35};
-assign core_transport_octet18 = {core_transport_nibble36, core_transport_nibble37};
-assign core_transport_octet19 = {core_transport_nibble38, core_transport_nibble39};
-assign core_transport_octet20 = {core_transport_nibble40, core_transport_nibble41};
-assign core_transport_octet21 = {core_transport_nibble42, core_transport_nibble43};
-assign core_transport_octet22 = {core_transport_nibble44, core_transport_nibble45};
-assign core_transport_octet23 = {core_transport_nibble46, core_transport_nibble47};
 assign core_transport_octet24 = {core_transport_nibble48, core_transport_nibble49};
 assign core_transport_octet25 = {core_transport_nibble50, core_transport_nibble51};
 assign core_transport_octet26 = {core_transport_nibble52, core_transport_nibble53};
@@ -1336,98 +1304,86 @@ assign core_transport_octet31 = {core_transport_nibble62, core_transport_nibble6
 always @(*) begin
     core_transport_source_lane0 <= 32'd0;
     core_transport_source_lane0[7:0] <= core_transport_octet0;
-    core_transport_source_lane0[15:8] <= core_transport_octet1;
-    core_transport_source_lane0[23:16] <= core_transport_octet2;
-    core_transport_source_lane0[31:24] <= core_transport_octet3;
+    core_transport_source_lane0[15:8] <= core_transport_octet8;
+    core_transport_source_lane0[23:16] <= core_transport_octet16;
+    core_transport_source_lane0[31:24] <= core_transport_octet24;
 end
 always @(*) begin
     core_transport_source_lane1 <= 32'd0;
-    core_transport_source_lane1[7:0] <= core_transport_octet4;
-    core_transport_source_lane1[15:8] <= core_transport_octet5;
-    core_transport_source_lane1[23:16] <= core_transport_octet6;
-    core_transport_source_lane1[31:24] <= core_transport_octet7;
+    core_transport_source_lane1[7:0] <= core_transport_octet1;
+    core_transport_source_lane1[15:8] <= core_transport_octet9;
+    core_transport_source_lane1[23:16] <= core_transport_octet17;
+    core_transport_source_lane1[31:24] <= core_transport_octet25;
 end
 always @(*) begin
     core_transport_source_lane2 <= 32'd0;
-    core_transport_source_lane2[7:0] <= core_transport_octet8;
-    core_transport_source_lane2[15:8] <= core_transport_octet9;
-    core_transport_source_lane2[23:16] <= core_transport_octet10;
-    core_transport_source_lane2[31:24] <= core_transport_octet11;
+    core_transport_source_lane2[7:0] <= core_transport_octet2;
+    core_transport_source_lane2[15:8] <= core_transport_octet10;
+    core_transport_source_lane2[23:16] <= core_transport_octet18;
+    core_transport_source_lane2[31:24] <= core_transport_octet26;
 end
 always @(*) begin
     core_transport_source_lane3 <= 32'd0;
-    core_transport_source_lane3[7:0] <= core_transport_octet12;
-    core_transport_source_lane3[15:8] <= core_transport_octet13;
-    core_transport_source_lane3[23:16] <= core_transport_octet14;
-    core_transport_source_lane3[31:24] <= core_transport_octet15;
+    core_transport_source_lane3[7:0] <= core_transport_octet3;
+    core_transport_source_lane3[15:8] <= core_transport_octet11;
+    core_transport_source_lane3[23:16] <= core_transport_octet19;
+    core_transport_source_lane3[31:24] <= core_transport_octet27;
 end
 always @(*) begin
     core_transport_source_lane4 <= 32'd0;
-    core_transport_source_lane4[7:0] <= core_transport_octet16;
-    core_transport_source_lane4[15:8] <= core_transport_octet17;
-    core_transport_source_lane4[23:16] <= core_transport_octet18;
-    core_transport_source_lane4[31:24] <= core_transport_octet19;
+    core_transport_source_lane4[7:0] <= core_transport_octet4;
+    core_transport_source_lane4[15:8] <= core_transport_octet12;
+    core_transport_source_lane4[23:16] <= core_transport_octet20;
+    core_transport_source_lane4[31:24] <= core_transport_octet28;
 end
 always @(*) begin
     core_transport_source_lane5 <= 32'd0;
-    core_transport_source_lane5[7:0] <= core_transport_octet20;
-    core_transport_source_lane5[15:8] <= core_transport_octet21;
-    core_transport_source_lane5[23:16] <= core_transport_octet22;
-    core_transport_source_lane5[31:24] <= core_transport_octet23;
+    core_transport_source_lane5[7:0] <= core_transport_octet5;
+    core_transport_source_lane5[15:8] <= core_transport_octet13;
+    core_transport_source_lane5[23:16] <= core_transport_octet21;
+    core_transport_source_lane5[31:24] <= core_transport_octet29;
 end
 always @(*) begin
     core_transport_source_lane6 <= 32'd0;
-    core_transport_source_lane6[7:0] <= core_transport_octet24;
-    core_transport_source_lane6[15:8] <= core_transport_octet25;
-    core_transport_source_lane6[23:16] <= core_transport_octet26;
-    core_transport_source_lane6[31:24] <= core_transport_octet27;
+    core_transport_source_lane6[7:0] <= core_transport_octet6;
+    core_transport_source_lane6[15:8] <= core_transport_octet14;
+    core_transport_source_lane6[23:16] <= core_transport_octet22;
+    core_transport_source_lane6[31:24] <= core_transport_octet30;
 end
 always @(*) begin
     core_transport_source_lane7 <= 32'd0;
-    core_transport_source_lane7[7:0] <= core_transport_octet28;
-    core_transport_source_lane7[15:8] <= core_transport_octet29;
-    core_transport_source_lane7[23:16] <= core_transport_octet30;
+    core_transport_source_lane7[7:0] <= core_transport_octet7;
+    core_transport_source_lane7[15:8] <= core_transport_octet15;
+    core_transport_source_lane7[23:16] <= core_transport_octet23;
     core_transport_source_lane7[31:24] <= core_transport_octet31;
 end
 always @(*) begin
-    core_source_converter0 <= 32'd0;
+    core_source_converter0 <= 64'd0;
     core_source_converter0[15:0] <= 1'd0;
-    core_source_converter0[31:16] <= 1'd1;
+    core_source_converter0[31:16] <= 1'd0;
+    core_source_converter0[47:32] <= 1'd0;
+    core_source_converter0[63:48] <= 1'd0;
 end
 always @(*) begin
-    core_source_converter1 <= 32'd0;
+    core_source_converter1 <= 64'd0;
     core_source_converter1[15:0] <= 9'd256;
-    core_source_converter1[31:16] <= 9'd257;
+    core_source_converter1[31:16] <= 9'd256;
+    core_source_converter1[47:32] <= 9'd256;
+    core_source_converter1[63:48] <= 9'd256;
 end
 always @(*) begin
-    core_source_converter2 <= 32'd0;
+    core_source_converter2 <= 64'd0;
     core_source_converter2[15:0] <= 10'd512;
-    core_source_converter2[31:16] <= 10'd513;
+    core_source_converter2[31:16] <= 10'd512;
+    core_source_converter2[47:32] <= 10'd512;
+    core_source_converter2[63:48] <= 10'd512;
 end
 always @(*) begin
-    core_source_converter3 <= 32'd0;
+    core_source_converter3 <= 64'd0;
     core_source_converter3[15:0] <= 10'd768;
-    core_source_converter3[31:16] <= 10'd769;
-end
-always @(*) begin
-    core_source_converter4 <= 32'd0;
-    core_source_converter4[15:0] <= 11'd1024;
-    core_source_converter4[31:16] <= 11'd1025;
-end
-always @(*) begin
-    core_source_converter5 <= 32'd0;
-    core_source_converter5[15:0] <= 11'd1280;
-    core_source_converter5[31:16] <= 11'd1281;
-end
-always @(*) begin
-    core_source_converter6 <= 32'd0;
-    core_source_converter6[15:0] <= 11'd1536;
-    core_source_converter6[31:16] <= 11'd1537;
-end
-always @(*) begin
-    core_source_converter7 <= 32'd0;
-    core_source_converter7[15:0] <= 11'd1792;
-    core_source_converter7[31:16] <= 11'd1793;
+    core_source_converter3[31:16] <= 10'd768;
+    core_source_converter3[47:32] <= 10'd768;
+    core_source_converter3[63:48] <= 10'd768;
 end
 assign core_zero = (core_count == 1'd0);
 assign core_litejesd204btxcdc0_sink_ready = 1'd1;
@@ -1464,12 +1420,12 @@ always @(*) begin
     core_litejesd204blinktx0_cgs_source_ctrl[2] <= 1'd1;
     core_litejesd204blinktx0_cgs_source_ctrl[3] <= 1'd1;
 end
-assign core_litejesd204blinktx0_ilas_source_last = (core_litejesd204blinktx0_ilas_counter == 7'd127);
+assign core_litejesd204blinktx0_ilas_source_last = (core_litejesd204blinktx0_ilas_counter == 5'd31);
 assign core_litejesd204blinktx0_ilas_data_port_adr = core_litejesd204blinktx0_ilas_counter;
 assign core_litejesd204blinktx0_ilas_ctrl_port_adr = core_litejesd204blinktx0_ilas_counter;
 assign core_litejesd204blinktx0_ilas_source_data = core_litejesd204blinktx0_ilas_data_port_dat_r;
 assign core_litejesd204blinktx0_ilas_source_ctrl = core_litejesd204blinktx0_ilas_ctrl_port_dat_r;
-assign core_litejesd204blinktx0_ilas_done = (core_litejesd204blinktx0_ilas_counter == 8'd128);
+assign core_litejesd204blinktx0_ilas_done = (core_litejesd204blinktx0_ilas_counter == 6'd32);
 assign core_litejesd204blinktx0_aligninserter0_scrambling = core_litejesd204blinktx0_scrambler_enable;
 assign core_litejesd204blinktx0_scrambler_sink_data = core_litejesd204blinktx0_sink_sink_data;
 assign core_litejesd204blinktx0_framer_sink_data = core_litejesd204blinktx0_scrambler_source_data;
@@ -1490,8 +1446,8 @@ always @(*) begin
     core_litejesd204blinktx0_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx0_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx0_framer_enable) begin
-        core_litejesd204blinktx0_framer_source_frame_last <= 4'd8;
-        if ((core_litejesd204blinktx0_framer_counter == 5'd31)) begin
+        core_litejesd204blinktx0_framer_source_frame_last <= 4'd10;
+        if ((core_litejesd204blinktx0_framer_counter == 4'd15)) begin
             core_litejesd204blinktx0_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -1637,12 +1593,12 @@ always @(*) begin
     core_litejesd204blinktx1_cgs_source_ctrl[2] <= 1'd1;
     core_litejesd204blinktx1_cgs_source_ctrl[3] <= 1'd1;
 end
-assign core_litejesd204blinktx1_ilas_source_last = (core_litejesd204blinktx1_ilas_counter == 7'd127);
+assign core_litejesd204blinktx1_ilas_source_last = (core_litejesd204blinktx1_ilas_counter == 5'd31);
 assign core_litejesd204blinktx1_ilas_data_port_adr = core_litejesd204blinktx1_ilas_counter;
 assign core_litejesd204blinktx1_ilas_ctrl_port_adr = core_litejesd204blinktx1_ilas_counter;
 assign core_litejesd204blinktx1_ilas_source_data = core_litejesd204blinktx1_ilas_data_port_dat_r;
 assign core_litejesd204blinktx1_ilas_source_ctrl = core_litejesd204blinktx1_ilas_ctrl_port_dat_r;
-assign core_litejesd204blinktx1_ilas_done = (core_litejesd204blinktx1_ilas_counter == 8'd128);
+assign core_litejesd204blinktx1_ilas_done = (core_litejesd204blinktx1_ilas_counter == 6'd32);
 assign core_litejesd204blinktx1_aligninserter1_scrambling = core_litejesd204blinktx1_scrambler_enable;
 assign core_litejesd204blinktx1_scrambler_sink_data = core_litejesd204blinktx1_sink_sink_data;
 assign core_litejesd204blinktx1_framer_sink_data = core_litejesd204blinktx1_scrambler_source_data;
@@ -1663,8 +1619,8 @@ always @(*) begin
     core_litejesd204blinktx1_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx1_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx1_framer_enable) begin
-        core_litejesd204blinktx1_framer_source_frame_last <= 4'd8;
-        if ((core_litejesd204blinktx1_framer_counter == 5'd31)) begin
+        core_litejesd204blinktx1_framer_source_frame_last <= 4'd10;
+        if ((core_litejesd204blinktx1_framer_counter == 4'd15)) begin
             core_litejesd204blinktx1_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -1810,12 +1766,12 @@ always @(*) begin
     core_litejesd204blinktx2_cgs_source_ctrl[2] <= 1'd1;
     core_litejesd204blinktx2_cgs_source_ctrl[3] <= 1'd1;
 end
-assign core_litejesd204blinktx2_ilas_source_last = (core_litejesd204blinktx2_ilas_counter == 7'd127);
+assign core_litejesd204blinktx2_ilas_source_last = (core_litejesd204blinktx2_ilas_counter == 5'd31);
 assign core_litejesd204blinktx2_ilas_data_port_adr = core_litejesd204blinktx2_ilas_counter;
 assign core_litejesd204blinktx2_ilas_ctrl_port_adr = core_litejesd204blinktx2_ilas_counter;
 assign core_litejesd204blinktx2_ilas_source_data = core_litejesd204blinktx2_ilas_data_port_dat_r;
 assign core_litejesd204blinktx2_ilas_source_ctrl = core_litejesd204blinktx2_ilas_ctrl_port_dat_r;
-assign core_litejesd204blinktx2_ilas_done = (core_litejesd204blinktx2_ilas_counter == 8'd128);
+assign core_litejesd204blinktx2_ilas_done = (core_litejesd204blinktx2_ilas_counter == 6'd32);
 assign core_litejesd204blinktx2_aligninserter2_scrambling = core_litejesd204blinktx2_scrambler_enable;
 assign core_litejesd204blinktx2_scrambler_sink_data = core_litejesd204blinktx2_sink_sink_data;
 assign core_litejesd204blinktx2_framer_sink_data = core_litejesd204blinktx2_scrambler_source_data;
@@ -1836,8 +1792,8 @@ always @(*) begin
     core_litejesd204blinktx2_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx2_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx2_framer_enable) begin
-        core_litejesd204blinktx2_framer_source_frame_last <= 4'd8;
-        if ((core_litejesd204blinktx2_framer_counter == 5'd31)) begin
+        core_litejesd204blinktx2_framer_source_frame_last <= 4'd10;
+        if ((core_litejesd204blinktx2_framer_counter == 4'd15)) begin
             core_litejesd204blinktx2_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -1983,12 +1939,12 @@ always @(*) begin
     core_litejesd204blinktx3_cgs_source_ctrl[2] <= 1'd1;
     core_litejesd204blinktx3_cgs_source_ctrl[3] <= 1'd1;
 end
-assign core_litejesd204blinktx3_ilas_source_last = (core_litejesd204blinktx3_ilas_counter == 7'd127);
+assign core_litejesd204blinktx3_ilas_source_last = (core_litejesd204blinktx3_ilas_counter == 5'd31);
 assign core_litejesd204blinktx3_ilas_data_port_adr = core_litejesd204blinktx3_ilas_counter;
 assign core_litejesd204blinktx3_ilas_ctrl_port_adr = core_litejesd204blinktx3_ilas_counter;
 assign core_litejesd204blinktx3_ilas_source_data = core_litejesd204blinktx3_ilas_data_port_dat_r;
 assign core_litejesd204blinktx3_ilas_source_ctrl = core_litejesd204blinktx3_ilas_ctrl_port_dat_r;
-assign core_litejesd204blinktx3_ilas_done = (core_litejesd204blinktx3_ilas_counter == 8'd128);
+assign core_litejesd204blinktx3_ilas_done = (core_litejesd204blinktx3_ilas_counter == 6'd32);
 assign core_litejesd204blinktx3_aligninserter3_scrambling = core_litejesd204blinktx3_scrambler_enable;
 assign core_litejesd204blinktx3_scrambler_sink_data = core_litejesd204blinktx3_sink_sink_data;
 assign core_litejesd204blinktx3_framer_sink_data = core_litejesd204blinktx3_scrambler_source_data;
@@ -2009,8 +1965,8 @@ always @(*) begin
     core_litejesd204blinktx3_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx3_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx3_framer_enable) begin
-        core_litejesd204blinktx3_framer_source_frame_last <= 4'd8;
-        if ((core_litejesd204blinktx3_framer_counter == 5'd31)) begin
+        core_litejesd204blinktx3_framer_source_frame_last <= 4'd10;
+        if ((core_litejesd204blinktx3_framer_counter == 4'd15)) begin
             core_litejesd204blinktx3_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -2156,12 +2112,12 @@ always @(*) begin
     core_litejesd204blinktx4_cgs_source_ctrl[2] <= 1'd1;
     core_litejesd204blinktx4_cgs_source_ctrl[3] <= 1'd1;
 end
-assign core_litejesd204blinktx4_ilas_source_last = (core_litejesd204blinktx4_ilas_counter == 7'd127);
+assign core_litejesd204blinktx4_ilas_source_last = (core_litejesd204blinktx4_ilas_counter == 5'd31);
 assign core_litejesd204blinktx4_ilas_data_port_adr = core_litejesd204blinktx4_ilas_counter;
 assign core_litejesd204blinktx4_ilas_ctrl_port_adr = core_litejesd204blinktx4_ilas_counter;
 assign core_litejesd204blinktx4_ilas_source_data = core_litejesd204blinktx4_ilas_data_port_dat_r;
 assign core_litejesd204blinktx4_ilas_source_ctrl = core_litejesd204blinktx4_ilas_ctrl_port_dat_r;
-assign core_litejesd204blinktx4_ilas_done = (core_litejesd204blinktx4_ilas_counter == 8'd128);
+assign core_litejesd204blinktx4_ilas_done = (core_litejesd204blinktx4_ilas_counter == 6'd32);
 assign core_litejesd204blinktx4_aligninserter4_scrambling = core_litejesd204blinktx4_scrambler_enable;
 assign core_litejesd204blinktx4_scrambler_sink_data = core_litejesd204blinktx4_sink_sink_data;
 assign core_litejesd204blinktx4_framer_sink_data = core_litejesd204blinktx4_scrambler_source_data;
@@ -2182,8 +2138,8 @@ always @(*) begin
     core_litejesd204blinktx4_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx4_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx4_framer_enable) begin
-        core_litejesd204blinktx4_framer_source_frame_last <= 4'd8;
-        if ((core_litejesd204blinktx4_framer_counter == 5'd31)) begin
+        core_litejesd204blinktx4_framer_source_frame_last <= 4'd10;
+        if ((core_litejesd204blinktx4_framer_counter == 4'd15)) begin
             core_litejesd204blinktx4_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -2329,12 +2285,12 @@ always @(*) begin
     core_litejesd204blinktx5_cgs_source_ctrl[2] <= 1'd1;
     core_litejesd204blinktx5_cgs_source_ctrl[3] <= 1'd1;
 end
-assign core_litejesd204blinktx5_ilas_source_last = (core_litejesd204blinktx5_ilas_counter == 7'd127);
+assign core_litejesd204blinktx5_ilas_source_last = (core_litejesd204blinktx5_ilas_counter == 5'd31);
 assign core_litejesd204blinktx5_ilas_data_port_adr = core_litejesd204blinktx5_ilas_counter;
 assign core_litejesd204blinktx5_ilas_ctrl_port_adr = core_litejesd204blinktx5_ilas_counter;
 assign core_litejesd204blinktx5_ilas_source_data = core_litejesd204blinktx5_ilas_data_port_dat_r;
 assign core_litejesd204blinktx5_ilas_source_ctrl = core_litejesd204blinktx5_ilas_ctrl_port_dat_r;
-assign core_litejesd204blinktx5_ilas_done = (core_litejesd204blinktx5_ilas_counter == 8'd128);
+assign core_litejesd204blinktx5_ilas_done = (core_litejesd204blinktx5_ilas_counter == 6'd32);
 assign core_litejesd204blinktx5_aligninserter5_scrambling = core_litejesd204blinktx5_scrambler_enable;
 assign core_litejesd204blinktx5_scrambler_sink_data = core_litejesd204blinktx5_sink_sink_data;
 assign core_litejesd204blinktx5_framer_sink_data = core_litejesd204blinktx5_scrambler_source_data;
@@ -2355,8 +2311,8 @@ always @(*) begin
     core_litejesd204blinktx5_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx5_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx5_framer_enable) begin
-        core_litejesd204blinktx5_framer_source_frame_last <= 4'd8;
-        if ((core_litejesd204blinktx5_framer_counter == 5'd31)) begin
+        core_litejesd204blinktx5_framer_source_frame_last <= 4'd10;
+        if ((core_litejesd204blinktx5_framer_counter == 4'd15)) begin
             core_litejesd204blinktx5_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -2502,12 +2458,12 @@ always @(*) begin
     core_litejesd204blinktx6_cgs_source_ctrl[2] <= 1'd1;
     core_litejesd204blinktx6_cgs_source_ctrl[3] <= 1'd1;
 end
-assign core_litejesd204blinktx6_ilas_source_last = (core_litejesd204blinktx6_ilas_counter == 7'd127);
+assign core_litejesd204blinktx6_ilas_source_last = (core_litejesd204blinktx6_ilas_counter == 5'd31);
 assign core_litejesd204blinktx6_ilas_data_port_adr = core_litejesd204blinktx6_ilas_counter;
 assign core_litejesd204blinktx6_ilas_ctrl_port_adr = core_litejesd204blinktx6_ilas_counter;
 assign core_litejesd204blinktx6_ilas_source_data = core_litejesd204blinktx6_ilas_data_port_dat_r;
 assign core_litejesd204blinktx6_ilas_source_ctrl = core_litejesd204blinktx6_ilas_ctrl_port_dat_r;
-assign core_litejesd204blinktx6_ilas_done = (core_litejesd204blinktx6_ilas_counter == 8'd128);
+assign core_litejesd204blinktx6_ilas_done = (core_litejesd204blinktx6_ilas_counter == 6'd32);
 assign core_litejesd204blinktx6_aligninserter6_scrambling = core_litejesd204blinktx6_scrambler_enable;
 assign core_litejesd204blinktx6_scrambler_sink_data = core_litejesd204blinktx6_sink_sink_data;
 assign core_litejesd204blinktx6_framer_sink_data = core_litejesd204blinktx6_scrambler_source_data;
@@ -2528,8 +2484,8 @@ always @(*) begin
     core_litejesd204blinktx6_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx6_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx6_framer_enable) begin
-        core_litejesd204blinktx6_framer_source_frame_last <= 4'd8;
-        if ((core_litejesd204blinktx6_framer_counter == 5'd31)) begin
+        core_litejesd204blinktx6_framer_source_frame_last <= 4'd10;
+        if ((core_litejesd204blinktx6_framer_counter == 4'd15)) begin
             core_litejesd204blinktx6_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -2675,12 +2631,12 @@ always @(*) begin
     core_litejesd204blinktx7_cgs_source_ctrl[2] <= 1'd1;
     core_litejesd204blinktx7_cgs_source_ctrl[3] <= 1'd1;
 end
-assign core_litejesd204blinktx7_ilas_source_last = (core_litejesd204blinktx7_ilas_counter == 7'd127);
+assign core_litejesd204blinktx7_ilas_source_last = (core_litejesd204blinktx7_ilas_counter == 5'd31);
 assign core_litejesd204blinktx7_ilas_data_port_adr = core_litejesd204blinktx7_ilas_counter;
 assign core_litejesd204blinktx7_ilas_ctrl_port_adr = core_litejesd204blinktx7_ilas_counter;
 assign core_litejesd204blinktx7_ilas_source_data = core_litejesd204blinktx7_ilas_data_port_dat_r;
 assign core_litejesd204blinktx7_ilas_source_ctrl = core_litejesd204blinktx7_ilas_ctrl_port_dat_r;
-assign core_litejesd204blinktx7_ilas_done = (core_litejesd204blinktx7_ilas_counter == 8'd128);
+assign core_litejesd204blinktx7_ilas_done = (core_litejesd204blinktx7_ilas_counter == 6'd32);
 assign core_litejesd204blinktx7_aligninserter7_scrambling = core_litejesd204blinktx7_scrambler_enable;
 assign core_litejesd204blinktx7_scrambler_sink_data = core_litejesd204blinktx7_sink_sink_data;
 assign core_litejesd204blinktx7_framer_sink_data = core_litejesd204blinktx7_scrambler_source_data;
@@ -2701,8 +2657,8 @@ always @(*) begin
     core_litejesd204blinktx7_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx7_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx7_framer_enable) begin
-        core_litejesd204blinktx7_framer_source_frame_last <= 4'd8;
-        if ((core_litejesd204blinktx7_framer_counter == 5'd31)) begin
+        core_litejesd204blinktx7_framer_source_frame_last <= 4'd10;
+        if ((core_litejesd204blinktx7_framer_counter == 4'd15)) begin
             core_litejesd204blinktx7_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -2943,11 +2899,11 @@ always @(posedge jesd_clk) begin
     end else begin
         core_count <= (core_count + 1'd1);
     end
-    if ((core_litejesd204blinktx0_ilas_counter != 8'd128)) begin
+    if ((core_litejesd204blinktx0_ilas_counter != 6'd32)) begin
         core_litejesd204blinktx0_ilas_counter <= (core_litejesd204blinktx0_ilas_counter + 1'd1);
     end
     if (core_litejesd204blinktx0_ilas_reset) begin
-        core_litejesd204blinktx0_ilas_counter <= 8'd0;
+        core_litejesd204blinktx0_ilas_counter <= 6'd0;
     end
     core_litejesd204blinktx0_scrambler_valid <= 1'd1;
     core_litejesd204blinktx0_scrambler_state <= core_litejesd204blinktx0_scrambler_full;
@@ -2980,7 +2936,7 @@ always @(posedge jesd_clk) begin
     end
     clockdomainsrenamer0_state <= clockdomainsrenamer0_next_state;
     if (core_reset0) begin
-        core_litejesd204blinktx0_ilas_counter <= 8'd0;
+        core_litejesd204blinktx0_ilas_counter <= 6'd0;
         core_litejesd204blinktx0_scrambler_valid <= 1'd0;
         core_litejesd204blinktx0_scrambler_state <= 15'd32640;
         core_litejesd204blinktx0_framer_counter <= 8'd0;
@@ -2991,11 +2947,11 @@ always @(posedge jesd_clk) begin
         core_litejesd204blinktx0_jsync_timer_count <= 3'd4;
         clockdomainsrenamer0_state <= 2'd0;
     end
-    if ((core_litejesd204blinktx1_ilas_counter != 8'd128)) begin
+    if ((core_litejesd204blinktx1_ilas_counter != 6'd32)) begin
         core_litejesd204blinktx1_ilas_counter <= (core_litejesd204blinktx1_ilas_counter + 1'd1);
     end
     if (core_litejesd204blinktx1_ilas_reset) begin
-        core_litejesd204blinktx1_ilas_counter <= 8'd0;
+        core_litejesd204blinktx1_ilas_counter <= 6'd0;
     end
     core_litejesd204blinktx1_scrambler_valid <= 1'd1;
     core_litejesd204blinktx1_scrambler_state <= core_litejesd204blinktx1_scrambler_full;
@@ -3028,7 +2984,7 @@ always @(posedge jesd_clk) begin
     end
     clockdomainsrenamer1_state <= clockdomainsrenamer1_next_state;
     if (core_reset1) begin
-        core_litejesd204blinktx1_ilas_counter <= 8'd0;
+        core_litejesd204blinktx1_ilas_counter <= 6'd0;
         core_litejesd204blinktx1_scrambler_valid <= 1'd0;
         core_litejesd204blinktx1_scrambler_state <= 15'd32640;
         core_litejesd204blinktx1_framer_counter <= 8'd0;
@@ -3039,11 +2995,11 @@ always @(posedge jesd_clk) begin
         core_litejesd204blinktx1_jsync_timer_count <= 3'd4;
         clockdomainsrenamer1_state <= 2'd0;
     end
-    if ((core_litejesd204blinktx2_ilas_counter != 8'd128)) begin
+    if ((core_litejesd204blinktx2_ilas_counter != 6'd32)) begin
         core_litejesd204blinktx2_ilas_counter <= (core_litejesd204blinktx2_ilas_counter + 1'd1);
     end
     if (core_litejesd204blinktx2_ilas_reset) begin
-        core_litejesd204blinktx2_ilas_counter <= 8'd0;
+        core_litejesd204blinktx2_ilas_counter <= 6'd0;
     end
     core_litejesd204blinktx2_scrambler_valid <= 1'd1;
     core_litejesd204blinktx2_scrambler_state <= core_litejesd204blinktx2_scrambler_full;
@@ -3076,7 +3032,7 @@ always @(posedge jesd_clk) begin
     end
     clockdomainsrenamer2_state <= clockdomainsrenamer2_next_state;
     if (core_reset2) begin
-        core_litejesd204blinktx2_ilas_counter <= 8'd0;
+        core_litejesd204blinktx2_ilas_counter <= 6'd0;
         core_litejesd204blinktx2_scrambler_valid <= 1'd0;
         core_litejesd204blinktx2_scrambler_state <= 15'd32640;
         core_litejesd204blinktx2_framer_counter <= 8'd0;
@@ -3087,11 +3043,11 @@ always @(posedge jesd_clk) begin
         core_litejesd204blinktx2_jsync_timer_count <= 3'd4;
         clockdomainsrenamer2_state <= 2'd0;
     end
-    if ((core_litejesd204blinktx3_ilas_counter != 8'd128)) begin
+    if ((core_litejesd204blinktx3_ilas_counter != 6'd32)) begin
         core_litejesd204blinktx3_ilas_counter <= (core_litejesd204blinktx3_ilas_counter + 1'd1);
     end
     if (core_litejesd204blinktx3_ilas_reset) begin
-        core_litejesd204blinktx3_ilas_counter <= 8'd0;
+        core_litejesd204blinktx3_ilas_counter <= 6'd0;
     end
     core_litejesd204blinktx3_scrambler_valid <= 1'd1;
     core_litejesd204blinktx3_scrambler_state <= core_litejesd204blinktx3_scrambler_full;
@@ -3124,7 +3080,7 @@ always @(posedge jesd_clk) begin
     end
     clockdomainsrenamer3_state <= clockdomainsrenamer3_next_state;
     if (core_reset3) begin
-        core_litejesd204blinktx3_ilas_counter <= 8'd0;
+        core_litejesd204blinktx3_ilas_counter <= 6'd0;
         core_litejesd204blinktx3_scrambler_valid <= 1'd0;
         core_litejesd204blinktx3_scrambler_state <= 15'd32640;
         core_litejesd204blinktx3_framer_counter <= 8'd0;
@@ -3135,11 +3091,11 @@ always @(posedge jesd_clk) begin
         core_litejesd204blinktx3_jsync_timer_count <= 3'd4;
         clockdomainsrenamer3_state <= 2'd0;
     end
-    if ((core_litejesd204blinktx4_ilas_counter != 8'd128)) begin
+    if ((core_litejesd204blinktx4_ilas_counter != 6'd32)) begin
         core_litejesd204blinktx4_ilas_counter <= (core_litejesd204blinktx4_ilas_counter + 1'd1);
     end
     if (core_litejesd204blinktx4_ilas_reset) begin
-        core_litejesd204blinktx4_ilas_counter <= 8'd0;
+        core_litejesd204blinktx4_ilas_counter <= 6'd0;
     end
     core_litejesd204blinktx4_scrambler_valid <= 1'd1;
     core_litejesd204blinktx4_scrambler_state <= core_litejesd204blinktx4_scrambler_full;
@@ -3172,7 +3128,7 @@ always @(posedge jesd_clk) begin
     end
     clockdomainsrenamer4_state <= clockdomainsrenamer4_next_state;
     if (core_reset4) begin
-        core_litejesd204blinktx4_ilas_counter <= 8'd0;
+        core_litejesd204blinktx4_ilas_counter <= 6'd0;
         core_litejesd204blinktx4_scrambler_valid <= 1'd0;
         core_litejesd204blinktx4_scrambler_state <= 15'd32640;
         core_litejesd204blinktx4_framer_counter <= 8'd0;
@@ -3183,11 +3139,11 @@ always @(posedge jesd_clk) begin
         core_litejesd204blinktx4_jsync_timer_count <= 3'd4;
         clockdomainsrenamer4_state <= 2'd0;
     end
-    if ((core_litejesd204blinktx5_ilas_counter != 8'd128)) begin
+    if ((core_litejesd204blinktx5_ilas_counter != 6'd32)) begin
         core_litejesd204blinktx5_ilas_counter <= (core_litejesd204blinktx5_ilas_counter + 1'd1);
     end
     if (core_litejesd204blinktx5_ilas_reset) begin
-        core_litejesd204blinktx5_ilas_counter <= 8'd0;
+        core_litejesd204blinktx5_ilas_counter <= 6'd0;
     end
     core_litejesd204blinktx5_scrambler_valid <= 1'd1;
     core_litejesd204blinktx5_scrambler_state <= core_litejesd204blinktx5_scrambler_full;
@@ -3220,7 +3176,7 @@ always @(posedge jesd_clk) begin
     end
     clockdomainsrenamer5_state <= clockdomainsrenamer5_next_state;
     if (core_reset5) begin
-        core_litejesd204blinktx5_ilas_counter <= 8'd0;
+        core_litejesd204blinktx5_ilas_counter <= 6'd0;
         core_litejesd204blinktx5_scrambler_valid <= 1'd0;
         core_litejesd204blinktx5_scrambler_state <= 15'd32640;
         core_litejesd204blinktx5_framer_counter <= 8'd0;
@@ -3231,11 +3187,11 @@ always @(posedge jesd_clk) begin
         core_litejesd204blinktx5_jsync_timer_count <= 3'd4;
         clockdomainsrenamer5_state <= 2'd0;
     end
-    if ((core_litejesd204blinktx6_ilas_counter != 8'd128)) begin
+    if ((core_litejesd204blinktx6_ilas_counter != 6'd32)) begin
         core_litejesd204blinktx6_ilas_counter <= (core_litejesd204blinktx6_ilas_counter + 1'd1);
     end
     if (core_litejesd204blinktx6_ilas_reset) begin
-        core_litejesd204blinktx6_ilas_counter <= 8'd0;
+        core_litejesd204blinktx6_ilas_counter <= 6'd0;
     end
     core_litejesd204blinktx6_scrambler_valid <= 1'd1;
     core_litejesd204blinktx6_scrambler_state <= core_litejesd204blinktx6_scrambler_full;
@@ -3268,7 +3224,7 @@ always @(posedge jesd_clk) begin
     end
     clockdomainsrenamer6_state <= clockdomainsrenamer6_next_state;
     if (core_reset6) begin
-        core_litejesd204blinktx6_ilas_counter <= 8'd0;
+        core_litejesd204blinktx6_ilas_counter <= 6'd0;
         core_litejesd204blinktx6_scrambler_valid <= 1'd0;
         core_litejesd204blinktx6_scrambler_state <= 15'd32640;
         core_litejesd204blinktx6_framer_counter <= 8'd0;
@@ -3279,11 +3235,11 @@ always @(posedge jesd_clk) begin
         core_litejesd204blinktx6_jsync_timer_count <= 3'd4;
         clockdomainsrenamer6_state <= 2'd0;
     end
-    if ((core_litejesd204blinktx7_ilas_counter != 8'd128)) begin
+    if ((core_litejesd204blinktx7_ilas_counter != 6'd32)) begin
         core_litejesd204blinktx7_ilas_counter <= (core_litejesd204blinktx7_ilas_counter + 1'd1);
     end
     if (core_litejesd204blinktx7_ilas_reset) begin
-        core_litejesd204blinktx7_ilas_counter <= 8'd0;
+        core_litejesd204blinktx7_ilas_counter <= 6'd0;
     end
     core_litejesd204blinktx7_scrambler_valid <= 1'd1;
     core_litejesd204blinktx7_scrambler_state <= core_litejesd204blinktx7_scrambler_full;
@@ -3316,7 +3272,7 @@ always @(posedge jesd_clk) begin
     end
     clockdomainsrenamer7_state <= clockdomainsrenamer7_next_state;
     if (core_reset7) begin
-        core_litejesd204blinktx7_ilas_counter <= 8'd0;
+        core_litejesd204blinktx7_ilas_counter <= 6'd0;
         core_litejesd204blinktx7_scrambler_valid <= 1'd0;
         core_litejesd204blinktx7_scrambler_state <= 15'd32640;
         core_litejesd204blinktx7_framer_counter <= 8'd0;
@@ -3330,7 +3286,7 @@ always @(posedge jesd_clk) begin
     if (jesd_rst) begin
         core_ready <= 1'd0;
         core_jref1 <= 1'd0;
-        core_litejesd204blinktx0_ilas_counter <= 8'd0;
+        core_litejesd204blinktx0_ilas_counter <= 6'd0;
         core_litejesd204blinktx0_scrambler_valid <= 1'd0;
         core_litejesd204blinktx0_scrambler_state <= 15'd32640;
         core_litejesd204blinktx0_framer_counter <= 8'd0;
@@ -3339,7 +3295,7 @@ always @(posedge jesd_clk) begin
         core_litejesd204blinktx0_aligninserter02 <= 8'd0;
         core_litejesd204blinktx0_aligninserter03 <= 8'd0;
         core_litejesd204blinktx0_jsync_timer_count <= 3'd4;
-        core_litejesd204blinktx1_ilas_counter <= 8'd0;
+        core_litejesd204blinktx1_ilas_counter <= 6'd0;
         core_litejesd204blinktx1_scrambler_valid <= 1'd0;
         core_litejesd204blinktx1_scrambler_state <= 15'd32640;
         core_litejesd204blinktx1_framer_counter <= 8'd0;
@@ -3348,7 +3304,7 @@ always @(posedge jesd_clk) begin
         core_litejesd204blinktx1_aligninserter12 <= 8'd0;
         core_litejesd204blinktx1_aligninserter13 <= 8'd0;
         core_litejesd204blinktx1_jsync_timer_count <= 3'd4;
-        core_litejesd204blinktx2_ilas_counter <= 8'd0;
+        core_litejesd204blinktx2_ilas_counter <= 6'd0;
         core_litejesd204blinktx2_scrambler_valid <= 1'd0;
         core_litejesd204blinktx2_scrambler_state <= 15'd32640;
         core_litejesd204blinktx2_framer_counter <= 8'd0;
@@ -3357,7 +3313,7 @@ always @(posedge jesd_clk) begin
         core_litejesd204blinktx2_aligninserter22 <= 8'd0;
         core_litejesd204blinktx2_aligninserter23 <= 8'd0;
         core_litejesd204blinktx2_jsync_timer_count <= 3'd4;
-        core_litejesd204blinktx3_ilas_counter <= 8'd0;
+        core_litejesd204blinktx3_ilas_counter <= 6'd0;
         core_litejesd204blinktx3_scrambler_valid <= 1'd0;
         core_litejesd204blinktx3_scrambler_state <= 15'd32640;
         core_litejesd204blinktx3_framer_counter <= 8'd0;
@@ -3366,7 +3322,7 @@ always @(posedge jesd_clk) begin
         core_litejesd204blinktx3_aligninserter32 <= 8'd0;
         core_litejesd204blinktx3_aligninserter33 <= 8'd0;
         core_litejesd204blinktx3_jsync_timer_count <= 3'd4;
-        core_litejesd204blinktx4_ilas_counter <= 8'd0;
+        core_litejesd204blinktx4_ilas_counter <= 6'd0;
         core_litejesd204blinktx4_scrambler_valid <= 1'd0;
         core_litejesd204blinktx4_scrambler_state <= 15'd32640;
         core_litejesd204blinktx4_framer_counter <= 8'd0;
@@ -3375,7 +3331,7 @@ always @(posedge jesd_clk) begin
         core_litejesd204blinktx4_aligninserter42 <= 8'd0;
         core_litejesd204blinktx4_aligninserter43 <= 8'd0;
         core_litejesd204blinktx4_jsync_timer_count <= 3'd4;
-        core_litejesd204blinktx5_ilas_counter <= 8'd0;
+        core_litejesd204blinktx5_ilas_counter <= 6'd0;
         core_litejesd204blinktx5_scrambler_valid <= 1'd0;
         core_litejesd204blinktx5_scrambler_state <= 15'd32640;
         core_litejesd204blinktx5_framer_counter <= 8'd0;
@@ -3384,7 +3340,7 @@ always @(posedge jesd_clk) begin
         core_litejesd204blinktx5_aligninserter52 <= 8'd0;
         core_litejesd204blinktx5_aligninserter53 <= 8'd0;
         core_litejesd204blinktx5_jsync_timer_count <= 3'd4;
-        core_litejesd204blinktx6_ilas_counter <= 8'd0;
+        core_litejesd204blinktx6_ilas_counter <= 6'd0;
         core_litejesd204blinktx6_scrambler_valid <= 1'd0;
         core_litejesd204blinktx6_scrambler_state <= 15'd32640;
         core_litejesd204blinktx6_framer_counter <= 8'd0;
@@ -3393,7 +3349,7 @@ always @(posedge jesd_clk) begin
         core_litejesd204blinktx6_aligninserter62 <= 8'd0;
         core_litejesd204blinktx6_aligninserter63 <= 8'd0;
         core_litejesd204blinktx6_jsync_timer_count <= 3'd4;
-        core_litejesd204blinktx7_ilas_counter <= 8'd0;
+        core_litejesd204blinktx7_ilas_counter <= 6'd0;
         core_litejesd204blinktx7_scrambler_valid <= 1'd0;
         core_litejesd204blinktx7_scrambler_state <= 15'd32640;
         core_litejesd204blinktx7_framer_counter <= 8'd0;
@@ -3441,10 +3397,10 @@ assign core_litejesd204btxcdc0_rdport_dat_r = storage_dat1;
 
 
 //------------------------------------------------------------------------------
-// Memory data_lut: 128-words x 32-bit
+// Memory data_lut: 32-words x 32-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [31:0] data_lut[0:127];
+reg [31:0] data_lut[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_data_lut.init", data_lut);
 end
@@ -3454,10 +3410,10 @@ assign core_litejesd204blinktx0_ilas_data_port_dat_r = data_lut[core_litejesd204
 
 
 //------------------------------------------------------------------------------
-// Memory ctrl_lut: 128-words x 4-bit
+// Memory ctrl_lut: 32-words x 4-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [3:0] ctrl_lut[0:127];
+reg [3:0] ctrl_lut[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_ctrl_lut.init", ctrl_lut);
 end
@@ -3487,10 +3443,10 @@ assign core_litejesd204btxcdc1_rdport_dat_r = storage_1_dat1;
 
 
 //------------------------------------------------------------------------------
-// Memory data_lut_1: 128-words x 32-bit
+// Memory data_lut_1: 32-words x 32-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [31:0] data_lut_1[0:127];
+reg [31:0] data_lut_1[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_data_lut_1.init", data_lut_1);
 end
@@ -3500,10 +3456,10 @@ assign core_litejesd204blinktx1_ilas_data_port_dat_r = data_lut_1[core_litejesd2
 
 
 //------------------------------------------------------------------------------
-// Memory ctrl_lut_1: 128-words x 4-bit
+// Memory ctrl_lut_1: 32-words x 4-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [3:0] ctrl_lut_1[0:127];
+reg [3:0] ctrl_lut_1[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_ctrl_lut_1.init", ctrl_lut_1);
 end
@@ -3533,10 +3489,10 @@ assign core_litejesd204btxcdc2_rdport_dat_r = storage_2_dat1;
 
 
 //------------------------------------------------------------------------------
-// Memory data_lut_2: 128-words x 32-bit
+// Memory data_lut_2: 32-words x 32-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [31:0] data_lut_2[0:127];
+reg [31:0] data_lut_2[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_data_lut_2.init", data_lut_2);
 end
@@ -3546,10 +3502,10 @@ assign core_litejesd204blinktx2_ilas_data_port_dat_r = data_lut_2[core_litejesd2
 
 
 //------------------------------------------------------------------------------
-// Memory ctrl_lut_2: 128-words x 4-bit
+// Memory ctrl_lut_2: 32-words x 4-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [3:0] ctrl_lut_2[0:127];
+reg [3:0] ctrl_lut_2[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_ctrl_lut_2.init", ctrl_lut_2);
 end
@@ -3579,10 +3535,10 @@ assign core_litejesd204btxcdc3_rdport_dat_r = storage_3_dat1;
 
 
 //------------------------------------------------------------------------------
-// Memory data_lut_3: 128-words x 32-bit
+// Memory data_lut_3: 32-words x 32-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [31:0] data_lut_3[0:127];
+reg [31:0] data_lut_3[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_data_lut_3.init", data_lut_3);
 end
@@ -3592,10 +3548,10 @@ assign core_litejesd204blinktx3_ilas_data_port_dat_r = data_lut_3[core_litejesd2
 
 
 //------------------------------------------------------------------------------
-// Memory ctrl_lut_3: 128-words x 4-bit
+// Memory ctrl_lut_3: 32-words x 4-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [3:0] ctrl_lut_3[0:127];
+reg [3:0] ctrl_lut_3[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_ctrl_lut_3.init", ctrl_lut_3);
 end
@@ -3625,10 +3581,10 @@ assign core_litejesd204btxcdc4_rdport_dat_r = storage_4_dat1;
 
 
 //------------------------------------------------------------------------------
-// Memory data_lut_4: 128-words x 32-bit
+// Memory data_lut_4: 32-words x 32-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [31:0] data_lut_4[0:127];
+reg [31:0] data_lut_4[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_data_lut_4.init", data_lut_4);
 end
@@ -3638,10 +3594,10 @@ assign core_litejesd204blinktx4_ilas_data_port_dat_r = data_lut_4[core_litejesd2
 
 
 //------------------------------------------------------------------------------
-// Memory ctrl_lut_4: 128-words x 4-bit
+// Memory ctrl_lut_4: 32-words x 4-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [3:0] ctrl_lut_4[0:127];
+reg [3:0] ctrl_lut_4[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_ctrl_lut_4.init", ctrl_lut_4);
 end
@@ -3671,10 +3627,10 @@ assign core_litejesd204btxcdc5_rdport_dat_r = storage_5_dat1;
 
 
 //------------------------------------------------------------------------------
-// Memory data_lut_5: 128-words x 32-bit
+// Memory data_lut_5: 32-words x 32-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [31:0] data_lut_5[0:127];
+reg [31:0] data_lut_5[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_data_lut_5.init", data_lut_5);
 end
@@ -3684,10 +3640,10 @@ assign core_litejesd204blinktx5_ilas_data_port_dat_r = data_lut_5[core_litejesd2
 
 
 //------------------------------------------------------------------------------
-// Memory ctrl_lut_5: 128-words x 4-bit
+// Memory ctrl_lut_5: 32-words x 4-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [3:0] ctrl_lut_5[0:127];
+reg [3:0] ctrl_lut_5[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_ctrl_lut_5.init", ctrl_lut_5);
 end
@@ -3717,10 +3673,10 @@ assign core_litejesd204btxcdc6_rdport_dat_r = storage_6_dat1;
 
 
 //------------------------------------------------------------------------------
-// Memory data_lut_6: 128-words x 32-bit
+// Memory data_lut_6: 32-words x 32-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [31:0] data_lut_6[0:127];
+reg [31:0] data_lut_6[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_data_lut_6.init", data_lut_6);
 end
@@ -3730,10 +3686,10 @@ assign core_litejesd204blinktx6_ilas_data_port_dat_r = data_lut_6[core_litejesd2
 
 
 //------------------------------------------------------------------------------
-// Memory ctrl_lut_6: 128-words x 4-bit
+// Memory ctrl_lut_6: 32-words x 4-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [3:0] ctrl_lut_6[0:127];
+reg [3:0] ctrl_lut_6[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_ctrl_lut_6.init", ctrl_lut_6);
 end
@@ -3763,10 +3719,10 @@ assign core_litejesd204btxcdc7_rdport_dat_r = storage_7_dat1;
 
 
 //------------------------------------------------------------------------------
-// Memory data_lut_7: 128-words x 32-bit
+// Memory data_lut_7: 32-words x 32-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [31:0] data_lut_7[0:127];
+reg [31:0] data_lut_7[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_data_lut_7.init", data_lut_7);
 end
@@ -3776,10 +3732,10 @@ assign core_litejesd204blinktx7_ilas_data_port_dat_r = data_lut_7[core_litejesd2
 
 
 //------------------------------------------------------------------------------
-// Memory ctrl_lut_7: 128-words x 4-bit
+// Memory ctrl_lut_7: 32-words x 4-bit
 //------------------------------------------------------------------------------
 // Port 0 | Read: Async | Write: ---- | 
-reg [3:0] ctrl_lut_7[0:127];
+reg [3:0] ctrl_lut_7[0:31];
 initial begin
 	$readmemh("litejesd_dac_tx_ctrl_lut_7.init", ctrl_lut_7);
 end
@@ -4335,5 +4291,5 @@ FDPE #(
 endmodule
 
 // -----------------------------------------------------------------------------
-//  Auto-Generated by LiteX on 2026-05-20 08:50:09.
+//  Auto-Generated by LiteX on 2026-06-01 00:12:04.
 //------------------------------------------------------------------------------
