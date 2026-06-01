@@ -81,6 +81,22 @@ module top #(
     wire ro_reg2_rdint;
     wire ro_reg3_rdint;
 
+    wire [31:0] dac_bram_addr;
+    wire        dac_bram_clk;
+    wire [31:0] dac_bram_din;
+    wire [31:0] dac_bram_dout;
+    wire        dac_bram_en;
+    wire        dac_bram_rst;
+    wire [3:0]  dac_bram_we;
+
+    wire [31:0] adc_bram_addr;
+    wire        adc_bram_clk;
+    wire [31:0] adc_bram_din;
+    wire [31:0] adc_bram_dout;
+    wire        adc_bram_en;
+    wire        adc_bram_rst;
+    wire [3:0]  adc_bram_we;
+
     wire [31:0] status_reg;
     wire [31:0] clk_fmc_count;
     wire [31:0] sysref_count;
@@ -112,7 +128,21 @@ module top #(
         .RO_REG0_RDINT_0      (ro_reg0_rdint),
         .RO_REG1_RDINT_0      (ro_reg1_rdint),
         .RO_REG2_RDINT_0      (ro_reg2_rdint),
-        .RO_REG3_RDINT_0      (ro_reg3_rdint)
+        .RO_REG3_RDINT_0      (ro_reg3_rdint),
+        .DAC_BRAM_PORTB_0_addr (dac_bram_addr),
+        .DAC_BRAM_PORTB_0_clk  (dac_bram_clk),
+        .DAC_BRAM_PORTB_0_din  (dac_bram_din),
+        .DAC_BRAM_PORTB_0_dout (dac_bram_dout),
+        .DAC_BRAM_PORTB_0_en   (dac_bram_en),
+        .DAC_BRAM_PORTB_0_rst  (dac_bram_rst),
+        .DAC_BRAM_PORTB_0_we   (dac_bram_we),
+        .ADC_BRAM_PORTB_0_addr (adc_bram_addr),
+        .ADC_BRAM_PORTB_0_clk  (adc_bram_clk),
+        .ADC_BRAM_PORTB_0_din  (adc_bram_din),
+        .ADC_BRAM_PORTB_0_dout (adc_bram_dout),
+        .ADC_BRAM_PORTB_0_en   (adc_bram_en),
+        .ADC_BRAM_PORTB_0_rst  (adc_bram_rst),
+        .ADC_BRAM_PORTB_0_we   (adc_bram_we)
     );
 
     (* ASYNC_REG = "TRUE" *) reg [2:0] uart_rxd_sync = 3'b111;
@@ -194,6 +224,9 @@ module top #(
     wire [31:0] litejesd_triangle_word;
     wire [31:0] litejesd_sine_async;
     wire [31:0] litejesd_sine_word;
+    wire [31:0] dac_program_word_async;
+    wire [31:0] dac_program_status_async;
+    wire [31:0] dac_program_status_reg;
     wire [31:0] gth_tx_clk_count;
     wire [31:0] gth_rx_clk_count;
     wire [15:0] gth_tx_clk_count_short;
@@ -223,6 +256,8 @@ module top #(
     wire [31:0] adc1_rx_sample_b_low_reg;
     wire [31:0] adc1_rx_sample_b_high_reg;
     wire [31:0] adc1_rx_raw_lane_reg;
+    wire [31:0] adc_capture_status_async;
+    wire [31:0] adc_capture_status_reg;
 
     wire manual_spi_enable = rw_reg0[30];
     wire dac_auto_busy;
@@ -291,15 +326,23 @@ module top #(
     reg  hmc_restart_req_d = 1'b0;
     reg  dac_restart_req_d = 1'b0;
     reg  adc_restart_req_d = 1'b0;
+    reg  adc_capture_req_d = 1'b0;
+    reg  adc_capture_req_toggle = 1'b0;
     always @(posedge clk_200) begin
         if (fabric_rst) begin
             hmc_restart_req_d <= 1'b0;
             dac_restart_req_d <= 1'b0;
             adc_restart_req_d <= 1'b0;
+            adc_capture_req_d <= 1'b0;
+            adc_capture_req_toggle <= 1'b0;
         end else begin
             hmc_restart_req_d <= rw_reg3[0];
             dac_restart_req_d <= rw_reg3[1];
             adc_restart_req_d <= rw_reg3[2];
+            adc_capture_req_d <= rw_reg3[3];
+            if (rw_reg3[3] & ~adc_capture_req_d) begin
+                adc_capture_req_toggle <= ~adc_capture_req_toggle;
+            end
         end
     end
     wire hmc_restart_pulse = ~fabric_rst & rw_reg3[0] & ~hmc_restart_req_d;
@@ -576,6 +619,38 @@ module top #(
         .dest     (dac_sine_phase_inc_tx)
     );
 
+    (* ASYNC_REG = "TRUE" *) reg [2:0] dac_program_req_sync = 3'b000;
+    (* ASYNC_REG = "TRUE" *) reg [1:0] dac_program_enable_sync = 2'b00;
+
+    always @(posedge gth_tx_usrclk2) begin
+        if (litejesd_reset) begin
+            dac_program_req_sync <= 3'b000;
+            dac_program_enable_sync <= 2'b00;
+        end else begin
+            dac_program_req_sync <= {dac_program_req_sync[1:0], adc_capture_req_toggle};
+            dac_program_enable_sync <= {dac_program_enable_sync[0], rw_reg3[6]};
+        end
+    end
+
+    wire dac_program_restart = dac_program_req_sync[2] ^ dac_program_req_sync[1];
+    wire dac_program_enable = dac_program_enable_sync[1];
+
+    dac_bram_player u_dac_bram_player (
+        .clk          (gth_tx_usrclk2),
+        .rst          (litejesd_reset),
+        .enable       (litejesd_active_async & dac_program_enable),
+        .restart      (dac_program_restart),
+        .bram_addr    (dac_bram_addr),
+        .bram_clk     (dac_bram_clk),
+        .bram_din     (dac_bram_din),
+        .bram_dout    (dac_bram_dout),
+        .bram_en      (dac_bram_en),
+        .bram_rst     (dac_bram_rst),
+        .bram_we      (dac_bram_we),
+        .program_word (dac_program_word_async),
+        .status       (dac_program_status_async)
+    );
+
     daq_litejesd_dac_tx_path u_litejesd_dac_tx_path (
         .jesd_clk         (gth_tx_usrclk2),
         .jesd_rst         (litejesd_reset),
@@ -588,6 +663,8 @@ module top #(
         .active_converter (3'd0),
         .triangle_step    (16'd256),
         .sine_phase_inc   (dac_sine_phase_inc_tx),
+        .program_enable   (dac_program_enable),
+        .program_word     (dac_program_word_async),
         .litejesd_ready   (litejesd_ready_async),
         .status           (litejesd_status_async),
         .triangle_word    (litejesd_triangle_async),
@@ -635,6 +712,14 @@ module top #(
     assign litejesd_status_async = 32'd0;
     assign litejesd_triangle_async = 32'd0;
     assign litejesd_sine_async = 32'd0;
+    assign dac_program_word_async = 32'h8000_8000;
+    assign dac_program_status_async = 32'd0;
+    assign dac_bram_addr = 32'd0;
+    assign dac_bram_clk = clk_200;
+    assign dac_bram_din = 32'd0;
+    assign dac_bram_en = 1'b0;
+    assign dac_bram_rst = 1'b0;
+    assign dac_bram_we = 4'd0;
 
     assign gth_userdata_tx = {8{32'hbcbc_bcbc}};
     assign gth_txctrl2 = {
@@ -865,6 +950,44 @@ module top #(
         .sample_b_high      (adc1_rx_sample_b_high_async),
         .raw_lane_data      (adc1_rx_raw_lane_async)
     );
+
+    (* ASYNC_REG = "TRUE" *) reg [2:0] adc_capture_req_sync = 3'b000;
+    (* ASYNC_REG = "TRUE" *) reg [1:0] adc_capture_source_meta = 2'b00;
+    (* ASYNC_REG = "TRUE" *) reg [1:0] adc_capture_source_sync = 2'b00;
+
+    always @(posedge gth_rx_usrclk2) begin
+        if (adc1_rx_reset) begin
+            adc_capture_req_sync <= 3'b000;
+            adc_capture_source_meta <= 2'b00;
+            adc_capture_source_sync <= 2'b00;
+        end else begin
+            adc_capture_req_sync <= {adc_capture_req_sync[1:0], adc_capture_req_toggle};
+            adc_capture_source_meta <= rw_reg3[5:4];
+            adc_capture_source_sync <= adc_capture_source_meta;
+        end
+    end
+
+    wire adc_capture_start = adc_capture_req_sync[2] ^ adc_capture_req_sync[1];
+
+    adc_bram_capture u_adc_bram_capture (
+        .clk           (gth_rx_usrclk2),
+        .rst           (adc1_rx_reset),
+        .start         (adc_capture_start),
+        .source_select (adc_capture_source_sync),
+        .data_valid    (adc1_litejesd_ready_async),
+        .sample_a_low  (adc1_rx_sample_a_low_async),
+        .sample_a_high (adc1_rx_sample_a_high_async),
+        .sample_b_low  (adc1_rx_sample_b_low_async),
+        .sample_b_high (adc1_rx_sample_b_high_async),
+        .bram_addr     (adc_bram_addr),
+        .bram_clk      (adc_bram_clk),
+        .bram_din      (adc_bram_din),
+        .bram_dout     (adc_bram_dout),
+        .bram_en       (adc_bram_en),
+        .bram_rst      (adc_bram_rst),
+        .bram_we       (adc_bram_we),
+        .status        (adc_capture_status_async)
+    );
 `else
     assign adc1_sync_n_async = 1'b0;
     assign adc1_litejesd_ready_async = 1'b0;
@@ -876,6 +999,13 @@ module top #(
     assign adc1_rx_sample_b_low_async = 32'd0;
     assign adc1_rx_sample_b_high_async = 32'd0;
     assign adc1_rx_raw_lane_async = 32'd0;
+    assign adc_capture_status_async = 32'd0;
+    assign adc_bram_addr = 32'd0;
+    assign adc_bram_clk = clk_200;
+    assign adc_bram_din = 32'd0;
+    assign adc_bram_en = 1'b0;
+    assign adc_bram_rst = 1'b0;
+    assign adc_bram_we = 4'd0;
 `endif
 
     assign gth_unused_reduce = ^gth_userdata_rx ^ ^gth_rxctrl0 ^ ^gth_rxctrl1 ^
@@ -895,6 +1025,8 @@ module top #(
     assign litejesd_status_async = 32'd0;
     assign litejesd_triangle_async = 32'd0;
     assign litejesd_sine_async = 32'd0;
+    assign dac_program_word_async = 32'h8000_8000;
+    assign dac_program_status_async = 32'd0;
     assign gth_tx_clk_count = 32'd0;
     assign gth_rx_clk_count = 32'd0;
     assign gth_tx_clk_count_short = 16'd0;
@@ -911,9 +1043,22 @@ module top #(
     assign adc1_rx_sample_b_low_async = 32'd0;
     assign adc1_rx_sample_b_high_async = 32'd0;
     assign adc1_rx_raw_lane_async = 32'd0;
+    assign adc_capture_status_async = 32'd0;
+    assign dac_bram_addr = 32'd0;
+    assign dac_bram_clk = clk_200;
+    assign dac_bram_din = 32'd0;
+    assign dac_bram_en = 1'b0;
+    assign dac_bram_rst = 1'b0;
+    assign dac_bram_we = 4'd0;
+    assign adc_bram_addr = 32'd0;
+    assign adc_bram_clk = clk_200;
+    assign adc_bram_din = 32'd0;
+    assign adc_bram_en = 1'b0;
+    assign adc_bram_rst = 1'b0;
+    assign adc_bram_we = 4'd0;
 `endif
 
-    localparam integer FABRIC_DEBUG_SYNC_WIDTH = 207;
+    localparam integer FABRIC_DEBUG_SYNC_WIDTH = 239;
     wire [FABRIC_DEBUG_SYNC_WIDTH-1:0] fabric_debug_sync;
     cdc_vector_sync #(
         .WIDTH (FABRIC_DEBUG_SYNC_WIDTH)
@@ -929,6 +1074,7 @@ module top #(
             litejesd_active_async,
             gth_txctrl2_lane0_async,
             gth_txdata_lane0_async,
+            dac_program_status_async,
             litejesd_sine_async,
             litejesd_triangle_async,
             litejesd_status_async,
@@ -947,6 +1093,7 @@ module top #(
         litejesd_active,
         gth_txctrl2_lane0_debug,
         gth_txdata_lane0_debug,
+        dac_program_status_reg,
         litejesd_sine_word,
         litejesd_triangle_word,
         litejesd_status_reg,
@@ -954,7 +1101,7 @@ module top #(
         gth_status_reg
     } = fabric_debug_sync;
 
-    localparam integer ADC1_RX_DEBUG_SYNC_WIDTH = 257;
+    localparam integer ADC1_RX_DEBUG_SYNC_WIDTH = 289;
     wire [ADC1_RX_DEBUG_SYNC_WIDTH-1:0] adc1_rx_debug_sync;
     cdc_vector_sync #(
         .WIDTH (ADC1_RX_DEBUG_SYNC_WIDTH)
@@ -962,6 +1109,7 @@ module top #(
         .dest_clk (clk_200),
         .dest_rst (fabric_rst),
         .src      ({
+            adc_capture_status_async,
             adc1_litejesd_ready_async,
             adc1_rx_raw_lane_async,
             adc1_rx_sample_b_high_async,
@@ -976,6 +1124,7 @@ module top #(
     );
 
     assign {
+        adc_capture_status_reg,
         adc1_litejesd_ready,
         adc1_rx_raw_lane_reg,
         adc1_rx_sample_b_high_reg,
@@ -1116,7 +1265,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0007;
+    wire [31:0] build_id = 32'hDA01_0009;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]
@@ -1131,7 +1280,8 @@ module top #(
             5'd4:  selected_count = gth_status_reg;
             5'd5:  selected_count = gth_rx_status_reg;
             5'd6:  selected_count = litejesd_status_reg;
-            5'd7:  selected_count = litejesd_wave_word;
+            5'd7:  selected_count = rw_reg3[6] ? dac_program_status_reg :
+                                                 litejesd_wave_word;
             5'd8:  selected_count = hmc_readback_summary_reg;
             5'd9:  selected_count = hmc_readback_id_word;
             5'd10: selected_count = hmc_readback_alarm_word;
@@ -1155,7 +1305,8 @@ module top #(
             5'd28: selected_count = adc1_rx_sample_a_low_reg;
             5'd29: selected_count = adc1_rx_sample_a_high_reg;
             5'd30: selected_count = adc1_rx_sample_b_low_reg;
-            5'd31: selected_count = adc1_rx_raw_lane_reg;
+            5'd31: selected_count = rw_reg2[31] ? adc_capture_status_reg :
+                                     adc1_rx_raw_lane_reg;
             default: selected_count = 32'd0;
         endcase
     end
@@ -1282,8 +1433,9 @@ module top #(
 
     wire unused = clk_100 ^ clk_125 ^ gth_unused_reduce ^
                   ro_reg0_rdint ^ ro_reg1_rdint ^ ro_reg2_rdint ^
-                  ro_reg3_rdint ^ rw_reg2[0] ^ rw_reg3[0] ^
-                  rw_reg3[1] ^ rw_reg3[2] ^ dac_auto_step[0] ^
+                  ro_reg3_rdint ^ rw_reg2[0] ^ rw_reg2[31] ^
+                  rw_reg3[0] ^ rw_reg3[1] ^ rw_reg3[2] ^ rw_reg3[3] ^
+                  rw_reg3[4] ^ rw_reg3[5] ^ rw_reg3[6] ^ dac_auto_step[0] ^
                   dac_auto_last_addr[0] ^ dac_auto_last_data[0] ^
                   adc_auto_step[0] ^ adc_auto_last_addr[0] ^
                   adc_auto_last_data[0] ^ adc_last_read_addr[0] ^

@@ -18,6 +18,8 @@ module daq_litejesd_dac_tx_path #(
     input  wire [2:0]    active_converter,
     input  wire [15:0]   triangle_step,
     input  wire [23:0]   sine_phase_inc,
+    input  wire          program_enable,
+    input  wire [31:0]   program_word,
 
     output wire          litejesd_ready,
     output wire [31:0]   status,
@@ -203,9 +205,15 @@ module daq_litejesd_dac_tx_path #(
         sine_sample0
     };
     wire [63:0] midscale_quad_word = {4{16'h8000}};
+    wire [63:0] program_quad_word = {
+        program_word[31:16],
+        program_word[15:0],
+        program_word[31:16],
+        program_word[15:0]
+    };
 
-    wire [63:0] converter0 = triangle_quad_word;
-    wire [63:0] converter1 = sine_quad_word;
+    wire [63:0] converter0 = program_enable ? program_quad_word : triangle_quad_word;
+    wire [63:0] converter1 = program_enable ? midscale_quad_word : sine_quad_word;
     wire [63:0] converter2 = midscale_quad_word;
     wire [63:0] converter3 = midscale_quad_word;
 
@@ -307,7 +315,8 @@ module daq_litejesd_dac_tx_path #(
         triangle_up,
         jesd_rst,
         sine_step[3:0],
-        2'd0
+        program_enable,
+        1'b0
     };
 
 endmodule

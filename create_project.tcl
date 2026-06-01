@@ -160,6 +160,8 @@ proc create_microblaze_bd {bd_name} {
     foreach port_name {RO_REG0_RDINT_0 RO_REG1_RDINT_0 RO_REG2_RDINT_0 RO_REG3_RDINT_0} {
         create_bd_port -dir O $port_name
     }
+    create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:bram_rtl:1.0 DAC_BRAM_PORTB_0
+    create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:bram_rtl:1.0 ADC_BRAM_PORTB_0
 
     create_bd_cell -type ip -vlnv xilinx.com:ip:microblaze:* microblaze_0
     set_property -dict [list \
@@ -203,35 +205,67 @@ proc create_microblaze_bd {bd_name} {
     create_bd_cell -type ip -vlnv xilinx.com:ip:axi_uart16550:* axi_uart16550_0
     set_property CONFIG.C_S_AXI_ACLK_FREQ_HZ $fabric_clk_hz [get_bd_cells axi_uart16550_0]
     create_bd_cell -type ip -vlnv xilinx.com:user:AXI4_register_file:1.0 AXI4_register_file_0
+    create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* dac_program_bram_ctrl
+    create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* adc_capture_bram_ctrl
+    foreach bram_ctrl {dac_program_bram_ctrl adc_capture_bram_ctrl} {
+        set_property -dict [list \
+            CONFIG.SINGLE_PORT_BRAM {1} \
+        ] [get_bd_cells $bram_ctrl]
+    }
+    create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:* dac_program_bram
+    create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:* adc_capture_bram
+    foreach bram_cell {dac_program_bram adc_capture_bram} {
+        set_property -dict [list \
+            CONFIG.Memory_Type           {True_Dual_Port_RAM} \
+            CONFIG.Use_Byte_Write_Enable {true} \
+            CONFIG.Byte_Size             {8} \
+            CONFIG.Write_Width_A         {32} \
+            CONFIG.Read_Width_A          {32} \
+            CONFIG.Write_Width_B         {32} \
+            CONFIG.Read_Width_B          {32} \
+            CONFIG.Write_Depth_A         {262144} \
+        ] [get_bd_cells $bram_cell]
+        catch {set_property CONFIG.Assume_Synchronous_Clk {false} [get_bd_cells $bram_cell]}
+    }
 
     if {[llength [get_bd_cells -quiet microblaze_0_axi_periph]] == 0} {
         create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:* microblaze_0_axi_periph
         safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0/M_AXI_DP] [get_bd_intf_pins microblaze_0_axi_periph/S00_AXI]
     }
-    set_property CONFIG.NUM_MI 2 [get_bd_cells microblaze_0_axi_periph]
+    set_property CONFIG.NUM_MI 4 [get_bd_cells microblaze_0_axi_periph]
 
     safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M00_AXI] [get_bd_intf_pins axi_uart16550_0/S_AXI]
     safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M01_AXI] [get_bd_intf_pins AXI4_register_file_0/S00_AXI]
+    safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M02_AXI] [get_bd_intf_pins dac_program_bram_ctrl/S_AXI]
+    safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M03_AXI] [get_bd_intf_pins adc_capture_bram_ctrl/S_AXI]
     safe_connect_bd_intf_net [get_bd_intf_pins axi_uart16550_0/UART] [get_bd_intf_ports rs232_uart]
+    safe_connect_bd_intf_net [get_bd_intf_pins dac_program_bram_ctrl/BRAM_PORTA] [get_bd_intf_pins dac_program_bram/BRAM_PORTA]
+    safe_connect_bd_intf_net [get_bd_intf_pins adc_capture_bram_ctrl/BRAM_PORTA] [get_bd_intf_pins adc_capture_bram/BRAM_PORTA]
+    safe_connect_bd_intf_net [get_bd_intf_pins dac_program_bram/BRAM_PORTB] [get_bd_intf_ports DAC_BRAM_PORTB_0]
+    safe_connect_bd_intf_net [get_bd_intf_pins adc_capture_bram/BRAM_PORTB] [get_bd_intf_ports ADC_BRAM_PORTB_0]
 
-    foreach pin_name {ACLK S00_ACLK M00_ACLK M01_ACLK} {
+    foreach pin_name {ACLK S00_ACLK M00_ACLK M01_ACLK M02_ACLK M03_ACLK} {
         safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins microblaze_0_axi_periph/$pin_name]
     }
     foreach pin_name {s_axi_aclk} {
         safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins axi_uart16550_0/$pin_name]
     }
     safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins AXI4_register_file_0/s00_axi_aclk]
+    safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins dac_program_bram_ctrl/s_axi_aclk]
+    safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins adc_capture_bram_ctrl/s_axi_aclk]
 
     set resetn_pin [get_bd_pins -quiet */peripheral_aresetn]
     if {[llength $resetn_pin] == 0} {
         error "MicroBlaze automation did not create a peripheral_aresetn reset output."
     }
     set resetn_pin [lindex $resetn_pin 0]
-    foreach pin_name {ARESETN S00_ARESETN M00_ARESETN M01_ARESETN} {
+    foreach pin_name {ARESETN S00_ARESETN M00_ARESETN M01_ARESETN M02_ARESETN M03_ARESETN} {
         safe_connect_bd_net $resetn_pin [get_bd_pins microblaze_0_axi_periph/$pin_name]
     }
     safe_connect_bd_net $resetn_pin [get_bd_pins axi_uart16550_0/s_axi_aresetn]
     safe_connect_bd_net $resetn_pin [get_bd_pins AXI4_register_file_0/s00_axi_aresetn]
+    safe_connect_bd_net $resetn_pin [get_bd_pins dac_program_bram_ctrl/s_axi_aresetn]
+    safe_connect_bd_net $resetn_pin [get_bd_pins adc_capture_bram_ctrl/s_axi_aresetn]
 
     foreach idx {0 1 2 3} {
         safe_connect_bd_net [get_bd_pins AXI4_register_file_0/RW_REG${idx}] [get_bd_ports RW_REG${idx}_0]
@@ -241,6 +275,18 @@ proc create_microblaze_bd {bd_name} {
     }
 
     assign_bd_address
+    assign_bd_address -offset 0x44A00000 -range 0x00010000 \
+        -target_address_space [get_bd_addr_spaces microblaze_0/Data] \
+        [get_bd_addr_segs axi_uart16550_0/S_AXI/Reg] -force
+    assign_bd_address -offset 0x44A10000 -range 0x00010000 \
+        -target_address_space [get_bd_addr_spaces microblaze_0/Data] \
+        [get_bd_addr_segs AXI4_register_file_0/S00_AXI/S00_AXI_reg] -force
+    assign_bd_address -offset 0xC0000000 -range 0x00100000 \
+        -target_address_space [get_bd_addr_spaces microblaze_0/Data] \
+        [get_bd_addr_segs dac_program_bram_ctrl/S_AXI/Mem0] -force
+    assign_bd_address -offset 0xC0100000 -range 0x00100000 \
+        -target_address_space [get_bd_addr_spaces microblaze_0/Data] \
+        [get_bd_addr_segs adc_capture_bram_ctrl/S_AXI/Mem0] -force
 
     validate_bd_design
 

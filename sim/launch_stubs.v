@@ -43,7 +43,21 @@ module microblaze_bd_wrapper (
     output wire        RO_REG0_RDINT_0,
     output wire        RO_REG1_RDINT_0,
     output wire        RO_REG2_RDINT_0,
-    output wire        RO_REG3_RDINT_0
+    output wire        RO_REG3_RDINT_0,
+    input  wire [31:0] DAC_BRAM_PORTB_0_addr,
+    input  wire        DAC_BRAM_PORTB_0_clk,
+    input  wire [31:0] DAC_BRAM_PORTB_0_din,
+    output wire [31:0] DAC_BRAM_PORTB_0_dout,
+    input  wire        DAC_BRAM_PORTB_0_en,
+    input  wire        DAC_BRAM_PORTB_0_rst,
+    input  wire [3:0]  DAC_BRAM_PORTB_0_we,
+    input  wire [31:0] ADC_BRAM_PORTB_0_addr,
+    input  wire        ADC_BRAM_PORTB_0_clk,
+    input  wire [31:0] ADC_BRAM_PORTB_0_din,
+    output wire [31:0] ADC_BRAM_PORTB_0_dout,
+    input  wire        ADC_BRAM_PORTB_0_en,
+    input  wire        ADC_BRAM_PORTB_0_rst,
+    input  wire [3:0]  ADC_BRAM_PORTB_0_we
 );
     initial begin
         RW_REG0_0 = 32'h0009_0000;
@@ -60,10 +74,18 @@ module microblaze_bd_wrapper (
     assign RO_REG1_RDINT_0 = 1'b0;
     assign RO_REG2_RDINT_0 = 1'b0;
     assign RO_REG3_RDINT_0 = 1'b0;
+    assign DAC_BRAM_PORTB_0_dout = 32'd0;
+    assign ADC_BRAM_PORTB_0_dout = 32'd0;
 
     wire unused = Clk ^ reset ^ rs232_uart_rxd ^ RO_REG0_WE_0 ^ RO_REG1_WE_0 ^
                   RO_REG2_WE_0 ^ RO_REG3_WE_0 ^ ^RO_REG0_IN_0 ^
-                  ^RO_REG1_IN_0 ^ ^RO_REG2_IN_0 ^ ^RO_REG3_IN_0;
+                  ^RO_REG1_IN_0 ^ ^RO_REG2_IN_0 ^ ^RO_REG3_IN_0 ^
+                  ^DAC_BRAM_PORTB_0_addr ^ DAC_BRAM_PORTB_0_clk ^
+                  ^DAC_BRAM_PORTB_0_din ^ DAC_BRAM_PORTB_0_en ^
+                  DAC_BRAM_PORTB_0_rst ^ ^DAC_BRAM_PORTB_0_we ^
+                  ^ADC_BRAM_PORTB_0_addr ^ ADC_BRAM_PORTB_0_clk ^
+                  ^ADC_BRAM_PORTB_0_din ^ ADC_BRAM_PORTB_0_en ^
+                  ADC_BRAM_PORTB_0_rst ^ ^ADC_BRAM_PORTB_0_we;
 endmodule
 
 module IBUFDS #(

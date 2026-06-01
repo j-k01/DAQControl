@@ -14,6 +14,8 @@ exec xvlog.bat -sv -d DAQ_WITH_GTH -d DAQ_WITH_LITEJESD \
     ../../src/hmc7044_init.v \
     ../../src/dac39j84_init.v \
     ../../src/ads54j60_init.v \
+    ../../src/dac_bram_player.v \
+    ../../src/adc_bram_capture.v \
     ../../src/jesd/litejesd_dac_tx.v \
     ../../src/jesd/daq_litejesd_dac_tx_path.v \
     ../../src/jesd/litejesd_adc1_rx.v \
