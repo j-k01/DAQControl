@@ -120,6 +120,35 @@ static u32 ro_addr(unsigned int idx)
     return RO_REG0 + (idx & 3u) * 4u;
 }
 
+static int is_hex_alpha(char c)
+{
+    return (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+static u32 parse_u32_token(const char *s, char **endp)
+{
+    const char *p = s;
+    int base = 10;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        base = 16;
+    } else {
+        const char *q = p;
+        while (*q != '\0' && *q != ' ' && *q != '\t') {
+            if (is_hex_alpha(*q)) {
+                base = 16;
+                break;
+            }
+            q++;
+        }
+    }
+
+    return (u32)strtoul(p, endp, base);
+}
+
 static void print_reg(const char *name, unsigned int idx, u32 val)
 {
     send_str(name);
@@ -141,11 +170,16 @@ static void cmd_help(void)
     send_str("RW0 control bits:\r\n");
     send_str("  [0]/[31] FMC_C2M_PG override unused on ZCU102 HPC0\r\n");
     send_str("  [1] HMC reset, [2] DAC_RESET_N, [3] DAC_TXEN\r\n");
-    send_str("  [4] ADC1 reset, [5] ADC2 reset\r\n");
+    send_str("  [4] ADC1 reset, [5] ADC2 reset when manual SPI is enabled\r\n");
     send_str("  [16:22] manual DAC/HMC SPI pins, enabled by [30]\r\n");
     send_str("  [31] FMC_C2M_PG override enable\r\n");
-    send_str("RW1[2:0] selects RO3: 0/1=reserved, 2=raw pins, 3=build ID\r\n");
-    send_str("                 4=GTH, 5=GTH lanes, 6=LiteJESD, 7=triangle\r\n");
+    send_str("RW1[4:0] selects RO3: 0=HMC status, 1=HMC last write\r\n");
+    send_str("                 2=raw pins, 3=build ID, 4=GTH, 5=GTH lanes\r\n");
+    send_str("                 6=LiteJESD, 7=triangle, 8..D=HMC readbacks\r\n");
+    send_str("                 E=DAC status, F=DAC last write\r\n");
+    send_str("                 16/0x10=ADC status, 17..19/0x11..0x13=ADC1\r\n");
+    send_str("                 20..22/0x14..0x16=ADC2, 23/0x17=ADC write, 24/0x18=ADC read\r\n");
+    send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
     print_uart_config();
 }
 
@@ -189,15 +223,15 @@ static void process_cmd(void)
     } else if (strncmp(cmd, "STAT", 4) == 0) {
         cmd_status();
     } else if (strncmp(cmd, "RDRO", 4) == 0) {
-        unsigned int idx = (unsigned int)strtoul(&cmd[5], NULL, 0);
+        unsigned int idx = (unsigned int)parse_u32_token(&cmd[5], NULL);
         print_reg("RO", idx, Xil_In32(ro_addr(idx)));
     } else if (strncmp(cmd, "RDRW", 4) == 0) {
-        unsigned int idx = (unsigned int)strtoul(&cmd[5], NULL, 0);
+        unsigned int idx = (unsigned int)parse_u32_token(&cmd[5], NULL);
         print_reg("RW", idx, Xil_In32(rw_addr(idx)));
     } else if (strncmp(cmd, "WRTE", 4) == 0) {
         char *p = &cmd[5];
-        unsigned int idx = (unsigned int)strtoul(p, &p, 0);
-        u32 val = (u32)strtoul(p, NULL, 0);
+        unsigned int idx = (unsigned int)parse_u32_token(p, &p);
+        u32 val = parse_u32_token(p, NULL);
         Xil_Out32(rw_addr(idx), val);
         send_str("OK\r\n");
     } else {

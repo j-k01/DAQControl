@@ -66,13 +66,22 @@ delay from the BSP. Register `0x4D` is deliberately programmed as `0x0300`
 instead of Sundance's remapped-table `0x9300`; TI defines that register's
 upper byte as `M-1`, and the 8411 mode requires `M=4`.
 
-Runtime selectors exposed through `RW1[3:0]`:
+Runtime selectors exposed through `RW1[4:0]`:
 
 ```text
 0x6: LiteJESD status
 0x7: Triangle sample word
 0xE: DAC39J84 init status
 0xF: DAC39J84 last SPI write
+0x10: ADS54J60 init/readback status
+0x11: ADC1 analog-bank readback summary
+0x12: ADC1 JESD-digital readback summary
+0x13: ADC1 JESD-analog readback summary
+0x14: ADC2 analog-bank readback summary
+0x15: ADC2 JESD-digital readback summary
+0x16: ADC2 JESD-analog readback summary
+0x17: ADS54J60 last SPI write
+0x18: ADS54J60 last SPI read
 ```
 
 Regenerate with:

@@ -31,6 +31,12 @@ module top_tb;
 
     wire ADC1_RESET;
     wire ADC2_RESET;
+    wire ADC_SCLK;
+    wire ADC_SDIN;
+    reg ADC1_SDOUT = 1'b1;
+    reg ADC2_SDOUT = 1'b1;
+    wire ADC1_CS_N;
+    wire ADC2_CS_N;
 
     wire HMC_CLK_RESET;
     wire HMC_CLK_CS_N;
@@ -67,6 +73,12 @@ module top_tb;
         .DAC_ALARM                 (DAC_ALARM),
         .ADC1_RESET                (ADC1_RESET),
         .ADC2_RESET                (ADC2_RESET),
+        .ADC_SCLK                  (ADC_SCLK),
+        .ADC_SDIN                  (ADC_SDIN),
+        .ADC1_SDOUT                (ADC1_SDOUT),
+        .ADC2_SDOUT                (ADC2_SDOUT),
+        .ADC1_CS_N                 (ADC1_CS_N),
+        .ADC2_CS_N                 (ADC2_CS_N),
         .HMC_CLK_RESET             (HMC_CLK_RESET),
         .HMC_CLK_CS_N              (HMC_CLK_CS_N),
         .HMC_CLK_SCLK              (HMC_CLK_SCLK),
@@ -110,6 +122,10 @@ module top_tb;
         expect_bit(GPIO_LED[6], 1'b1, "DAC alarm deasserted LED");
         expect_bit(GPIO_LED[7], 1'b0, "error LED with DAC alarm low");
         expect_bit(DAC_CS_N, 1'b1, "DAC chip-select idle high");
+        expect_bit(ADC1_CS_N, 1'b1, "ADC1 chip-select idle high before HMC init");
+        expect_bit(ADC2_CS_N, 1'b1, "ADC2 chip-select idle high before HMC init");
+        expect_bit(ADC1_RESET, 1'b1, "ADC1 reset asserted before HMC init");
+        expect_bit(ADC2_RESET, 1'b1, "ADC2 reset asserted before HMC init");
         expect_bit(HMC_CLK_CS_N, 1'b1, "HMC chip-select idle high");
         expect_bit(DAC_TXEN, 1'b0, "DAC TX disabled by default");
 

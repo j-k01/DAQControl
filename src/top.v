@@ -33,6 +33,12 @@ module top #(
 
     output wire        ADC1_RESET,
     output wire        ADC2_RESET,
+    output wire        ADC_SCLK,
+    output wire        ADC_SDIN,
+    input  wire        ADC1_SDOUT,
+    input  wire        ADC2_SDOUT,
+    output wire        ADC1_CS_N,
+    output wire        ADC2_CS_N,
 
     output wire        HMC_CLK_RESET,
     output wire        HMC_CLK_CS_N,
@@ -208,6 +214,36 @@ module top #(
     wire [15:0] dac_auto_last_data;
     wire [31:0] dac_auto_status_reg;
     wire [31:0] dac_auto_last_write_reg;
+    wire adc_auto_busy;
+    wire adc_auto_done;
+    wire adc_auto_reset1;
+    wire adc_auto_reset2;
+    wire adc_auto_cs1_n;
+    wire adc_auto_cs2_n;
+    wire adc_auto_sclk;
+    wire adc_auto_sdin;
+    wire adc_auto_chip;
+    wire [6:0] adc_auto_step;
+    wire [15:0] adc_auto_last_addr;
+    wire [7:0] adc_auto_last_data;
+    wire adc_readback_done1;
+    wire adc_readback_done2;
+    wire adc_readback_ok1;
+    wire adc_readback_ok2;
+    wire adc_sdout_stuck1;
+    wire adc_sdout_stuck2;
+    wire [23:0] adc1_analog_word;
+    wire [23:0] adc1_jesd_digital_word;
+    wire [15:0] adc1_jesd_analog_word;
+    wire [23:0] adc2_analog_word;
+    wire [23:0] adc2_jesd_digital_word;
+    wire [15:0] adc2_jesd_analog_word;
+    wire [15:0] adc_last_read_addr;
+    wire [7:0] adc_last_read_data;
+    wire adc_last_read_chip;
+    wire [31:0] adc_auto_status_reg;
+    wire [31:0] adc_auto_last_write_reg;
+    wire [31:0] adc_auto_last_read_reg;
     wire hmc_auto_busy;
     wire hmc_auto_done;
     wire hmc_auto_reset;
@@ -232,18 +268,23 @@ module top #(
     wire hmc_auto_owns = ~manual_spi_enable;
     reg  hmc_restart_req_d = 1'b0;
     reg  dac_restart_req_d = 1'b0;
+    reg  adc_restart_req_d = 1'b0;
     always @(posedge clk_200) begin
         if (fabric_rst) begin
             hmc_restart_req_d <= 1'b0;
             dac_restart_req_d <= 1'b0;
+            adc_restart_req_d <= 1'b0;
         end else begin
             hmc_restart_req_d <= rw_reg3[0];
             dac_restart_req_d <= rw_reg3[1];
+            adc_restart_req_d <= rw_reg3[2];
         end
     end
     wire hmc_restart_pulse = ~fabric_rst & rw_reg3[0] & ~hmc_restart_req_d;
     wire dac_restart_pulse = ~fabric_rst & hmc_auto_done &
                               rw_reg3[1] & ~dac_restart_req_d;
+    wire adc_restart_pulse = ~fabric_rst & hmc_auto_done &
+                              rw_reg3[2] & ~adc_restart_req_d;
 
     hmc7044_init #(
         .CLK_HZ           (200_000_000),
@@ -302,6 +343,51 @@ module top #(
         .last_write (dac_auto_last_write_reg)
     );
 
+    ads54j60_init #(
+        .CLK_HZ           (200_000_000),
+        .SPI_HZ           (500_000),
+        .RESET_ASSERT_US  (10_000),
+        .RESET_RELEASE_US (10_000),
+        .OP_GAP_US        (10_000)
+    ) u_ads54j60_init (
+        .clk                    (clk_200),
+        .rst                    (fabric_rst | ~hmc_auto_done),
+        .start                  (1'b1),
+        .restart                (adc_restart_pulse),
+        .adc1_sdout             (ADC1_SDOUT),
+        .adc2_sdout             (ADC2_SDOUT),
+        .busy                   (adc_auto_busy),
+        .done                   (adc_auto_done),
+        .adc1_reset             (adc_auto_reset1),
+        .adc2_reset             (adc_auto_reset2),
+        .spi_cs1_n              (adc_auto_cs1_n),
+        .spi_cs2_n              (adc_auto_cs2_n),
+        .spi_sclk               (adc_auto_sclk),
+        .spi_sdin               (adc_auto_sdin),
+        .chip_index             (adc_auto_chip),
+        .op_index               (adc_auto_step),
+        .last_addr              (adc_auto_last_addr),
+        .last_data              (adc_auto_last_data),
+        .readback_done1         (adc_readback_done1),
+        .readback_done2         (adc_readback_done2),
+        .readback_ok1           (adc_readback_ok1),
+        .readback_ok2           (adc_readback_ok2),
+        .sdout_stuck1           (adc_sdout_stuck1),
+        .sdout_stuck2           (adc_sdout_stuck2),
+        .adc1_analog_word       (adc1_analog_word),
+        .adc1_jesd_digital_word (adc1_jesd_digital_word),
+        .adc1_jesd_analog_word  (adc1_jesd_analog_word),
+        .adc2_analog_word       (adc2_analog_word),
+        .adc2_jesd_digital_word (adc2_jesd_digital_word),
+        .adc2_jesd_analog_word  (adc2_jesd_analog_word),
+        .last_read_addr         (adc_last_read_addr),
+        .last_read_data         (adc_last_read_data),
+        .last_read_chip         (adc_last_read_chip),
+        .status                 (adc_auto_status_reg),
+        .last_write             (adc_auto_last_write_reg),
+        .last_read              (adc_auto_last_read_reg)
+    );
+
     assign HMC_CLK_RESET = hmc_auto_owns ? hmc_auto_reset : rw_reg0[1];
 `ifdef DAQ_WITH_LITEJESD
     assign DAC_RESET_N   = manual_spi_enable ? rw_reg0[2] :
@@ -312,8 +398,12 @@ module top #(
     assign DAC_RESET_N   = rw_reg0[2];
     assign DAC_TXEN      = rw_reg0[3];
 `endif
-    assign ADC1_RESET    = rw_reg0[4];
-    assign ADC2_RESET    = rw_reg0[5];
+    assign ADC1_RESET    = manual_spi_enable ? rw_reg0[4] : adc_auto_reset1;
+    assign ADC2_RESET    = manual_spi_enable ? rw_reg0[5] : adc_auto_reset2;
+    assign ADC1_CS_N     = adc_auto_cs1_n;
+    assign ADC2_CS_N     = adc_auto_cs2_n;
+    assign ADC_SCLK      = adc_auto_sclk;
+    assign ADC_SDIN      = adc_auto_sdin;
 
 `ifdef DAQ_WITH_LITEJESD
     assign DAC_CS_N      = manual_spi_enable ? rw_reg0[16] : dac_auto_cs_n;
@@ -705,12 +795,16 @@ module top #(
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_alarm_pipe = 3'b000;
     (* ASYNC_REG = "TRUE" *) reg [2:0] hmc_sdio_pipe = 3'b000;
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_sdout_pipe = 3'b000;
+    (* ASYNC_REG = "TRUE" *) reg [2:0] adc1_sdout_pipe = 3'b000;
+    (* ASYNC_REG = "TRUE" *) reg [2:0] adc2_sdout_pipe = 3'b000;
 
     always @(posedge clk_200) begin
         dac_sync_pipe <= {dac_sync_pipe[1:0], dac_sync_raw};
         dac_alarm_pipe <= {dac_alarm_pipe[1:0], DAC_ALARM};
         hmc_sdio_pipe <= {hmc_sdio_pipe[1:0], hmc_sdio_in};
         dac_sdout_pipe <= {dac_sdout_pipe[1:0], DAC_SDOUT};
+        adc1_sdout_pipe <= {adc1_sdout_pipe[1:0], ADC1_SDOUT};
+        adc2_sdout_pipe <= {adc2_sdout_pipe[1:0], ADC2_SDOUT};
     end
 
     wire dac_sync_level = dac_sync_pipe[2];
@@ -748,9 +842,65 @@ module top #(
         hmc_readback_last_addr,
         hmc_readback_last_data
     };
+    wire [31:0] adc1_analog_summary_reg = {
+        4'hA,
+        adc_readback_done1,
+        adc_readback_ok1,
+        adc_sdout_stuck1,
+        1'b0,
+        adc1_analog_word
+    };
+    wire [31:0] adc1_jesd_digital_summary_reg = {
+        4'hB,
+        adc_readback_done1,
+        adc_readback_ok1,
+        adc_sdout_stuck1,
+        1'b0,
+        adc1_jesd_digital_word
+    };
+    wire [31:0] adc1_jesd_analog_summary_reg = {
+        8'hC1,
+        adc_readback_done1,
+        adc_readback_ok1,
+        adc_sdout_stuck1,
+        5'd0,
+        adc1_jesd_analog_word
+    };
+    wire [31:0] adc2_analog_summary_reg = {
+        4'hA,
+        adc_readback_done2,
+        adc_readback_ok2,
+        adc_sdout_stuck2,
+        1'b0,
+        adc2_analog_word
+    };
+    wire [31:0] adc2_jesd_digital_summary_reg = {
+        4'hB,
+        adc_readback_done2,
+        adc_readback_ok2,
+        adc_sdout_stuck2,
+        1'b0,
+        adc2_jesd_digital_word
+    };
+    wire [31:0] adc2_jesd_analog_summary_reg = {
+        8'hC2,
+        adc_readback_done2,
+        adc_readback_ok2,
+        adc_sdout_stuck2,
+        5'd0,
+        adc2_jesd_analog_word
+    };
 
     wire [31:0] raw_pin_reg = {
-        12'd0,
+        4'd0,
+        adc2_sdout_pipe[2],
+        ADC2_SDOUT,
+        adc1_sdout_pipe[2],
+        ADC1_SDOUT,
+        adc_auto_done,
+        adc_auto_busy,
+        ADC2_CS_N,
+        ADC1_CS_N,
         hmc_auto_done,
         hmc_auto_busy,
         hmc_auto_reset,
@@ -770,26 +920,35 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0004;
+    wire [31:0] build_id = 32'hDA01_0005;
 
     always @* begin
-        case (rw_reg1[3:0])
-            4'd0:  selected_count = hmc_auto_status_reg;
-            4'd1:  selected_count = hmc_auto_last_write_reg;
-            4'd2:  selected_count = raw_pin_reg;
-            4'd3:  selected_count = build_id;
-            4'd4:  selected_count = gth_status_reg;
-            4'd5:  selected_count = gth_rx_status_reg;
-            4'd6:  selected_count = litejesd_status_reg;
-            4'd7:  selected_count = litejesd_triangle_word;
-            4'd8:  selected_count = hmc_readback_summary_reg;
-            4'd9:  selected_count = hmc_readback_id_word;
-            4'd10: selected_count = hmc_readback_alarm_word;
-            4'd11: selected_count = hmc_readback_pll1_word;
-            4'd12: selected_count = hmc_readback_pll2_word;
-            4'd13: selected_count = hmc_readback_scratch_word;
-            4'd14: selected_count = dac_auto_status_reg;
-            4'd15: selected_count = dac_auto_last_write_reg;
+        case (rw_reg1[4:0])
+            5'd0:  selected_count = hmc_auto_status_reg;
+            5'd1:  selected_count = hmc_auto_last_write_reg;
+            5'd2:  selected_count = raw_pin_reg;
+            5'd3:  selected_count = build_id;
+            5'd4:  selected_count = gth_status_reg;
+            5'd5:  selected_count = gth_rx_status_reg;
+            5'd6:  selected_count = litejesd_status_reg;
+            5'd7:  selected_count = litejesd_triangle_word;
+            5'd8:  selected_count = hmc_readback_summary_reg;
+            5'd9:  selected_count = hmc_readback_id_word;
+            5'd10: selected_count = hmc_readback_alarm_word;
+            5'd11: selected_count = hmc_readback_pll1_word;
+            5'd12: selected_count = hmc_readback_pll2_word;
+            5'd13: selected_count = hmc_readback_scratch_word;
+            5'd14: selected_count = dac_auto_status_reg;
+            5'd15: selected_count = dac_auto_last_write_reg;
+            5'd16: selected_count = adc_auto_status_reg;
+            5'd17: selected_count = adc1_analog_summary_reg;
+            5'd18: selected_count = adc1_jesd_digital_summary_reg;
+            5'd19: selected_count = adc1_jesd_analog_summary_reg;
+            5'd20: selected_count = adc2_analog_summary_reg;
+            5'd21: selected_count = adc2_jesd_digital_summary_reg;
+            5'd22: selected_count = adc2_jesd_analog_summary_reg;
+            5'd23: selected_count = adc_auto_last_write_reg;
+            5'd24: selected_count = adc_auto_last_read_reg;
             default: selected_count = 32'd0;
         endcase
     end
@@ -829,16 +988,16 @@ module top #(
     wire [31:0] ila_debug_flags = {
         hmc_readback_sdio_stuck,
         hmc_readback_done,
+        adc_readback_ok1,
+        adc_readback_ok2,
+        adc_sdout_stuck1,
+        adc_sdout_stuck2,
         hmc_auto_done,
         hmc_auto_busy,
-        hmc_auto_reset,
-        hmc_auto_cs_n,
         dac_auto_done,
         dac_auto_busy,
-        dac_auto_reset_n,
-        dac_auto_cs_n,
-        dac_auto_sclk,
-        dac_auto_sdin,
+        adc_auto_done,
+        adc_auto_busy,
         GPIO_LED,
         litejesd_ready,
         litejesd_active,
@@ -848,8 +1007,8 @@ module top #(
         dac_sync_level,
         dac_alarm_level,
         manual_spi_enable,
-        DAC_TXEN,
-        DAC_RESET_N,
+        ADC1_RESET,
+        ADC2_RESET,
         sysref_seen,
         clk_fmc_seen
     };
@@ -913,7 +1072,11 @@ module top #(
     wire unused = clk_100 ^ clk_125 ^ gth_unused_reduce ^
                   ro_reg0_rdint ^ ro_reg1_rdint ^ ro_reg2_rdint ^
                   ro_reg3_rdint ^ rw_reg2[0] ^ rw_reg3[0] ^
-                  rw_reg3[1] ^ dac_auto_step[0] ^ dac_auto_last_addr[0] ^
-                  dac_auto_last_data[0] ^ microblaze_reset;
+                  rw_reg3[1] ^ rw_reg3[2] ^ dac_auto_step[0] ^
+                  dac_auto_last_addr[0] ^ dac_auto_last_data[0] ^
+                  adc_auto_step[0] ^ adc_auto_last_addr[0] ^
+                  adc_auto_last_data[0] ^ adc_last_read_addr[0] ^
+                  adc_last_read_data[0] ^ adc_last_read_chip ^
+                  microblaze_reset;
 
 endmodule

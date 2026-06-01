@@ -44,12 +44,25 @@ set_property PACKAGE_PIN U5 [get_ports DAC_RESET_N]
 set_property PACKAGE_PIN U4 [get_ports DAC_ALARM]
 set_property IOSTANDARD LVCMOS18 [get_ports {DAC_SCLK DAC_SDIN DAC_SDOUT DAC_CS_N DAC_TXEN DAC_RESET_N DAC_ALARM}]
 
-# ADC resets kept controllable but deasserted by default.
+# ADS54J60 SPI / reset pins. The two ADCs share SCLK/SDIN and use separate
+# active-low chip-selects plus separate SDOUT readback pins.
 # ADC1_RESET -> LA03_N
 # ADC2_RESET -> LA05_N
+# ADCs_SDIN  -> LA05_P
+# ADCs_SCLK  -> LA06_P
+# ADC2_SDOUT -> LA10_N
+# ADC1_SCS   -> LA11_P
+# ADC1_SDOUT -> LA12_N
+# ADC2_SCS   -> LA13_P
 set_property PACKAGE_PIN Y1 [get_ports ADC1_RESET]
 set_property PACKAGE_PIN AC3 [get_ports ADC2_RESET]
-set_property IOSTANDARD LVCMOS18 [get_ports {ADC1_RESET ADC2_RESET}]
+set_property PACKAGE_PIN AB3 [get_ports ADC_SDIN]
+set_property PACKAGE_PIN AC2 [get_ports ADC_SCLK]
+set_property PACKAGE_PIN W4 [get_ports ADC2_SDOUT]
+set_property PACKAGE_PIN AB6 [get_ports ADC1_CS_N]
+set_property PACKAGE_PIN W6 [get_ports ADC1_SDOUT]
+set_property PACKAGE_PIN AB8 [get_ports ADC2_CS_N]
+set_property IOSTANDARD LVCMOS18 [get_ports {ADC1_RESET ADC2_RESET ADC_SDIN ADC_SCLK ADC2_SDOUT ADC1_CS_N ADC1_SDOUT ADC2_CS_N}]
 
 # HMC7044 SPI / reset pins
 # HMC_CLK_RESET -> LA13_N
