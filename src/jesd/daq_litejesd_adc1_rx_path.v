@@ -180,7 +180,6 @@ module daq_litejesd_adc1_rx_path (
         8'hA1,
         core_ready,
         adc_sync_n,
-        enable,
         jesd_rst,
         ilas_check_enable,
         stpl_enable,
