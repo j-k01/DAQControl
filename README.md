@@ -264,7 +264,8 @@ it only after uploading channel program words with `PROG`.
 
 The DAC BRAM dataplane has one independent 64-bit playback BRAM per DAC
 converter. The MicroBlaze sees each channel as 8192 little-endian 32-bit words,
-which the JESD side reads as 4096 looping 64-bit frames. Upload with:
+which the JESD side reads as 4096 looping 64-bit frames. `PROG` word counts
+must be even so every uploaded 64-bit frame is complete. Upload with:
 
 ```text
 PROG 0 8192

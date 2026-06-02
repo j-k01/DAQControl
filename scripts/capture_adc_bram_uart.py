@@ -219,6 +219,8 @@ def main():
         program_words = default_triangle_program(args.program_words, args.triangle_step)
     else:
         program_words = []
+    if program_words and len(program_words) % 2:
+        raise ValueError("DAC 64-bit program frames require an even number of u32 words")
     if args.upload_only and not program_words:
         raise ValueError("--upload-only requires --program or --upload-triangle")
 

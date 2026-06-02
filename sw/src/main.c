@@ -682,6 +682,10 @@ static void cmd_program(u32 channel, u32 words)
     if (words == 0u || words > DAC_PROGRAM_WORDS_PER_CHANNEL) {
         words = DAC_PROGRAM_WORDS_PER_CHANNEL;
     }
+    if ((words & 1u) != 0u) {
+        send_str("ERR PROG word count must be even for 64-bit DAC frames\r\n");
+        return;
+    }
 
     send_str("PGRD ch=");
     send_uint(channel);
@@ -783,7 +787,7 @@ static void cmd_help(void)
     send_str("  RDRW n           read RW register 0..3\r\n");
     send_str("  WRTE n value     write RW register 0..3; use 0x prefix for hex masks\r\n");
 #if HAS_BRAM_DATAPLANE
-    send_str("  PROG ch [n]      upload n little-endian 32-bit words to DAC channel ch=0..3\r\n");
+    send_str("  PROG ch [n]      upload even n little-endian u32 words to DAC channel ch=0..3\r\n");
     send_str("  DPRD ch [start] [n] read back DAC program BRAM u32 words\r\n");
     send_str("  CAPS             print ADC BRAM capture status\r\n");
     send_str("  CAPT [frames]    capture ADC1 128-bit frames and stream 4 u32 words/frame\r\n");
