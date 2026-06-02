@@ -73,7 +73,19 @@ proc validate_microblaze_bd_contract {} {
         }
     }
 
-    foreach cell_name {dac_program_bram_ctrl adc_capture_bram_ctrl dac_program_bram adc_capture_bram} {
+    set bram_dataplane_cells {
+        dac0_program_bram_ctrl
+        dac1_program_bram_ctrl
+        dac2_program_bram_ctrl
+        dac3_program_bram_ctrl
+        dac0_program_bram
+        dac1_program_bram
+        dac2_program_bram
+        dac3_program_bram
+        adc_capture_bram_ctrl
+        adc_capture_bram
+    }
+    foreach cell_name $bram_dataplane_cells {
         set count [llength [get_bd_cells -quiet $cell_name]]
         if {$expect_bram_dataplane && $count != 1} {
             error "MicroBlaze BD contract failure: missing expected BRAM dataplane cell '$cell_name'. Re-run create_project.tcl --with-bram-dataplane."
@@ -83,7 +95,14 @@ proc validate_microblaze_bd_contract {} {
         }
     }
 
-    foreach port_name {DAC_BRAM_PORTB_0 ADC_BRAM_PORTB_0} {
+    set bram_dataplane_ports {
+        DAC0_BRAM_PORTB_0
+        DAC1_BRAM_PORTB_0
+        DAC2_BRAM_PORTB_0
+        DAC3_BRAM_PORTB_0
+        ADC_BRAM_PORTB_0
+    }
+    foreach port_name $bram_dataplane_ports {
         set count [llength [get_bd_intf_ports -quiet $port_name]]
         if {$expect_bram_dataplane && $count != 1} {
             error "MicroBlaze BD contract failure: missing expected external BRAM interface '$port_name'. Re-run create_project.tcl --with-bram-dataplane."
