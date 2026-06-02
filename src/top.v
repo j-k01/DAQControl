@@ -692,29 +692,19 @@ module top #(
         .gth_txcharisk    (litejesd_txcharisk)
     );
 
-    // Sundance FMC-ADC500-CD routes DAC JESD RX lanes onto HPC0 C2M DP pins
-    // in board order DP7,DP4,DP6,DP5,DP3,DP2,DP1,DP0 for DAC lanes 0..7.
-    // The ZCU102 GTH vector order here is DP4,DP5,DP6,DP7,DP0,DP1,DP2,DP3,
-    // so permute LiteJESD logical lanes before driving the physical GTH lanes.
-    assign gth_userdata_tx = {
-        litejesd_txdata[159:128],  // GTH vector 7 / DP3 <= JESD lane 4
-        litejesd_txdata[191:160],  // GTH vector 6 / DP2 <= JESD lane 5
-        litejesd_txdata[223:192],  // GTH vector 5 / DP1 <= JESD lane 6
-        litejesd_txdata[255:224],  // GTH vector 4 / DP0 <= JESD lane 7
-        litejesd_txdata[31:0],     // GTH vector 3 / DP7 <= JESD lane 0
-        litejesd_txdata[95:64],    // GTH vector 2 / DP6 <= JESD lane 2
-        litejesd_txdata[127:96],   // GTH vector 1 / DP5 <= JESD lane 3
-        litejesd_txdata[63:32]     // GTH vector 0 / DP4 <= JESD lane 1
-    };
+    // The DAC39J84 startup sequence uses Sundance's DAC-side lane remap
+    // (config95/config96 = 0x3021/0x7654). Keep the FPGA TX lane order
+    // identity here so the board mapping is corrected exactly once.
+    assign gth_userdata_tx = litejesd_txdata;
     assign gth_txctrl2 = {
-        4'd0, litejesd_txcharisk[19:16],
-        4'd0, litejesd_txcharisk[23:20],
-        4'd0, litejesd_txcharisk[27:24],
         4'd0, litejesd_txcharisk[31:28],
-        4'd0, litejesd_txcharisk[3:0],
-        4'd0, litejesd_txcharisk[11:8],
+        4'd0, litejesd_txcharisk[27:24],
+        4'd0, litejesd_txcharisk[23:20],
+        4'd0, litejesd_txcharisk[19:16],
         4'd0, litejesd_txcharisk[15:12],
-        4'd0, litejesd_txcharisk[7:4]
+        4'd0, litejesd_txcharisk[11:8],
+        4'd0, litejesd_txcharisk[7:4],
+        4'd0, litejesd_txcharisk[3:0]
     };
 
 `ifdef DAQ_WITH_GTH_TX_ILA
@@ -1307,7 +1297,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0011;
+    wire [31:0] build_id = 32'hDA01_0012;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]

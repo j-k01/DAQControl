@@ -54,15 +54,17 @@ gth_txdata[255:0]    // {lane7, ..., lane0}, 32 bits per lane
 gth_txcharisk[31:0]  // {lane7, ..., lane0}, 4 bits per lane
 ```
 
-For a corrected GT Wizard instance, connect `gth_txdata` to the wizard TX user
-data input after applying the board-specific physical lane remap. On ZCU102
-HPC0 with the FMC-ADC500-CD, the GTH vector order is DP4, DP5, DP6, DP7, DP0,
-DP1, DP2, DP3, while the DAC receives JESD lanes on DP7, DP4, DP6, DP5, DP3,
-DP2, DP1, DP0. The top-level HDL therefore permutes both `gth_txdata` and
-`gth_txcharisk` before the GTH Wizard. Connect the remapped charisk path to
-the 8B/10B `TXCTRL2` path, with `TXCTRL0` and `TXCTRL1` tied low unless the
-generated wrapper requires those ports for another control function. Keep
-`TX8B10BEN` asserted and `TX8B10BBYPASS` deasserted.
+For the current DAC39J84 initialization, connect `gth_txdata` to the wizard TX
+user data input without an FPGA-side lane permutation. The DAC startup sequence
+uses Sundance's `init8411_dac_remapped` path and programs DAC39J84
+`config95/config96` to `0x3021/0x7654`, so the physical FMC/HPC0 lane mapping
+is corrected inside the DAC SerDes-to-JESD crossbar. Applying an additional
+FPGA-side TX lane remap double-corrects the mapping and corrupts the DAC sample
+stream while the JESD link can still appear up. Connect `gth_txcharisk` in the
+same identity lane order to the 8B/10B `TXCTRL2` path, with `TXCTRL0` and
+`TXCTRL1` tied low unless the generated wrapper requires those ports for
+another control function. Keep `TX8B10BEN` asserted and `TX8B10BBYPASS`
+deasserted.
 
 `dac39j84_init.v` configures the DAC automatically after the HMC7044 clock
 startup is complete. It uses the Sundance `init8411_dac_remapped` register
