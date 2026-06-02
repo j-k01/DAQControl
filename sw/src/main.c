@@ -60,6 +60,17 @@
 #define RW2_CAPTURE_STATUS_SEL (1u << 31)
 #define RW2_LAUNCH_DEFAULT     RW2_ADC1_ILAS_BYPASS
 
+#define RO0_DAC_DONE           (1u << 31)
+#define RO0_DAC_BUSY           (1u << 30)
+#define RO0_HMC_DONE           (1u << 27)
+#define RO0_GTH_QPLL_LOCKED    (1u << 16)
+#define RO0_GTH_TX_READY       (1u << 17)
+#define RO0_LITEJESD_ACTIVE    (1u << 19)
+#define RO0_LITEJESD_READY     (1u << 20)
+#define RO0_TX_LINK_READY      (RO0_HMC_DONE | RO0_GTH_QPLL_LOCKED | \
+                                RO0_GTH_TX_READY | RO0_LITEJESD_ACTIVE | \
+                                RO0_LITEJESD_READY)
+
 #if HAS_BRAM_DATAPLANE
 #define RW3_CAPTURE_START      (1u << 3)
 #define RW3_CAPTURE_SRC_SHIFT  4
@@ -384,6 +395,55 @@ static void short_delay(void)
         ;
 }
 
+static void delay_short_delays(u32 count)
+{
+    while (count-- > 0u)
+        short_delay();
+}
+
+static int wait_ro0_mask(u32 mask, u32 timeout_delays)
+{
+    while (timeout_delays-- > 0u) {
+        if ((Xil_In32(RO_REG0) & mask) == mask)
+            return 1;
+        short_delay();
+    }
+    return 0;
+}
+
+static int wait_dac_init_done(u32 timeout_delays)
+{
+    while (timeout_delays-- > 0u) {
+        u32 ro0 = Xil_In32(RO_REG0);
+        if ((ro0 & RO0_DAC_DONE) != 0u && (ro0 & RO0_DAC_BUSY) == 0u)
+            return 1;
+        short_delay();
+    }
+    return 0;
+}
+
+static void restart_dac_tx_path(void)
+{
+    Xil_Out32(RW_REG3, 0);
+    Xil_Out32(RW_REG2, RW2_LAUNCH_DEFAULT | RW2_GTH_RESET);
+    delay_short_delays(50u);
+    Xil_Out32(RW_REG2, RW2_LAUNCH_DEFAULT);
+
+    /*
+     * Loading firmware can disturb an already-running bitstream JESD stream.
+     * Bring TX back up in the order that recovered the DAC on hardware:
+     * release GT, let the TX/LiteJESD stream become stable, then reinitialize
+     * the DAC so it sees a clean CGS/ILAS/data sequence.
+     */
+    wait_ro0_mask(RO0_TX_LINK_READY, 500u);
+    delay_short_delays(50u);
+
+    Xil_Out32(RW_REG3, 2u);
+    short_delay();
+    Xil_Out32(RW_REG3, 0);
+    wait_dac_init_done(500u);
+}
+
 static char ascii_upper(char c)
 {
     if (c >= 'a' && c <= 'z')
@@ -654,6 +714,7 @@ static void cmd_help(void)
     send_str("DAQ_LAUNCH commands:\r\n");
     send_str("  HELP\r\n");
     send_str("  STAT             dump status, counters, controls\r\n");
+    send_str("  TXRS             restart GTH/LiteJESD TX, then reinitialize DAC\r\n");
     send_str("  LOOP             dump DAC TX / ADC1 RX loopback diagnostics\r\n");
     send_str("  RXSW             sweep ADC1 RX ILAS/order/polarity diagnostics\r\n");
     send_str("  ADCT mode        ADS54J60 test mode: off,d21,k28,ila,rpat,transport\r\n");
@@ -742,10 +803,7 @@ static void launch_defaults(void)
     u32 ctrl = CTRL_DAC_CS_N | CTRL_HMC_CS_N;
 
     Xil_Out32(RW_REG0, ctrl);
-    Xil_Out32(RW_REG2, RW2_LAUNCH_DEFAULT | RW2_GTH_RESET);
-    short_delay();
-    Xil_Out32(RW_REG2, RW2_LAUNCH_DEFAULT);
-    Xil_Out32(RW_REG3, 0);
+    restart_dac_tx_path();
 }
 
 static void process_cmd(void)
@@ -754,6 +812,9 @@ static void process_cmd(void)
         cmd_help();
     } else if (strncmp(cmd, "STAT", 4) == 0) {
         cmd_status();
+    } else if (strncmp(cmd, "TXRS", 4) == 0) {
+        restart_dac_tx_path();
+        send_str("OK\r\n");
     } else if (strncmp(cmd, "LOOP", 4) == 0) {
         cmd_loop();
     } else if (strncmp(cmd, "RXSW", 4) == 0) {
