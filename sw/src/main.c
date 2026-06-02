@@ -654,6 +654,8 @@ static void launch_defaults(void)
     u32 ctrl = CTRL_DAC_CS_N | CTRL_HMC_CS_N;
 
     Xil_Out32(RW_REG0, ctrl);
+    Xil_Out32(RW_REG2, RW2_LAUNCH_DEFAULT | RW2_GTH_RESET);
+    short_delay();
     Xil_Out32(RW_REG2, RW2_LAUNCH_DEFAULT);
     Xil_Out32(RW_REG3, 0);
 }
