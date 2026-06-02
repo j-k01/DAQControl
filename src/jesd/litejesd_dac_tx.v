@@ -1303,59 +1303,62 @@ assign core_transport_octet30 = {core_transport_nibble60, core_transport_nibble6
 assign core_transport_octet31 = {core_transport_nibble62, core_transport_nibble63};
 always @(*) begin
     core_transport_source_lane0 <= 32'd0;
-    core_transport_source_lane0[7:0] <= core_transport_octet0;
-    core_transport_source_lane0[15:8] <= core_transport_octet8;
-    core_transport_source_lane0[23:16] <= core_transport_octet16;
-    core_transport_source_lane0[31:24] <= core_transport_octet24;
+    // Sundance DAC sample adapter order, adapted from 64-bit/lane beats to
+    // this 32-bit/lane LiteJESD transport. Software supplies natural samples
+    // as converter0..3 = DAC1_CH1, DAC1_CH2, DAC2_CH1, DAC2_CH2.
+    core_transport_source_lane0[7:0] <= core_transport_octet7;
+    core_transport_source_lane0[15:8] <= core_transport_octet15;
+    core_transport_source_lane0[23:16] <= core_transport_octet23;
+    core_transport_source_lane0[31:24] <= core_transport_octet31;
 end
 always @(*) begin
     core_transport_source_lane1 <= 32'd0;
-    core_transport_source_lane1[7:0] <= core_transport_octet1;
-    core_transport_source_lane1[15:8] <= core_transport_octet9;
-    core_transport_source_lane1[23:16] <= core_transport_octet17;
-    core_transport_source_lane1[31:24] <= core_transport_octet25;
+    core_transport_source_lane1[7:0] <= core_transport_octet5;
+    core_transport_source_lane1[15:8] <= core_transport_octet13;
+    core_transport_source_lane1[23:16] <= core_transport_octet21;
+    core_transport_source_lane1[31:24] <= core_transport_octet29;
 end
 always @(*) begin
     core_transport_source_lane2 <= 32'd0;
-    core_transport_source_lane2[7:0] <= core_transport_octet2;
-    core_transport_source_lane2[15:8] <= core_transport_octet10;
-    core_transport_source_lane2[23:16] <= core_transport_octet18;
-    core_transport_source_lane2[31:24] <= core_transport_octet26;
+    core_transport_source_lane2[7:0] <= core_transport_octet4;
+    core_transport_source_lane2[15:8] <= core_transport_octet12;
+    core_transport_source_lane2[23:16] <= core_transport_octet20;
+    core_transport_source_lane2[31:24] <= core_transport_octet28;
 end
 always @(*) begin
     core_transport_source_lane3 <= 32'd0;
-    core_transport_source_lane3[7:0] <= core_transport_octet3;
-    core_transport_source_lane3[15:8] <= core_transport_octet11;
-    core_transport_source_lane3[23:16] <= core_transport_octet19;
-    core_transport_source_lane3[31:24] <= core_transport_octet27;
+    core_transport_source_lane3[7:0] <= core_transport_octet6;
+    core_transport_source_lane3[15:8] <= core_transport_octet14;
+    core_transport_source_lane3[23:16] <= core_transport_octet22;
+    core_transport_source_lane3[31:24] <= core_transport_octet30;
 end
 always @(*) begin
     core_transport_source_lane4 <= 32'd0;
-    core_transport_source_lane4[7:0] <= core_transport_octet4;
-    core_transport_source_lane4[15:8] <= core_transport_octet12;
-    core_transport_source_lane4[23:16] <= core_transport_octet20;
-    core_transport_source_lane4[31:24] <= core_transport_octet28;
+    core_transport_source_lane4[7:0] <= core_transport_octet1;
+    core_transport_source_lane4[15:8] <= core_transport_octet9;
+    core_transport_source_lane4[23:16] <= core_transport_octet17;
+    core_transport_source_lane4[31:24] <= core_transport_octet25;
 end
 always @(*) begin
     core_transport_source_lane5 <= 32'd0;
-    core_transport_source_lane5[7:0] <= core_transport_octet5;
-    core_transport_source_lane5[15:8] <= core_transport_octet13;
-    core_transport_source_lane5[23:16] <= core_transport_octet21;
-    core_transport_source_lane5[31:24] <= core_transport_octet29;
+    core_transport_source_lane5[7:0] <= core_transport_octet0;
+    core_transport_source_lane5[15:8] <= core_transport_octet8;
+    core_transport_source_lane5[23:16] <= core_transport_octet16;
+    core_transport_source_lane5[31:24] <= core_transport_octet24;
 end
 always @(*) begin
     core_transport_source_lane6 <= 32'd0;
-    core_transport_source_lane6[7:0] <= core_transport_octet6;
-    core_transport_source_lane6[15:8] <= core_transport_octet14;
-    core_transport_source_lane6[23:16] <= core_transport_octet22;
-    core_transport_source_lane6[31:24] <= core_transport_octet30;
+    core_transport_source_lane6[7:0] <= core_transport_octet3;
+    core_transport_source_lane6[15:8] <= core_transport_octet11;
+    core_transport_source_lane6[23:16] <= core_transport_octet19;
+    core_transport_source_lane6[31:24] <= core_transport_octet27;
 end
 always @(*) begin
     core_transport_source_lane7 <= 32'd0;
-    core_transport_source_lane7[7:0] <= core_transport_octet7;
-    core_transport_source_lane7[15:8] <= core_transport_octet15;
-    core_transport_source_lane7[23:16] <= core_transport_octet23;
-    core_transport_source_lane7[31:24] <= core_transport_octet31;
+    core_transport_source_lane7[7:0] <= core_transport_octet2;
+    core_transport_source_lane7[15:8] <= core_transport_octet10;
+    core_transport_source_lane7[23:16] <= core_transport_octet18;
+    core_transport_source_lane7[31:24] <= core_transport_octet26;
 end
 always @(*) begin
     core_source_converter0 <= 64'd0;
