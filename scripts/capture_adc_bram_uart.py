@@ -182,6 +182,7 @@ def main():
     parser.add_argument("--program", help="binary little-endian u32 or text/CSV DAC program")
     parser.add_argument("--program-words", type=int, default=MAX_PROGRAM_WORDS)
     parser.add_argument("--program-channel", default="all", help="DAC program channel: 0..3, comma list, or 'all'")
+    parser.add_argument("--upload-only", action="store_true", help="upload the DAC program and exit")
     parser.add_argument("--triangle-step", type=lambda x: int(x, 0), default=0x0100)
     parser.add_argument(
         "--upload-triangle",
@@ -210,6 +211,8 @@ def main():
         program_words = default_triangle_program(args.program_words, args.triangle_step)
     else:
         program_words = []
+    if args.upload_only and not program_words:
+        raise ValueError("--upload-only requires --program or --upload-triangle")
 
     started = time.time()
     program_channels = parse_program_channels(args.program_channel)
@@ -220,6 +223,9 @@ def main():
             for channel in program_channels:
                 print(f"Uploading {len(program_words)} DAC program words to DAC channel {channel}...")
                 upload_program(port, program_words, channel)
+        if args.upload_only:
+            print("Upload complete; skipping capture.")
+            return
         print(f"Capturing {args.words} ADC frames...")
         raw = capture(port, args.words, use_program=bool(program_words))
 

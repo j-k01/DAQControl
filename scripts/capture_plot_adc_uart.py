@@ -617,6 +617,11 @@ def main():
         help="DAC program channel to upload: 0..3, comma list, or 'all'.",
     )
     parser.add_argument(
+        "--upload-only",
+        action="store_true",
+        help="Upload the DAC program and exit without running CAPT/PCAP.",
+    )
+    parser.add_argument(
         "--sample-format",
         choices=["twos", "offset"],
         default="twos",
@@ -669,6 +674,8 @@ def main():
         raise ValueError(f"--program-words must be 1..{MAX_PROGRAM_WORDS}")
     if args.program and args.program_mode != "none":
         raise ValueError("use either --program or --program-mode, not both")
+    if args.upload_only and not (args.program or args.program_mode != "none"):
+        raise ValueError("--upload-only requires --program or --program-mode")
 
     sources = parse_sources(args.sources)
     program_channels = parse_program_channels(args.program_channel)
@@ -688,6 +695,9 @@ def main():
             for channel in program_channels:
                 print(f"Uploading {len(program)} DAC program words to DAC channel {channel}...")
                 upload_program(port, program, channel)
+        if args.upload_only:
+            print("Upload complete; skipping capture.")
+            return
         print(f"Capturing {args.words} ADC 128-bit frames with {command_name}...")
         presync, frame_words = capture_frames(port, command_name, args.words)
         all_captures = split_frame_captures(frame_words)

@@ -267,6 +267,17 @@ PROG 3 8192
 The helper scripts can upload the same generated program to all four channels,
 or to a selected channel, before capture.
 
+For independent-channel tests, stage different generated programs one channel
+at a time with `--upload-only`, then run one `PCAP` capture:
+
+```powershell
+python scripts/capture_plot_adc_uart.py --port COM10 --program-mode sine --sine-cycles 32 --program-channel 0 --upload-only
+python scripts/capture_plot_adc_uart.py --port COM10 --program-mode triangle --triangle-frequency-mhz 5 --program-channel 1 --upload-only
+python scripts/capture_plot_adc_uart.py --port COM10 --program-mode trapezoid --trapezoid-frequency-mhz 5 --program-channel 2 --upload-only
+python scripts/capture_plot_adc_uart.py --port COM10 --program-mode square-sine --program-channel 3 --upload-only
+python scripts/capture_plot_adc_uart.py --port COM10 --command PCAP --words 4096 --sources 0,1,2,3 --prefix four_channel_program
+```
+
 The helper script captures the live generator by default:
 
 ```powershell
