@@ -323,6 +323,45 @@ def upload_program(port, words, channel):
     print(f"Set DAC BRAM loop frame_count={frame_count} via RW3=0x{rw3_value:08X}")
 
 
+def read_dprd_words(port, channel, start, count):
+    port.write(f"DPRD {channel} {start} {count}\n".encode("ascii"))
+    port.flush()
+    print(wait_for_line_prefix(port, "DPRD"))
+    words = []
+    pattern = re.compile(r"^\s*(\d+):\s+0x([0-9a-fA-F]{8})\s*$")
+    while len(words) < count:
+        line = read_line(port)
+        match = pattern.match(line)
+        if not match:
+            raise TimeoutError(f"unexpected DPRD line: {line!r}")
+        words.append(int(match.group(2), 16))
+    return words
+
+
+def verify_program_upload(port, words, channel, verify_words):
+    if verify_words <= 0 or not words:
+        return
+
+    first_count = min(verify_words, len(words))
+    first_readback = read_dprd_words(port, channel, 0, first_count)
+    if first_readback != words[:first_count]:
+        raise ValueError(
+            f"DAC channel {channel} first-word readback mismatch: "
+            f"expected 0x{words[0]:08X}, got 0x{first_readback[0]:08X}"
+        )
+
+    if len(words) > first_count:
+        last_start = len(words) - first_count
+        last_readback = read_dprd_words(port, channel, last_start, first_count)
+        if last_readback != words[last_start:]:
+            raise ValueError(
+                f"DAC channel {channel} last-word readback mismatch: "
+                f"expected 0x{words[last_start]:08X}, got 0x{last_readback[0]:08X}"
+            )
+
+    print(f"Verified DAC channel {channel} BRAM readback ({first_count} first/last words).")
+
+
 def parse_program_channels(text):
     text = text.strip().lower()
     if text == "all":
@@ -622,6 +661,12 @@ def main():
         help="Upload the DAC program and exit without running CAPT/PCAP.",
     )
     parser.add_argument(
+        "--verify-upload-words",
+        type=int,
+        default=0,
+        help="Read back this many first/last DAC program words per channel after upload.",
+    )
+    parser.add_argument(
         "--sample-format",
         choices=["twos", "offset"],
         default="twos",
@@ -672,6 +717,8 @@ def main():
         raise ValueError("--plot-words must be positive")
     if args.program_words <= 0 or args.program_words > MAX_PROGRAM_WORDS:
         raise ValueError(f"--program-words must be 1..{MAX_PROGRAM_WORDS}")
+    if args.verify_upload_words < 0:
+        raise ValueError("--verify-upload-words must be non-negative")
     if args.program and args.program_mode != "none":
         raise ValueError("use either --program or --program-mode, not both")
     if args.upload_only and not (args.program or args.program_mode != "none"):
@@ -695,6 +742,7 @@ def main():
             for channel in program_channels:
                 print(f"Uploading {len(program)} DAC program words to DAC channel {channel}...")
                 upload_program(port, program, channel)
+                verify_program_upload(port, program, channel, args.verify_upload_words)
         if args.upload_only:
             print("Upload complete; skipping capture.")
             return
