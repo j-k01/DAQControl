@@ -138,6 +138,31 @@ proc safe_connect_bd_intf_net {args} {
     }
 }
 
+proc export_bram_ctrl_port {pin_path port_name} {
+    set pin [get_bd_intf_pins -quiet $pin_path]
+    if {[llength $pin] != 1} {
+        error "BRAM export failure: expected one pin '$pin_path', found [llength $pin]."
+    }
+
+    set before_ports [get_bd_intf_ports -quiet]
+    make_bd_intf_pins_external $pin
+    set ext_port {}
+    foreach candidate [get_bd_intf_ports -quiet] {
+        if {[lsearch -exact $before_ports $candidate] < 0} {
+            lappend ext_port $candidate
+        }
+    }
+    if {[llength $ext_port] != 1} {
+        error "BRAM export failure: expected one new external interface for '$pin_path', found [llength $ext_port]."
+    }
+
+    set_property name $port_name [lindex $ext_port 0]
+    set_property -dict [list \
+        CONFIG.MASTER_TYPE {BRAM_CTRL} \
+        CONFIG.READ_WRITE_MODE {READ_WRITE} \
+    ] [get_bd_intf_ports $port_name]
+}
+
 proc assign_mb_addr_exact {space_path seg_path offset range} {
     set space [get_bd_addr_spaces -quiet $space_path]
     if {[llength $space] != 1} {
@@ -152,6 +177,41 @@ proc assign_mb_addr_exact {space_path seg_path offset range} {
     assign_bd_address -offset $offset -range $range \
         -target_address_space [lindex $space 0] [lindex $seg 0] -force
     puts "Assigned $seg_path at $offset range $range"
+}
+
+proc require_cell_property {cell prop expected} {
+    set actual [get_property $prop [get_bd_cells $cell]]
+    if {$actual ne "$expected"} {
+        error "BD property contract failure: $cell $prop is '$actual', expected '$expected'."
+    }
+    puts "Verified BD cell $cell $prop = $actual"
+}
+
+proc require_ip_property {ip prop expected} {
+    set actual [get_property $prop [get_ips $ip]]
+    if {$actual ne "$expected"} {
+        error "IP property contract failure: $ip $prop is '$actual', expected '$expected'."
+    }
+    puts "Verified IP $ip $prop = $actual"
+}
+
+proc verify_bram_dataplane_ips {} {
+    foreach ch {0 1 2 3} {
+        set ip dac${ch}_program_bram
+        require_ip_property $ip CONFIG.Write_Width_A 32
+        require_ip_property $ip CONFIG.Read_Width_A 32
+        require_ip_property $ip CONFIG.Write_Width_B 64
+        require_ip_property $ip CONFIG.Read_Width_B 64
+        require_ip_property $ip CONFIG.Write_Depth_A 8192
+        require_ip_property $ip CONFIG.Use_Byte_Write_Enable true
+    }
+
+    require_ip_property adc_capture_bram CONFIG.Write_Width_A 32
+    require_ip_property adc_capture_bram CONFIG.Read_Width_A 32
+    require_ip_property adc_capture_bram CONFIG.Write_Width_B 128
+    require_ip_property adc_capture_bram CONFIG.Read_Width_B 128
+    require_ip_property adc_capture_bram CONFIG.Write_Depth_A 16384
+    require_ip_property adc_capture_bram CONFIG.Use_Byte_Write_Enable true
 }
 
 proc create_microblaze_bd {bd_name include_bram_dataplane} {
@@ -180,13 +240,6 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     foreach port_name {RO_REG0_RDINT_0 RO_REG1_RDINT_0 RO_REG2_RDINT_0 RO_REG3_RDINT_0} {
         create_bd_port -dir O $port_name
     }
-    if {$include_bram_dataplane} {
-        foreach bram_port {DAC0_BRAM_PORTB_0 DAC1_BRAM_PORTB_0 DAC2_BRAM_PORTB_0 DAC3_BRAM_PORTB_0 ADC_BRAM_PORTB_0} {
-            create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:bram_rtl:1.0 $bram_port
-            catch {set_property CONFIG.MASTER_TYPE {BRAM_CTRL} [get_bd_intf_ports $bram_port]}
-        }
-    }
-
     create_bd_cell -type ip -vlnv xilinx.com:ip:microblaze:* microblaze_0
     set_property -dict [list \
         CONFIG.C_DEBUG_ENABLED {1} \
@@ -234,40 +287,24 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
             create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* dac${ch}_program_bram_ctrl
         }
         create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* adc_capture_bram_ctrl
-        foreach bram_ctrl {dac0_program_bram_ctrl dac1_program_bram_ctrl dac2_program_bram_ctrl dac3_program_bram_ctrl adc_capture_bram_ctrl} {
+        foreach bram_ctrl {dac0_program_bram_ctrl dac1_program_bram_ctrl dac2_program_bram_ctrl dac3_program_bram_ctrl} {
             set_property -dict [list \
                 CONFIG.SINGLE_PORT_BRAM {1} \
+                CONFIG.PROTOCOL {AXI4} \
+                CONFIG.DATA_WIDTH {32} \
+                CONFIG.SUPPORTS_NARROW_BURST {1} \
             ] [get_bd_cells $bram_ctrl]
         }
-        foreach ch {0 1 2 3} {
-            create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:* dac${ch}_program_bram
-        }
-        create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:* adc_capture_bram
-        foreach ch {0 1 2 3} {
-            set_property -dict [list \
-                CONFIG.Memory_Type           {True_Dual_Port_RAM} \
-                CONFIG.Use_Byte_Write_Enable {true} \
-                CONFIG.Byte_Size             {8} \
-                CONFIG.Write_Width_A         {32} \
-                CONFIG.Read_Width_A          {32} \
-                CONFIG.Write_Width_B         {64} \
-                CONFIG.Read_Width_B          {64} \
-                CONFIG.Write_Depth_A         {8192} \
-            ] [get_bd_cells dac${ch}_program_bram]
-        }
         set_property -dict [list \
-            CONFIG.Memory_Type           {True_Dual_Port_RAM} \
-            CONFIG.Use_Byte_Write_Enable {true} \
-            CONFIG.Byte_Size             {8} \
-            CONFIG.Write_Width_A         {32} \
-            CONFIG.Read_Width_A          {32} \
-            CONFIG.Write_Width_B         {128} \
-            CONFIG.Read_Width_B          {128} \
-            CONFIG.Write_Depth_A         {16384} \
-        ] [get_bd_cells adc_capture_bram]
-        foreach bram_cell {dac0_program_bram dac1_program_bram dac2_program_bram dac3_program_bram adc_capture_bram} {
-            catch {set_property CONFIG.Assume_Synchronous_Clk {false} [get_bd_cells $bram_cell]}
+            CONFIG.SINGLE_PORT_BRAM {1} \
+            CONFIG.PROTOCOL {AXI4} \
+            CONFIG.DATA_WIDTH {32} \
+            CONFIG.SUPPORTS_NARROW_BURST {1} \
+        ] [get_bd_cells adc_capture_bram_ctrl]
+        foreach ch {0 1 2 3} {
+            export_bram_ctrl_port dac${ch}_program_bram_ctrl/BRAM_PORTA DAC${ch}_AXI_BRAM_PORTA
         }
+        export_bram_ctrl_port adc_capture_bram_ctrl/BRAM_PORTA ADC_AXI_BRAM_PORTA
     }
 
     if {[llength [get_bd_cells -quiet microblaze_0_axi_periph]] == 0} {
@@ -286,12 +323,8 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     if {$include_bram_dataplane} {
         foreach ch {0 1 2 3} mi {M02_AXI M03_AXI M04_AXI M05_AXI} {
             safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/$mi] [get_bd_intf_pins dac${ch}_program_bram_ctrl/S_AXI]
-            safe_connect_bd_intf_net [get_bd_intf_pins dac${ch}_program_bram_ctrl/BRAM_PORTA] [get_bd_intf_pins dac${ch}_program_bram/BRAM_PORTA]
-            safe_connect_bd_intf_net [get_bd_intf_pins dac${ch}_program_bram/BRAM_PORTB] [get_bd_intf_ports DAC${ch}_BRAM_PORTB_0]
         }
         safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M06_AXI] [get_bd_intf_pins adc_capture_bram_ctrl/S_AXI]
-        safe_connect_bd_intf_net [get_bd_intf_pins adc_capture_bram_ctrl/BRAM_PORTA] [get_bd_intf_pins adc_capture_bram/BRAM_PORTA]
-        safe_connect_bd_intf_net [get_bd_intf_pins adc_capture_bram/BRAM_PORTB] [get_bd_intf_ports ADC_BRAM_PORTB_0]
     }
 
     set axi_clk_pins {ACLK S00_ACLK M00_ACLK M01_ACLK}
@@ -343,10 +376,10 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     assign_mb_addr_exact microblaze_0/Data axi_uart16550_0/S_AXI/Reg 0x44A00000 0x00010000
     assign_mb_addr_exact microblaze_0/Data AXI4_register_file_0/S00_AXI/S00_AXI_reg 0x44A10000 0x00010000
     if {$include_bram_dataplane} {
-        assign_mb_addr_exact microblaze_0/Data dac0_program_bram_ctrl/S_AXI/Mem0 0xC0000000 0x00010000
-        assign_mb_addr_exact microblaze_0/Data dac1_program_bram_ctrl/S_AXI/Mem0 0xC0010000 0x00010000
-        assign_mb_addr_exact microblaze_0/Data dac2_program_bram_ctrl/S_AXI/Mem0 0xC0020000 0x00010000
-        assign_mb_addr_exact microblaze_0/Data dac3_program_bram_ctrl/S_AXI/Mem0 0xC0030000 0x00010000
+        assign_mb_addr_exact microblaze_0/Data dac0_program_bram_ctrl/S_AXI/Mem0 0xC0000000 0x00008000
+        assign_mb_addr_exact microblaze_0/Data dac1_program_bram_ctrl/S_AXI/Mem0 0xC0010000 0x00008000
+        assign_mb_addr_exact microblaze_0/Data dac2_program_bram_ctrl/S_AXI/Mem0 0xC0020000 0x00008000
+        assign_mb_addr_exact microblaze_0/Data dac3_program_bram_ctrl/S_AXI/Mem0 0xC0030000 0x00008000
         assign_mb_addr_exact microblaze_0/Data adc_capture_bram_ctrl/S_AXI/Mem0 0xC0100000 0x00010000
     }
 
@@ -360,6 +393,13 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     set uart_clk_hz [get_property CONFIG.C_S_AXI_ACLK_FREQ_HZ [get_bd_cells axi_uart16550_0]]
     if {$uart_clk_hz ne "$fabric_clk_hz"} {
         error "Clock contract failure: AXI UART16550 clock is $uart_clk_hz Hz, expected $fabric_clk_hz Hz."
+    }
+
+    if {$include_bram_dataplane} {
+        foreach bram_ctrl {dac0_program_bram_ctrl dac1_program_bram_ctrl dac2_program_bram_ctrl dac3_program_bram_ctrl adc_capture_bram_ctrl} {
+            require_cell_property $bram_ctrl CONFIG.DATA_WIDTH 32
+            require_cell_property $bram_ctrl CONFIG.SINGLE_PORT_BRAM 1
+        }
     }
 
     save_bd_design
@@ -481,6 +521,38 @@ if {$include_gth_tx_ila} {
     set_property -dict $gth_tx_ila_props [get_ips ila_gth_tx_debug]
 }
 
+if {$include_bram_dataplane} {
+    foreach ch {0 1 2 3} {
+        create_ip -name blk_mem_gen -vendor xilinx.com -library ip -module_name dac${ch}_program_bram -dir $ip_dir
+        set_property -dict [list \
+            CONFIG.Memory_Type            {True_Dual_Port_RAM} \
+            CONFIG.Interface_Type         {Native} \
+            CONFIG.Use_Byte_Write_Enable  {true} \
+            CONFIG.Byte_Size              {8} \
+            CONFIG.Write_Width_A          {32} \
+            CONFIG.Read_Width_A           {32} \
+            CONFIG.Write_Width_B          {64} \
+            CONFIG.Read_Width_B           {64} \
+            CONFIG.Write_Depth_A          {8192} \
+            CONFIG.Assume_Synchronous_Clk {false} \
+        ] [get_ips dac${ch}_program_bram]
+    }
+
+    create_ip -name blk_mem_gen -vendor xilinx.com -library ip -module_name adc_capture_bram -dir $ip_dir
+    set_property -dict [list \
+        CONFIG.Memory_Type            {True_Dual_Port_RAM} \
+        CONFIG.Interface_Type         {Native} \
+        CONFIG.Use_Byte_Write_Enable  {true} \
+        CONFIG.Byte_Size              {8} \
+        CONFIG.Write_Width_A          {32} \
+        CONFIG.Read_Width_A           {32} \
+        CONFIG.Write_Width_B          {128} \
+        CONFIG.Read_Width_B           {128} \
+        CONFIG.Write_Depth_A          {16384} \
+        CONFIG.Assume_Synchronous_Clk {false} \
+    ] [get_ips adc_capture_bram]
+}
+
 if {$include_staged_gt} {
     foreach xci [glob -nocomplain -directory $script_dir/ip_repo {*/*.xci}] {
         import_ip $xci
@@ -490,6 +562,9 @@ upgrade_and_validate_ips
 validate_ips_unlocked
 if {[llength [get_ips -quiet]] > 0} {
     generate_target all [get_ips]
+}
+if {$include_bram_dataplane} {
+    verify_bram_dataplane_ips
 }
 
 set bd_name microblaze_bd

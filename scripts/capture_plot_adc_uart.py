@@ -370,7 +370,10 @@ def upload_program(port, words, channel):
 def read_dprd_words(port, channel, start, count):
     port.write(f"DPRD {channel} {start} {count}\n".encode("ascii"))
     port.flush()
-    print(wait_for_line_prefix(port, "DPRD"))
+    header = wait_for_line_prefix(port, "DPRD")
+    print(header)
+    if not header.startswith("DPRD ch="):
+        print(wait_for_line_prefix(port, "DPRD ch="))
     words = []
     pattern = re.compile(r"^\s*(\d+):\s+0x([0-9a-fA-F]{8})\s*$")
     while len(words) < count:

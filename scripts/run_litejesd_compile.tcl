@@ -11,6 +11,7 @@ set common_sources [list \
     ../../src/hmc7044_init.v \
     ../../src/dac39j84_init.v \
     ../../src/ads54j60_init.v \
+    ../../src/dataplane_bram_ip.v \
     ../../src/dac_bram_player.v \
     ../../src/adc_bram_capture.v \
     ../../src/jesd/dac39j84_sample_remap.v \

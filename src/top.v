@@ -82,6 +82,46 @@ module top #(
     wire ro_reg3_rdint;
 
 `ifdef DAQ_WITH_BRAM_DATAPLANE
+    wire [31:0] dac0_axi_bram_addr;
+    wire        dac0_axi_bram_clk;
+    wire [31:0] dac0_axi_bram_din;
+    wire [31:0] dac0_axi_bram_dout;
+    wire        dac0_axi_bram_en;
+    wire        dac0_axi_bram_rst;
+    wire [3:0]  dac0_axi_bram_we;
+
+    wire [31:0] dac1_axi_bram_addr;
+    wire        dac1_axi_bram_clk;
+    wire [31:0] dac1_axi_bram_din;
+    wire [31:0] dac1_axi_bram_dout;
+    wire        dac1_axi_bram_en;
+    wire        dac1_axi_bram_rst;
+    wire [3:0]  dac1_axi_bram_we;
+
+    wire [31:0] dac2_axi_bram_addr;
+    wire        dac2_axi_bram_clk;
+    wire [31:0] dac2_axi_bram_din;
+    wire [31:0] dac2_axi_bram_dout;
+    wire        dac2_axi_bram_en;
+    wire        dac2_axi_bram_rst;
+    wire [3:0]  dac2_axi_bram_we;
+
+    wire [31:0] dac3_axi_bram_addr;
+    wire        dac3_axi_bram_clk;
+    wire [31:0] dac3_axi_bram_din;
+    wire [31:0] dac3_axi_bram_dout;
+    wire        dac3_axi_bram_en;
+    wire        dac3_axi_bram_rst;
+    wire [3:0]  dac3_axi_bram_we;
+
+    wire [31:0] adc_axi_bram_addr;
+    wire        adc_axi_bram_clk;
+    wire [31:0] adc_axi_bram_din;
+    wire [31:0] adc_axi_bram_dout;
+    wire        adc_axi_bram_en;
+    wire        adc_axi_bram_rst;
+    wire [3:0]  adc_axi_bram_we;
+
     wire [31:0] dac0_bram_addr;
     wire        dac0_bram_clk;
     wire [63:0] dac0_bram_din;
@@ -157,43 +197,122 @@ module top #(
         .RO_REG3_RDINT_0      (ro_reg3_rdint)
 `ifdef DAQ_WITH_BRAM_DATAPLANE
         ,
-        .DAC0_BRAM_PORTB_0_addr (dac0_bram_addr),
-        .DAC0_BRAM_PORTB_0_clk  (dac0_bram_clk),
-        .DAC0_BRAM_PORTB_0_din  (dac0_bram_din),
-        .DAC0_BRAM_PORTB_0_dout (dac0_bram_dout),
-        .DAC0_BRAM_PORTB_0_en   (dac0_bram_en),
-        .DAC0_BRAM_PORTB_0_rst  (dac0_bram_rst),
-        .DAC0_BRAM_PORTB_0_we   (dac0_bram_we),
-        .DAC1_BRAM_PORTB_0_addr (dac1_bram_addr),
-        .DAC1_BRAM_PORTB_0_clk  (dac1_bram_clk),
-        .DAC1_BRAM_PORTB_0_din  (dac1_bram_din),
-        .DAC1_BRAM_PORTB_0_dout (dac1_bram_dout),
-        .DAC1_BRAM_PORTB_0_en   (dac1_bram_en),
-        .DAC1_BRAM_PORTB_0_rst  (dac1_bram_rst),
-        .DAC1_BRAM_PORTB_0_we   (dac1_bram_we),
-        .DAC2_BRAM_PORTB_0_addr (dac2_bram_addr),
-        .DAC2_BRAM_PORTB_0_clk  (dac2_bram_clk),
-        .DAC2_BRAM_PORTB_0_din  (dac2_bram_din),
-        .DAC2_BRAM_PORTB_0_dout (dac2_bram_dout),
-        .DAC2_BRAM_PORTB_0_en   (dac2_bram_en),
-        .DAC2_BRAM_PORTB_0_rst  (dac2_bram_rst),
-        .DAC2_BRAM_PORTB_0_we   (dac2_bram_we),
-        .DAC3_BRAM_PORTB_0_addr (dac3_bram_addr),
-        .DAC3_BRAM_PORTB_0_clk  (dac3_bram_clk),
-        .DAC3_BRAM_PORTB_0_din  (dac3_bram_din),
-        .DAC3_BRAM_PORTB_0_dout (dac3_bram_dout),
-        .DAC3_BRAM_PORTB_0_en   (dac3_bram_en),
-        .DAC3_BRAM_PORTB_0_rst  (dac3_bram_rst),
-        .DAC3_BRAM_PORTB_0_we   (dac3_bram_we),
-        .ADC_BRAM_PORTB_0_addr (adc_bram_addr),
-        .ADC_BRAM_PORTB_0_clk  (adc_bram_clk),
-        .ADC_BRAM_PORTB_0_din  (adc_bram_din),
-        .ADC_BRAM_PORTB_0_dout (adc_bram_dout),
-        .ADC_BRAM_PORTB_0_en   (adc_bram_en),
-        .ADC_BRAM_PORTB_0_rst  (adc_bram_rst),
-        .ADC_BRAM_PORTB_0_we   (adc_bram_we)
+        .DAC0_AXI_BRAM_PORTA_addr (dac0_axi_bram_addr),
+        .DAC0_AXI_BRAM_PORTA_clk  (dac0_axi_bram_clk),
+        .DAC0_AXI_BRAM_PORTA_din  (dac0_axi_bram_din),
+        .DAC0_AXI_BRAM_PORTA_dout (dac0_axi_bram_dout),
+        .DAC0_AXI_BRAM_PORTA_en   (dac0_axi_bram_en),
+        .DAC0_AXI_BRAM_PORTA_rst  (dac0_axi_bram_rst),
+        .DAC0_AXI_BRAM_PORTA_we   (dac0_axi_bram_we),
+        .DAC1_AXI_BRAM_PORTA_addr (dac1_axi_bram_addr),
+        .DAC1_AXI_BRAM_PORTA_clk  (dac1_axi_bram_clk),
+        .DAC1_AXI_BRAM_PORTA_din  (dac1_axi_bram_din),
+        .DAC1_AXI_BRAM_PORTA_dout (dac1_axi_bram_dout),
+        .DAC1_AXI_BRAM_PORTA_en   (dac1_axi_bram_en),
+        .DAC1_AXI_BRAM_PORTA_rst  (dac1_axi_bram_rst),
+        .DAC1_AXI_BRAM_PORTA_we   (dac1_axi_bram_we),
+        .DAC2_AXI_BRAM_PORTA_addr (dac2_axi_bram_addr),
+        .DAC2_AXI_BRAM_PORTA_clk  (dac2_axi_bram_clk),
+        .DAC2_AXI_BRAM_PORTA_din  (dac2_axi_bram_din),
+        .DAC2_AXI_BRAM_PORTA_dout (dac2_axi_bram_dout),
+        .DAC2_AXI_BRAM_PORTA_en   (dac2_axi_bram_en),
+        .DAC2_AXI_BRAM_PORTA_rst  (dac2_axi_bram_rst),
+        .DAC2_AXI_BRAM_PORTA_we   (dac2_axi_bram_we),
+        .DAC3_AXI_BRAM_PORTA_addr (dac3_axi_bram_addr),
+        .DAC3_AXI_BRAM_PORTA_clk  (dac3_axi_bram_clk),
+        .DAC3_AXI_BRAM_PORTA_din  (dac3_axi_bram_din),
+        .DAC3_AXI_BRAM_PORTA_dout (dac3_axi_bram_dout),
+        .DAC3_AXI_BRAM_PORTA_en   (dac3_axi_bram_en),
+        .DAC3_AXI_BRAM_PORTA_rst  (dac3_axi_bram_rst),
+        .DAC3_AXI_BRAM_PORTA_we   (dac3_axi_bram_we),
+        .ADC_AXI_BRAM_PORTA_addr  (adc_axi_bram_addr),
+        .ADC_AXI_BRAM_PORTA_clk   (adc_axi_bram_clk),
+        .ADC_AXI_BRAM_PORTA_din   (adc_axi_bram_din),
+        .ADC_AXI_BRAM_PORTA_dout  (adc_axi_bram_dout),
+        .ADC_AXI_BRAM_PORTA_en    (adc_axi_bram_en),
+        .ADC_AXI_BRAM_PORTA_rst   (adc_axi_bram_rst),
+        .ADC_AXI_BRAM_PORTA_we    (adc_axi_bram_we)
 `endif
     );
+
+`ifdef DAQ_WITH_BRAM_DATAPLANE
+    dataplane_bram_ip u_dataplane_bram_ip (
+        .dac0_axi_addr       (dac0_axi_bram_addr),
+        .dac0_axi_clk        (dac0_axi_bram_clk),
+        .dac0_axi_din        (dac0_axi_bram_din),
+        .dac0_axi_dout       (dac0_axi_bram_dout),
+        .dac0_axi_en         (dac0_axi_bram_en),
+        .dac0_axi_rst        (dac0_axi_bram_rst),
+        .dac0_axi_we         (dac0_axi_bram_we),
+        .dac0_fabric_addr    (dac0_bram_addr),
+        .dac0_fabric_clk     (dac0_bram_clk),
+        .dac0_fabric_din     (dac0_bram_din),
+        .dac0_fabric_dout    (dac0_bram_dout),
+        .dac0_fabric_en      (dac0_bram_en),
+        .dac0_fabric_rst     (dac0_bram_rst),
+        .dac0_fabric_we      (dac0_bram_we),
+
+        .dac1_axi_addr       (dac1_axi_bram_addr),
+        .dac1_axi_clk        (dac1_axi_bram_clk),
+        .dac1_axi_din        (dac1_axi_bram_din),
+        .dac1_axi_dout       (dac1_axi_bram_dout),
+        .dac1_axi_en         (dac1_axi_bram_en),
+        .dac1_axi_rst        (dac1_axi_bram_rst),
+        .dac1_axi_we         (dac1_axi_bram_we),
+        .dac1_fabric_addr    (dac1_bram_addr),
+        .dac1_fabric_clk     (dac1_bram_clk),
+        .dac1_fabric_din     (dac1_bram_din),
+        .dac1_fabric_dout    (dac1_bram_dout),
+        .dac1_fabric_en      (dac1_bram_en),
+        .dac1_fabric_rst     (dac1_bram_rst),
+        .dac1_fabric_we      (dac1_bram_we),
+
+        .dac2_axi_addr       (dac2_axi_bram_addr),
+        .dac2_axi_clk        (dac2_axi_bram_clk),
+        .dac2_axi_din        (dac2_axi_bram_din),
+        .dac2_axi_dout       (dac2_axi_bram_dout),
+        .dac2_axi_en         (dac2_axi_bram_en),
+        .dac2_axi_rst        (dac2_axi_bram_rst),
+        .dac2_axi_we         (dac2_axi_bram_we),
+        .dac2_fabric_addr    (dac2_bram_addr),
+        .dac2_fabric_clk     (dac2_bram_clk),
+        .dac2_fabric_din     (dac2_bram_din),
+        .dac2_fabric_dout    (dac2_bram_dout),
+        .dac2_fabric_en      (dac2_bram_en),
+        .dac2_fabric_rst     (dac2_bram_rst),
+        .dac2_fabric_we      (dac2_bram_we),
+
+        .dac3_axi_addr       (dac3_axi_bram_addr),
+        .dac3_axi_clk        (dac3_axi_bram_clk),
+        .dac3_axi_din        (dac3_axi_bram_din),
+        .dac3_axi_dout       (dac3_axi_bram_dout),
+        .dac3_axi_en         (dac3_axi_bram_en),
+        .dac3_axi_rst        (dac3_axi_bram_rst),
+        .dac3_axi_we         (dac3_axi_bram_we),
+        .dac3_fabric_addr    (dac3_bram_addr),
+        .dac3_fabric_clk     (dac3_bram_clk),
+        .dac3_fabric_din     (dac3_bram_din),
+        .dac3_fabric_dout    (dac3_bram_dout),
+        .dac3_fabric_en      (dac3_bram_en),
+        .dac3_fabric_rst     (dac3_bram_rst),
+        .dac3_fabric_we      (dac3_bram_we),
+
+        .adc_axi_addr        (adc_axi_bram_addr),
+        .adc_axi_clk         (adc_axi_bram_clk),
+        .adc_axi_din         (adc_axi_bram_din),
+        .adc_axi_dout        (adc_axi_bram_dout),
+        .adc_axi_en          (adc_axi_bram_en),
+        .adc_axi_rst         (adc_axi_bram_rst),
+        .adc_axi_we          (adc_axi_bram_we),
+        .adc_fabric_addr     (adc_bram_addr),
+        .adc_fabric_clk      (adc_bram_clk),
+        .adc_fabric_din      (adc_bram_din),
+        .adc_fabric_dout     (adc_bram_dout),
+        .adc_fabric_en       (adc_bram_en),
+        .adc_fabric_rst      (adc_bram_rst),
+        .adc_fabric_we       (adc_bram_we)
+    );
+`endif
 
     (* ASYNC_REG = "TRUE" *) reg [2:0] uart_rxd_sync = 3'b111;
     (* ASYNC_REG = "TRUE" *) reg [2:0] uart_txd_sync = 3'b111;
@@ -1537,7 +1656,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0018;
+    wire [31:0] build_id = 32'hDA01_001A;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]

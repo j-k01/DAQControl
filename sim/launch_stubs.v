@@ -44,41 +44,41 @@ module microblaze_bd_wrapper (
     output wire        RO_REG1_RDINT_0,
     output wire        RO_REG2_RDINT_0,
     output wire        RO_REG3_RDINT_0,
-    input  wire [31:0] DAC0_BRAM_PORTB_0_addr,
-    input  wire        DAC0_BRAM_PORTB_0_clk,
-    input  wire [63:0] DAC0_BRAM_PORTB_0_din,
-    output wire [63:0] DAC0_BRAM_PORTB_0_dout,
-    input  wire        DAC0_BRAM_PORTB_0_en,
-    input  wire        DAC0_BRAM_PORTB_0_rst,
-    input  wire [7:0]  DAC0_BRAM_PORTB_0_we,
-    input  wire [31:0] DAC1_BRAM_PORTB_0_addr,
-    input  wire        DAC1_BRAM_PORTB_0_clk,
-    input  wire [63:0] DAC1_BRAM_PORTB_0_din,
-    output wire [63:0] DAC1_BRAM_PORTB_0_dout,
-    input  wire        DAC1_BRAM_PORTB_0_en,
-    input  wire        DAC1_BRAM_PORTB_0_rst,
-    input  wire [7:0]  DAC1_BRAM_PORTB_0_we,
-    input  wire [31:0] DAC2_BRAM_PORTB_0_addr,
-    input  wire        DAC2_BRAM_PORTB_0_clk,
-    input  wire [63:0] DAC2_BRAM_PORTB_0_din,
-    output wire [63:0] DAC2_BRAM_PORTB_0_dout,
-    input  wire        DAC2_BRAM_PORTB_0_en,
-    input  wire        DAC2_BRAM_PORTB_0_rst,
-    input  wire [7:0]  DAC2_BRAM_PORTB_0_we,
-    input  wire [31:0] DAC3_BRAM_PORTB_0_addr,
-    input  wire        DAC3_BRAM_PORTB_0_clk,
-    input  wire [63:0] DAC3_BRAM_PORTB_0_din,
-    output wire [63:0] DAC3_BRAM_PORTB_0_dout,
-    input  wire        DAC3_BRAM_PORTB_0_en,
-    input  wire        DAC3_BRAM_PORTB_0_rst,
-    input  wire [7:0]  DAC3_BRAM_PORTB_0_we,
-    input  wire [31:0] ADC_BRAM_PORTB_0_addr,
-    input  wire        ADC_BRAM_PORTB_0_clk,
-    input  wire [127:0] ADC_BRAM_PORTB_0_din,
-    output wire [127:0] ADC_BRAM_PORTB_0_dout,
-    input  wire        ADC_BRAM_PORTB_0_en,
-    input  wire        ADC_BRAM_PORTB_0_rst,
-    input  wire [15:0] ADC_BRAM_PORTB_0_we
+    output wire [31:0] DAC0_AXI_BRAM_PORTA_addr,
+    output wire        DAC0_AXI_BRAM_PORTA_clk,
+    output wire [31:0] DAC0_AXI_BRAM_PORTA_din,
+    input  wire [31:0] DAC0_AXI_BRAM_PORTA_dout,
+    output wire        DAC0_AXI_BRAM_PORTA_en,
+    output wire        DAC0_AXI_BRAM_PORTA_rst,
+    output wire [3:0]  DAC0_AXI_BRAM_PORTA_we,
+    output wire [31:0] DAC1_AXI_BRAM_PORTA_addr,
+    output wire        DAC1_AXI_BRAM_PORTA_clk,
+    output wire [31:0] DAC1_AXI_BRAM_PORTA_din,
+    input  wire [31:0] DAC1_AXI_BRAM_PORTA_dout,
+    output wire        DAC1_AXI_BRAM_PORTA_en,
+    output wire        DAC1_AXI_BRAM_PORTA_rst,
+    output wire [3:0]  DAC1_AXI_BRAM_PORTA_we,
+    output wire [31:0] DAC2_AXI_BRAM_PORTA_addr,
+    output wire        DAC2_AXI_BRAM_PORTA_clk,
+    output wire [31:0] DAC2_AXI_BRAM_PORTA_din,
+    input  wire [31:0] DAC2_AXI_BRAM_PORTA_dout,
+    output wire        DAC2_AXI_BRAM_PORTA_en,
+    output wire        DAC2_AXI_BRAM_PORTA_rst,
+    output wire [3:0]  DAC2_AXI_BRAM_PORTA_we,
+    output wire [31:0] DAC3_AXI_BRAM_PORTA_addr,
+    output wire        DAC3_AXI_BRAM_PORTA_clk,
+    output wire [31:0] DAC3_AXI_BRAM_PORTA_din,
+    input  wire [31:0] DAC3_AXI_BRAM_PORTA_dout,
+    output wire        DAC3_AXI_BRAM_PORTA_en,
+    output wire        DAC3_AXI_BRAM_PORTA_rst,
+    output wire [3:0]  DAC3_AXI_BRAM_PORTA_we,
+    output wire [31:0] ADC_AXI_BRAM_PORTA_addr,
+    output wire        ADC_AXI_BRAM_PORTA_clk,
+    output wire [31:0] ADC_AXI_BRAM_PORTA_din,
+    input  wire [31:0] ADC_AXI_BRAM_PORTA_dout,
+    output wire        ADC_AXI_BRAM_PORTA_en,
+    output wire        ADC_AXI_BRAM_PORTA_rst,
+    output wire [3:0]  ADC_AXI_BRAM_PORTA_we
 );
     initial begin
         RW_REG0_0 = 32'h0009_0000;
@@ -95,30 +95,89 @@ module microblaze_bd_wrapper (
     assign RO_REG1_RDINT_0 = 1'b0;
     assign RO_REG2_RDINT_0 = 1'b0;
     assign RO_REG3_RDINT_0 = 1'b0;
-    assign DAC0_BRAM_PORTB_0_dout = 64'd0;
-    assign DAC1_BRAM_PORTB_0_dout = 64'd0;
-    assign DAC2_BRAM_PORTB_0_dout = 64'd0;
-    assign DAC3_BRAM_PORTB_0_dout = 64'd0;
-    assign ADC_BRAM_PORTB_0_dout = 128'd0;
+    assign DAC0_AXI_BRAM_PORTA_addr = 32'd0;
+    assign DAC0_AXI_BRAM_PORTA_clk = Clk;
+    assign DAC0_AXI_BRAM_PORTA_din = 32'd0;
+    assign DAC0_AXI_BRAM_PORTA_en = 1'b0;
+    assign DAC0_AXI_BRAM_PORTA_rst = 1'b0;
+    assign DAC0_AXI_BRAM_PORTA_we = 4'd0;
+    assign DAC1_AXI_BRAM_PORTA_addr = 32'd0;
+    assign DAC1_AXI_BRAM_PORTA_clk = Clk;
+    assign DAC1_AXI_BRAM_PORTA_din = 32'd0;
+    assign DAC1_AXI_BRAM_PORTA_en = 1'b0;
+    assign DAC1_AXI_BRAM_PORTA_rst = 1'b0;
+    assign DAC1_AXI_BRAM_PORTA_we = 4'd0;
+    assign DAC2_AXI_BRAM_PORTA_addr = 32'd0;
+    assign DAC2_AXI_BRAM_PORTA_clk = Clk;
+    assign DAC2_AXI_BRAM_PORTA_din = 32'd0;
+    assign DAC2_AXI_BRAM_PORTA_en = 1'b0;
+    assign DAC2_AXI_BRAM_PORTA_rst = 1'b0;
+    assign DAC2_AXI_BRAM_PORTA_we = 4'd0;
+    assign DAC3_AXI_BRAM_PORTA_addr = 32'd0;
+    assign DAC3_AXI_BRAM_PORTA_clk = Clk;
+    assign DAC3_AXI_BRAM_PORTA_din = 32'd0;
+    assign DAC3_AXI_BRAM_PORTA_en = 1'b0;
+    assign DAC3_AXI_BRAM_PORTA_rst = 1'b0;
+    assign DAC3_AXI_BRAM_PORTA_we = 4'd0;
+    assign ADC_AXI_BRAM_PORTA_addr = 32'd0;
+    assign ADC_AXI_BRAM_PORTA_clk = Clk;
+    assign ADC_AXI_BRAM_PORTA_din = 32'd0;
+    assign ADC_AXI_BRAM_PORTA_en = 1'b0;
+    assign ADC_AXI_BRAM_PORTA_rst = 1'b0;
+    assign ADC_AXI_BRAM_PORTA_we = 4'd0;
 
     wire unused = Clk ^ reset ^ rs232_uart_rxd ^ RO_REG0_WE_0 ^ RO_REG1_WE_0 ^
                   RO_REG2_WE_0 ^ RO_REG3_WE_0 ^ ^RO_REG0_IN_0 ^
                   ^RO_REG1_IN_0 ^ ^RO_REG2_IN_0 ^ ^RO_REG3_IN_0 ^
-                  ^DAC0_BRAM_PORTB_0_addr ^ DAC0_BRAM_PORTB_0_clk ^
-                  ^DAC0_BRAM_PORTB_0_din ^ DAC0_BRAM_PORTB_0_en ^
-                  DAC0_BRAM_PORTB_0_rst ^ ^DAC0_BRAM_PORTB_0_we ^
-                  ^DAC1_BRAM_PORTB_0_addr ^ DAC1_BRAM_PORTB_0_clk ^
-                  ^DAC1_BRAM_PORTB_0_din ^ DAC1_BRAM_PORTB_0_en ^
-                  DAC1_BRAM_PORTB_0_rst ^ ^DAC1_BRAM_PORTB_0_we ^
-                  ^DAC2_BRAM_PORTB_0_addr ^ DAC2_BRAM_PORTB_0_clk ^
-                  ^DAC2_BRAM_PORTB_0_din ^ DAC2_BRAM_PORTB_0_en ^
-                  DAC2_BRAM_PORTB_0_rst ^ ^DAC2_BRAM_PORTB_0_we ^
-                  ^DAC3_BRAM_PORTB_0_addr ^ DAC3_BRAM_PORTB_0_clk ^
-                  ^DAC3_BRAM_PORTB_0_din ^ DAC3_BRAM_PORTB_0_en ^
-                  DAC3_BRAM_PORTB_0_rst ^ ^DAC3_BRAM_PORTB_0_we ^
-                  ^ADC_BRAM_PORTB_0_addr ^ ADC_BRAM_PORTB_0_clk ^
-                  ^ADC_BRAM_PORTB_0_din ^ ADC_BRAM_PORTB_0_en ^
-                  ADC_BRAM_PORTB_0_rst ^ ^ADC_BRAM_PORTB_0_we;
+                  ^DAC0_AXI_BRAM_PORTA_dout ^ ^DAC1_AXI_BRAM_PORTA_dout ^
+                  ^DAC2_AXI_BRAM_PORTA_dout ^ ^DAC3_AXI_BRAM_PORTA_dout ^
+                  ^ADC_AXI_BRAM_PORTA_dout;
+endmodule
+
+`define DAC_PROGRAM_BRAM_STUB(module_name) \
+module module_name ( \
+    input  wire        clka, \
+    input  wire        ena, \
+    input  wire [3:0]  wea, \
+    input  wire [12:0] addra, \
+    input  wire [31:0] dina, \
+    output wire [31:0] douta, \
+    input  wire        clkb, \
+    input  wire        enb, \
+    input  wire [7:0]  web, \
+    input  wire [11:0] addrb, \
+    input  wire [63:0] dinb, \
+    output wire [63:0] doutb \
+); \
+    assign douta = 32'd0; \
+    assign doutb = 64'd0; \
+    wire unused = clka ^ ena ^ ^wea ^ ^addra ^ ^dina ^ \
+                  clkb ^ enb ^ ^web ^ ^addrb ^ ^dinb; \
+endmodule
+
+`DAC_PROGRAM_BRAM_STUB(dac0_program_bram)
+`DAC_PROGRAM_BRAM_STUB(dac1_program_bram)
+`DAC_PROGRAM_BRAM_STUB(dac2_program_bram)
+`DAC_PROGRAM_BRAM_STUB(dac3_program_bram)
+
+module adc_capture_bram (
+    input  wire         clka,
+    input  wire         ena,
+    input  wire [3:0]   wea,
+    input  wire [13:0]  addra,
+    input  wire [31:0]  dina,
+    output wire [31:0]  douta,
+    input  wire         clkb,
+    input  wire         enb,
+    input  wire [15:0]  web,
+    input  wire [11:0]  addrb,
+    input  wire [127:0] dinb,
+    output wire [127:0] doutb
+);
+    assign douta = 32'd0;
+    assign doutb = 128'd0;
+    wire unused = clka ^ ena ^ ^wea ^ ^addra ^ ^dina ^
+                  clkb ^ enb ^ ^web ^ ^addrb ^ ^dinb;
 endmodule
 
 module IBUFDS #(
