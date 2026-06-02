@@ -141,19 +141,19 @@ module daq_litejesd_dac_tx_path #(
             case (phase[23:22])
             2'b00: begin
                 mag = sine_quarter(phase[21:16]);
-                sine_from_phase = 16'h8000 + mag;
+                sine_from_phase = mag;
             end
             2'b01: begin
                 mag = sine_quarter(~phase[21:16]);
-                sine_from_phase = 16'h8000 + mag;
+                sine_from_phase = mag;
             end
             2'b10: begin
                 mag = sine_quarter(phase[21:16]);
-                sine_from_phase = 16'h8000 - mag;
+                sine_from_phase = -mag;
             end
             default: begin
                 mag = sine_quarter(~phase[21:16]);
-                sine_from_phase = 16'h8000 - mag;
+                sine_from_phase = -mag;
             end
             endcase
         end
