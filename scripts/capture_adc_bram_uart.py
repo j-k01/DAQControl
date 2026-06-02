@@ -14,7 +14,9 @@ except ImportError:
 
 
 SYNC_WORD = b"\xFE\x10\xCA\xFE"
-DEFAULT_WORDS = 262144
+DEFAULT_FRAMES = 4096
+ADC_WORDS_PER_FRAME = 4
+MAX_PROGRAM_WORDS = 8192
 
 
 def signed16(value):
@@ -133,8 +135,8 @@ def default_triangle_program(words, step):
     return out
 
 
-def upload_program(port, words):
-    command = f"PROG {len(words)}\n".encode("ascii")
+def upload_program(port, words, channel):
+    command = f"PROG {channel} {len(words)}\n".encode("ascii")
     port.write(command)
     line = wait_for_line_prefix(port, "PGRD")
     print(line)
@@ -142,12 +144,27 @@ def upload_program(port, words):
     print(wait_for_line_prefix(port, "OK PROG"))
 
 
-def capture(port, words, source, use_program):
+def capture(port, frames, use_program):
     command_name = "PCAP" if use_program else "CAPT"
-    command = f"{command_name} {words} {source}\n".encode("ascii")
+    command = f"{command_name} {frames}\n".encode("ascii")
     port.write(command)
     wait_for_sync(port)
-    return read_exact(port, words * 4)
+    return read_exact(port, frames * ADC_WORDS_PER_FRAME * 4)
+
+
+def parse_program_channels(text):
+    text = text.strip().lower()
+    if text == "all":
+        return [0, 1, 2, 3]
+    channels = []
+    for token in text.replace(",", " ").split():
+        channel = int(token, 0)
+        if channel < 0 or channel > 3:
+            raise ValueError("program channels must be 0..3 or 'all'")
+        channels.append(channel)
+    if not channels:
+        raise ValueError("at least one program channel is required")
+    return channels
 
 
 def main():
@@ -160,10 +177,11 @@ def main():
     )
     parser.add_argument("--port", default="COM10")
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--words", type=int, default=DEFAULT_WORDS)
-    parser.add_argument("--source", type=int, default=0, choices=range(4))
+    parser.add_argument("--words", type=int, default=DEFAULT_FRAMES, help="ADC 128-bit frames to capture")
+    parser.add_argument("--source", type=int, default=0, choices=range(4), help="deprecated; capture now always records all four frame words")
     parser.add_argument("--program", help="binary little-endian u32 or text/CSV DAC program")
-    parser.add_argument("--program-words", type=int, default=DEFAULT_WORDS)
+    parser.add_argument("--program-words", type=int, default=MAX_PROGRAM_WORDS)
+    parser.add_argument("--program-channel", default="all", help="DAC program channel: 0..3, comma list, or 'all'")
     parser.add_argument("--triangle-step", type=lambda x: int(x, 0), default=0x0100)
     parser.add_argument(
         "--upload-triangle",
@@ -179,41 +197,51 @@ def main():
     parser.add_argument("--timeout", type=float, default=120.0)
     args = parser.parse_args()
 
-    if args.words <= 0 or args.words > DEFAULT_WORDS:
-        raise ValueError(f"--words must be 1..{DEFAULT_WORDS}")
-    if args.program_words <= 0 or args.program_words > DEFAULT_WORDS:
-        raise ValueError(f"--program-words must be 1..{DEFAULT_WORDS}")
+    if args.words <= 0 or args.words > DEFAULT_FRAMES:
+        raise ValueError(f"--words must be 1..{DEFAULT_FRAMES} ADC frames")
+    if args.program_words <= 0 or args.program_words > MAX_PROGRAM_WORDS:
+        raise ValueError(f"--program-words must be 1..{MAX_PROGRAM_WORDS}")
 
     if args.program:
         program_words = load_program(args.program)
-        if len(program_words) > DEFAULT_WORDS:
-            raise ValueError(f"program has {len(program_words)} words; max is {DEFAULT_WORDS}")
+        if len(program_words) > MAX_PROGRAM_WORDS:
+            raise ValueError(f"program has {len(program_words)} words; max is {MAX_PROGRAM_WORDS}")
     elif args.upload_triangle and not args.no_upload:
         program_words = default_triangle_program(args.program_words, args.triangle_step)
     else:
         program_words = []
 
     started = time.time()
+    program_channels = parse_program_channels(args.program_channel)
 
     with serial.Serial(args.port, args.baud, timeout=args.timeout) as port:
         port.reset_input_buffer()
         if program_words:
-            print(f"Uploading {len(program_words)} DAC program words...")
-            upload_program(port, program_words)
-        print(f"Capturing {args.words} ADC words from source {args.source}...")
-        raw = capture(port, args.words, args.source, use_program=bool(program_words))
+            for channel in program_channels:
+                print(f"Uploading {len(program_words)} DAC program words to DAC channel {channel}...")
+                upload_program(port, program_words, channel)
+        print(f"Capturing {args.words} ADC frames...")
+        raw = capture(port, args.words, use_program=bool(program_words))
 
     with open(args.out, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["index", "word_hex", "lo16", "hi16", "lo16_signed", "hi16_signed"])
-        for index in range(args.words):
+        writer.writerow(["frame", "source", "word_hex", "lo16", "hi16", "lo16_signed", "hi16_signed"])
+        for index in range(args.words * ADC_WORDS_PER_FRAME):
             word = struct.unpack_from("<I", raw, index * 4)[0]
             lo = word & 0xFFFF
             hi = (word >> 16) & 0xFFFF
-            writer.writerow([index, f"0x{word:08X}", lo, hi, signed16(lo), signed16(hi)])
+            writer.writerow([
+                index // ADC_WORDS_PER_FRAME,
+                index % ADC_WORDS_PER_FRAME,
+                f"0x{word:08X}",
+                lo,
+                hi,
+                signed16(lo),
+                signed16(hi),
+            ])
 
     elapsed = time.time() - started
-    print(f"{args.words} captured words written to {args.out} in {elapsed:.1f}s")
+    print(f"{args.words} captured frames written to {args.out} in {elapsed:.1f}s")
 
 
 if __name__ == "__main__":

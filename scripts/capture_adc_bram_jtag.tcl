@@ -1,17 +1,15 @@
 set script_dir [file dirname [file normalize [info script]]]
-set words 262144
-set source 0
+set frames 4096
 set out_file [file join $script_dir .. adc_capture_jtag.csv]
 
 if {[llength $argv] > 0} {
-    set words [expr {[lindex $argv 0]}]
+    set frames [expr {[lindex $argv 0]}]
 }
 if {[llength $argv] > 1} {
-    set source [expr {[lindex $argv 1]}]
+    set out_file [file normalize [lindex $argv 1]]
 }
-if {[llength $argv] > 2} {
-    set out_file [file normalize [lindex $argv 2]]
-}
+
+set words [expr {$frames * 4}]
 
 set REG_BASE  0x44A10000
 set RW_REG1   [format "0x%08X" [expr {$REG_BASE + 0x04}]]
@@ -43,7 +41,7 @@ set old_rw1 [read32 $RW_REG1]
 set old_rw2 [read32 $RW_REG2]
 set old_rw3 [read32 $RW_REG3]
 
-set capture_rw3 [expr {($old_rw3 & ~0x00000078) | (($source & 3) << 4)}]
+set capture_rw3 [expr {$old_rw3 & ~0x00000048}]
 write32 $RW_REG3 [expr {$capture_rw3 | 0x00000008}]
 write32 $RW_REG3 $capture_rw3
 
@@ -66,18 +64,18 @@ if {!$done} {
     error [format "ADC BRAM capture timed out, status=0x%08X" $status]
 }
 
-puts [format "Capture complete, status=0x%08X. Reading %d words from ADC BRAM..." $status $words]
+puts [format "Capture complete, status=0x%08X. Reading %d frames / %d words from ADC BRAM..." $status $frames $words]
 set samples [mrd -value [format "0x%08X" $ADC_CAPTURE_BRAM_BASE] $words]
 
 set fd [open $out_file w]
-puts $fd "index,word_hex,lo16,hi16,lo16_signed,hi16_signed"
+puts $fd "frame,source,word_hex,lo16,hi16,lo16_signed,hi16_signed"
 set index 0
 foreach sample $samples {
     set word [expr {$sample & 0xffffffff}]
     set lo [expr {$word & 0xffff}]
     set hi [expr {($word >> 16) & 0xffff}]
-    puts $fd [format "%d,0x%08X,%d,%d,%d,%d" \
-        $index $word $lo $hi [signed16 $lo] [signed16 $hi]]
+    puts $fd [format "%d,%d,0x%08X,%d,%d,%d,%d" \
+        [expr {$index / 4}] [expr {$index % 4}] $word $lo $hi [signed16 $lo] [signed16 $hi]]
     incr index
 }
 close $fd
@@ -85,4 +83,4 @@ close $fd
 write32 $RW_REG2 $old_rw2
 write32 $RW_REG1 $old_rw1
 
-puts "$words words written to $out_file"
+puts "$frames frames written to $out_file"

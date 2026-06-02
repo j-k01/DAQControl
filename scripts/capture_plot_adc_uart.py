@@ -14,8 +14,10 @@ except ImportError as exc:
 
 
 SYNC_WORD = b"\xFE\x10\xCA\xFE"
-DEFAULT_WORDS = 4096
-MAX_WORDS = 262144
+DEFAULT_FRAMES = 4096
+ADC_WORDS_PER_FRAME = 4
+MAX_CAPTURE_FRAMES = 4096
+MAX_PROGRAM_WORDS = 8192
 
 
 def signed16(value):
@@ -281,8 +283,8 @@ def make_program(args):
     else:
         program = []
 
-    if len(program) > MAX_WORDS:
-        raise ValueError(f"program has {len(program)} words; max is {MAX_WORDS}")
+    if len(program) > MAX_PROGRAM_WORDS:
+        raise ValueError(f"program has {len(program)} words; max is {MAX_PROGRAM_WORDS}")
     if program and len(program) % 2:
         raise ValueError("DAC 64-bit program frames require an even number of u32 words")
     return reorder_u32_program_chunks(program, args.chunk_order)
@@ -306,8 +308,8 @@ def wait_for_line_prefix(port, prefix):
             return line
 
 
-def upload_program(port, words):
-    port.write(f"PROG {len(words)}\n".encode("ascii"))
+def upload_program(port, words, channel):
+    port.write(f"PROG {channel} {len(words)}\n".encode("ascii"))
     port.flush()
     print(wait_for_line_prefix(port, "PGRD"))
     port.write(struct.pack(f"<{len(words)}I", *words))
@@ -319,6 +321,21 @@ def upload_program(port, words):
     port.flush()
     print(wait_for_line_prefix(port, "OK"))
     print(f"Set DAC BRAM loop frame_count={frame_count} via RW3=0x{rw3_value:08X}")
+
+
+def parse_program_channels(text):
+    text = text.strip().lower()
+    if text == "all":
+        return [0, 1, 2, 3]
+    channels = []
+    for token in text.replace(",", " ").split():
+        channel = int(token, 0)
+        if channel < 0 or channel > 3:
+            raise ValueError("program channels must be 0..3 or 'all'")
+        channels.append(channel)
+    if not channels:
+        raise ValueError("at least one program channel is required")
+    return channels
 
 
 def parse_sources(text):
@@ -366,14 +383,25 @@ def wait_for_sync(port):
             return bytes(presync[:-len(SYNC_WORD)])
 
 
-def capture_source(port, command_name, words, source):
+def capture_frames(port, command_name, frames):
     port.reset_input_buffer()
-    port.write(f"{command_name} {words} {source}\n".encode("ascii"))
+    port.write(f"{command_name} {frames}\n".encode("ascii"))
     port.flush()
     presync = wait_for_sync(port)
-    raw = read_exact(port, words * 4)
-    unpacked = struct.unpack(f"<{words}I", raw)
+    word_count = frames * ADC_WORDS_PER_FRAME
+    raw = read_exact(port, word_count * 4)
+    unpacked = struct.unpack(f"<{word_count}I", raw)
     return presync, list(unpacked)
+
+
+def split_frame_captures(frame_words):
+    captures = {source: [] for source in range(ADC_WORDS_PER_FRAME)}
+    if len(frame_words) % ADC_WORDS_PER_FRAME:
+        raise ValueError("ADC frame stream length is not a multiple of four u32 words")
+    for index in range(0, len(frame_words), ADC_WORDS_PER_FRAME):
+        for source in range(ADC_WORDS_PER_FRAME):
+            captures[source].append(frame_words[index + source])
+    return captures
 
 
 def split_words(words):
@@ -567,7 +595,12 @@ def main():
     )
     parser.add_argument("--port", default="COM10")
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--words", type=int, default=DEFAULT_WORDS)
+    parser.add_argument(
+        "--words",
+        type=int,
+        default=DEFAULT_FRAMES,
+        help="Number of ADC 128-bit frames to capture. Each frame has four u32 words.",
+    )
     parser.add_argument("--sources", default="0,1,2,3")
     parser.add_argument("--command", choices=["CAPT", "PCAP"], default="CAPT")
     parser.add_argument(
@@ -577,7 +610,12 @@ def main():
         help="Generate and upload a DAC BRAM program before capture.",
     )
     parser.add_argument("--program", help="Upload a binary little-endian u32 or text/CSV DAC program.")
-    parser.add_argument("--program-words", type=int, default=DEFAULT_WORDS)
+    parser.add_argument("--program-words", type=int, default=MAX_PROGRAM_WORDS)
+    parser.add_argument(
+        "--program-channel",
+        default="all",
+        help="DAC program channel to upload: 0..3, comma list, or 'all'.",
+    )
     parser.add_argument(
         "--sample-format",
         choices=["twos", "offset"],
@@ -623,16 +661,17 @@ def main():
     parser.add_argument("--show", action="store_true")
     args = parser.parse_args()
 
-    if args.words <= 0 or args.words > MAX_WORDS:
-        raise ValueError(f"--words must be 1..{MAX_WORDS}")
+    if args.words <= 0 or args.words > MAX_CAPTURE_FRAMES:
+        raise ValueError(f"--words must be 1..{MAX_CAPTURE_FRAMES} ADC frames")
     if args.plot_words <= 0:
         raise ValueError("--plot-words must be positive")
-    if args.program_words <= 0 or args.program_words > MAX_WORDS:
-        raise ValueError(f"--program-words must be 1..{MAX_WORDS}")
+    if args.program_words <= 0 or args.program_words > MAX_PROGRAM_WORDS:
+        raise ValueError(f"--program-words must be 1..{MAX_PROGRAM_WORDS}")
     if args.program and args.program_mode != "none":
         raise ValueError("use either --program or --program-mode, not both")
 
     sources = parse_sources(args.sources)
+    program_channels = parse_program_channels(args.program_channel)
     program = make_program(args)
     command_name = "PCAP" if program and args.command == "CAPT" else args.command
     outdir = Path(args.outdir)
@@ -646,13 +685,15 @@ def main():
         time.sleep(0.2)
         port.reset_input_buffer()
         if program:
-            print(f"Uploading {len(program)} DAC program words...")
-            upload_program(port, program)
+            for channel in program_channels:
+                print(f"Uploading {len(program)} DAC program words to DAC channel {channel}...")
+                upload_program(port, program, channel)
+        print(f"Capturing {args.words} ADC 128-bit frames with {command_name}...")
+        presync, frame_words = capture_frames(port, command_name, args.words)
+        all_captures = split_frame_captures(frame_words)
         for source in sources:
-            print(f"Capturing {args.words} words from source {source} with {command_name}...")
-            presync, words = capture_source(port, command_name, args.words, source)
-            captures[source] = words
-            summary = summarize(source, words, presync)
+            captures[source] = all_captures[source]
+            summary = summarize(source, captures[source], presync if source == sources[0] else b"")
             summaries.append(summary)
             print(summary)
 
@@ -670,8 +711,8 @@ def main():
         print(f"Wrote {combined_csv_path}")
         summaries.append(
             "combined streams note: source 0+1 reconstruct ADC1 converter0; "
-            "source 2+3 reconstruct ADC1 converter1. This is time-aligned when "
-            "each capture is restart-aligned, for example with PCAP."
+            "source 2+3 reconstruct ADC1 converter1 from the same captured "
+            "128-bit ADC frame."
         )
         for name, samples in streams.items():
             summaries.append(summarize_stream(name, samples))

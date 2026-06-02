@@ -239,20 +239,33 @@ vivado.bat -mode batch -source rebuild.tcl -tclargs --with-bram-dataplane --jobs
 `--with-bram-dataplane` implies `--with-staged-gt` and `--with-litejesd`.
 
 After programming a BRAM dataplane build and loading MicroBlaze firmware,
-capture the currently generated DAC triangle through the ADC loopback with:
+capture the currently generated DAC waveform through the ADC loopback with:
 
 ```text
 CAPS
-CAPT 4096 0
+CAPT 4096
 ```
 
-`CAPT [words] [src]` leaves the normal DAC generator running and writes ADC1
-samples into the ADC capture BRAM before streaming little-endian 32-bit words
-over UART after sync bytes `FE 10 CA FE`. Sources `0..3` select ADC1
-`sample_a_low`, `sample_a_high`, `sample_b_low`, and `sample_b_high`
-respectively; the first three are also visible through selectors `28..30`.
-`PCAP [words] [src]` is the explicit variant that enables/restarts the DAC
-BRAM program player first; use it only after uploading words with `PROG`.
+`CAPT [frames]` leaves the normal DAC generator running and writes ADC1
+128-bit frames into the ADC capture BRAM before streaming little-endian 32-bit
+words over UART after sync bytes `FE 10 CA FE`. Each frame is four words:
+`0=A low`, `1=A high`, `2=B low`, and `3=B high`. `PCAP [frames]` is the
+explicit variant that enables/restarts the DAC BRAM program players first; use
+it only after uploading channel program words with `PROG`.
+
+The DAC BRAM dataplane has one independent 64-bit playback BRAM per DAC
+converter. The MicroBlaze sees each channel as 8192 little-endian 32-bit words,
+which the JESD side reads as 4096 looping 64-bit frames. Upload with:
+
+```text
+PROG 0 8192
+PROG 1 8192
+PROG 2 8192
+PROG 3 8192
+```
+
+The helper scripts can upload the same generated program to all four channels,
+or to a selected channel, before capture.
 
 The helper script captures the live generator by default:
 
@@ -266,29 +279,31 @@ Use `--chunk-order` to test whether the four 16-bit time slots inside each
 bitstream:
 
 ```powershell
-python scripts/capture_plot_adc_uart.py --port COM10 --program-mode triangle --sample-format twos --triangle-frequency-mhz 50 --chunk-order 3,2,1,0 --sources 0,1 --prefix tri50_chunk_3210
+python scripts/capture_plot_adc_uart.py --port COM10 --program-mode triangle --sample-format twos --triangle-frequency-mhz 50 --chunk-order 3,2,1,0 --program-channel all --sources 0,1 --prefix tri50_chunk_3210
 ```
 
-For the DAC ordering diagnostic, start with native sample mapping and identity
-TX lane mapping, then upload a slow frame-aligned trapezoid:
+For the DAC ordering diagnostic, start with native sample mapping and the
+currently validated inverse-check TX lane mapping, then upload a slow
+frame-aligned trapezoid:
 
 ```text
-WRTE 2 0x01000000
+WRTE 2 0x01000010
 ```
 
 ```powershell
-python scripts/capture_plot_adc_uart.py --port COM10 --program-mode trapezoid --sample-format twos --trapezoid-frequency-mhz 5 --program-words 4096 --sources 0,1 --prefix trap5_native
+python scripts/capture_plot_adc_uart.py --port COM10 --program-mode trapezoid --sample-format twos --trapezoid-frequency-mhz 5 --program-words 8192 --program-channel all --sources 0,1 --prefix trap5_native
 ```
 
 The helper sets `RW3[31:8]` to the uploaded 64-bit frame count before `PCAP`,
 so short diagnostic uploads loop over the uploaded waveform rather than the
 whole DAC BRAM.
 
-Its plot reconstructs ADC converter streams by interleaving source `0+1` for
-ADC1 converter0 and source `2+3` for ADC1 converter1. The raw source CSV is
-still written, and a `_combined.csv` file contains the reconstructed signed
-16-bit sample streams. Add `--plot-raw-sources` only when deliberately
-inspecting the split `lo16`/`hi16` capture words.
+Its plot reconstructs ADC converter streams from the same captured 128-bit
+frame by interleaving source `0+1` for ADC1 converter0 and source `2+3` for
+ADC1 converter1. The raw source CSV is still written, and a `_combined.csv`
+file contains the reconstructed signed 16-bit sample streams. Add
+`--plot-raw-sources` only when deliberately inspecting the split `lo16`/`hi16`
+capture words.
 
 Always rerun `create_project.tcl` after pulling HDL/Tcl changes. The old flow
 used imported source copies under `project/DAQ_LAUNCH.srcs/`, so running only
@@ -354,9 +369,10 @@ status, `27` is event counters, `28..30` are captured converter sample words,
 and `31` is raw lane data selected by `RW2[29:28]`. `RW2[24]=1` bypasses ILAS
 checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL checker, and
 `RW2[26]=1` switches ADC1 from Sundance signal order to physical DP0-DP3 order.
-The MicroBlaze firmware defaults `RW2` to `0x01000000` because the ADS54J60 link
-comes up cleanly with ILAS checking bypassed; use `WRTE 2 0x00000000` to
-re-enable ILAS checking while debugging the expected ILAS fields.
+The MicroBlaze firmware defaults `RW2` to `0x01000010`: ADS54J60 ILAS checking
+is bypassed for bring-up, and the DAC TX lane mux uses the inverse-check order
+that produced the clean scope waveform. Clear bit 24 only when deliberately
+re-enabling ADC ILAS checking while debugging the expected ILAS fields.
 
 To force a small ADS54J60 JESD test pattern over SPI without rebuilding HDL,
 use:

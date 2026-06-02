@@ -181,7 +181,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
         create_bd_port -dir O $port_name
     }
     if {$include_bram_dataplane} {
-        foreach bram_port {DAC_BRAM_PORTB_0 ADC_BRAM_PORTB_0} {
+        foreach bram_port {DAC0_BRAM_PORTB_0 DAC1_BRAM_PORTB_0 DAC2_BRAM_PORTB_0 DAC3_BRAM_PORTB_0 ADC_BRAM_PORTB_0} {
             create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:bram_rtl:1.0 $bram_port
             catch {set_property CONFIG.MASTER_TYPE {BRAM_CTRL} [get_bd_intf_ports $bram_port]}
         }
@@ -230,36 +230,42 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     set_property CONFIG.C_S_AXI_ACLK_FREQ_HZ $fabric_clk_hz [get_bd_cells axi_uart16550_0]
     create_bd_cell -type ip -vlnv xilinx.com:user:AXI4_register_file:1.0 AXI4_register_file_0
     if {$include_bram_dataplane} {
-        create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* dac_program_bram_ctrl
+        foreach ch {0 1 2 3} {
+            create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* dac${ch}_program_bram_ctrl
+        }
         create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* adc_capture_bram_ctrl
-        foreach bram_ctrl {dac_program_bram_ctrl adc_capture_bram_ctrl} {
+        foreach bram_ctrl {dac0_program_bram_ctrl dac1_program_bram_ctrl dac2_program_bram_ctrl dac3_program_bram_ctrl adc_capture_bram_ctrl} {
             set_property -dict [list \
                 CONFIG.SINGLE_PORT_BRAM {1} \
             ] [get_bd_cells $bram_ctrl]
         }
-        create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:* dac_program_bram
+        foreach ch {0 1 2 3} {
+            create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:* dac${ch}_program_bram
+        }
         create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:* adc_capture_bram
+        foreach ch {0 1 2 3} {
+            set_property -dict [list \
+                CONFIG.Memory_Type           {True_Dual_Port_RAM} \
+                CONFIG.Use_Byte_Write_Enable {true} \
+                CONFIG.Byte_Size             {8} \
+                CONFIG.Write_Width_A         {32} \
+                CONFIG.Read_Width_A          {32} \
+                CONFIG.Write_Width_B         {64} \
+                CONFIG.Read_Width_B          {64} \
+                CONFIG.Write_Depth_A         {8192} \
+            ] [get_bd_cells dac${ch}_program_bram]
+        }
         set_property -dict [list \
             CONFIG.Memory_Type           {True_Dual_Port_RAM} \
             CONFIG.Use_Byte_Write_Enable {true} \
             CONFIG.Byte_Size             {8} \
             CONFIG.Write_Width_A         {32} \
             CONFIG.Read_Width_A          {32} \
-            CONFIG.Write_Width_B         {64} \
-            CONFIG.Read_Width_B          {64} \
-            CONFIG.Write_Depth_A         {262144} \
-        ] [get_bd_cells dac_program_bram]
-        set_property -dict [list \
-            CONFIG.Memory_Type           {True_Dual_Port_RAM} \
-            CONFIG.Use_Byte_Write_Enable {true} \
-            CONFIG.Byte_Size             {8} \
-            CONFIG.Write_Width_A         {32} \
-            CONFIG.Read_Width_A          {32} \
-            CONFIG.Write_Width_B         {32} \
-            CONFIG.Read_Width_B          {32} \
-            CONFIG.Write_Depth_A         {262144} \
+            CONFIG.Write_Width_B         {128} \
+            CONFIG.Read_Width_B          {128} \
+            CONFIG.Write_Depth_A         {16384} \
         ] [get_bd_cells adc_capture_bram]
-        foreach bram_cell {dac_program_bram adc_capture_bram} {
+        foreach bram_cell {dac0_program_bram dac1_program_bram dac2_program_bram dac3_program_bram adc_capture_bram} {
             catch {set_property CONFIG.Assume_Synchronous_Clk {false} [get_bd_cells $bram_cell]}
         }
     }
@@ -270,7 +276,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     }
     set axi_masters 2
     if {$include_bram_dataplane} {
-        set axi_masters 4
+        set axi_masters 7
     }
     set_property CONFIG.NUM_MI $axi_masters [get_bd_cells microblaze_0_axi_periph]
 
@@ -278,17 +284,19 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M01_AXI] [get_bd_intf_pins AXI4_register_file_0/S00_AXI]
     safe_connect_bd_intf_net [get_bd_intf_pins axi_uart16550_0/UART] [get_bd_intf_ports rs232_uart]
     if {$include_bram_dataplane} {
-        safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M02_AXI] [get_bd_intf_pins dac_program_bram_ctrl/S_AXI]
-        safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M03_AXI] [get_bd_intf_pins adc_capture_bram_ctrl/S_AXI]
-        safe_connect_bd_intf_net [get_bd_intf_pins dac_program_bram_ctrl/BRAM_PORTA] [get_bd_intf_pins dac_program_bram/BRAM_PORTA]
+        foreach ch {0 1 2 3} mi {M02_AXI M03_AXI M04_AXI M05_AXI} {
+            safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/$mi] [get_bd_intf_pins dac${ch}_program_bram_ctrl/S_AXI]
+            safe_connect_bd_intf_net [get_bd_intf_pins dac${ch}_program_bram_ctrl/BRAM_PORTA] [get_bd_intf_pins dac${ch}_program_bram/BRAM_PORTA]
+            safe_connect_bd_intf_net [get_bd_intf_pins dac${ch}_program_bram/BRAM_PORTB] [get_bd_intf_ports DAC${ch}_BRAM_PORTB_0]
+        }
+        safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M06_AXI] [get_bd_intf_pins adc_capture_bram_ctrl/S_AXI]
         safe_connect_bd_intf_net [get_bd_intf_pins adc_capture_bram_ctrl/BRAM_PORTA] [get_bd_intf_pins adc_capture_bram/BRAM_PORTA]
-        safe_connect_bd_intf_net [get_bd_intf_pins dac_program_bram/BRAM_PORTB] [get_bd_intf_ports DAC_BRAM_PORTB_0]
         safe_connect_bd_intf_net [get_bd_intf_pins adc_capture_bram/BRAM_PORTB] [get_bd_intf_ports ADC_BRAM_PORTB_0]
     }
 
     set axi_clk_pins {ACLK S00_ACLK M00_ACLK M01_ACLK}
     if {$include_bram_dataplane} {
-        lappend axi_clk_pins M02_ACLK M03_ACLK
+        lappend axi_clk_pins M02_ACLK M03_ACLK M04_ACLK M05_ACLK M06_ACLK
     }
     foreach pin_name $axi_clk_pins {
         safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins microblaze_0_axi_periph/$pin_name]
@@ -298,7 +306,9 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     }
     safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins AXI4_register_file_0/s00_axi_aclk]
     if {$include_bram_dataplane} {
-        safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins dac_program_bram_ctrl/s_axi_aclk]
+        foreach ch {0 1 2 3} {
+            safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins dac${ch}_program_bram_ctrl/s_axi_aclk]
+        }
         safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins adc_capture_bram_ctrl/s_axi_aclk]
     }
 
@@ -309,7 +319,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     set resetn_pin [lindex $resetn_pin 0]
     set axi_rst_pins {ARESETN S00_ARESETN M00_ARESETN M01_ARESETN}
     if {$include_bram_dataplane} {
-        lappend axi_rst_pins M02_ARESETN M03_ARESETN
+        lappend axi_rst_pins M02_ARESETN M03_ARESETN M04_ARESETN M05_ARESETN M06_ARESETN
     }
     foreach pin_name $axi_rst_pins {
         safe_connect_bd_net $resetn_pin [get_bd_pins microblaze_0_axi_periph/$pin_name]
@@ -317,7 +327,9 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     safe_connect_bd_net $resetn_pin [get_bd_pins axi_uart16550_0/s_axi_aresetn]
     safe_connect_bd_net $resetn_pin [get_bd_pins AXI4_register_file_0/s00_axi_aresetn]
     if {$include_bram_dataplane} {
-        safe_connect_bd_net $resetn_pin [get_bd_pins dac_program_bram_ctrl/s_axi_aresetn]
+        foreach ch {0 1 2 3} {
+            safe_connect_bd_net $resetn_pin [get_bd_pins dac${ch}_program_bram_ctrl/s_axi_aresetn]
+        }
         safe_connect_bd_net $resetn_pin [get_bd_pins adc_capture_bram_ctrl/s_axi_aresetn]
     }
 
@@ -331,8 +343,11 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     assign_mb_addr_exact microblaze_0/Data axi_uart16550_0/S_AXI/Reg 0x44A00000 0x00010000
     assign_mb_addr_exact microblaze_0/Data AXI4_register_file_0/S00_AXI/S00_AXI_reg 0x44A10000 0x00010000
     if {$include_bram_dataplane} {
-        assign_mb_addr_exact microblaze_0/Data dac_program_bram_ctrl/S_AXI/Mem0 0xC0000000 0x00100000
-        assign_mb_addr_exact microblaze_0/Data adc_capture_bram_ctrl/S_AXI/Mem0 0xC0100000 0x00100000
+        assign_mb_addr_exact microblaze_0/Data dac0_program_bram_ctrl/S_AXI/Mem0 0xC0000000 0x00010000
+        assign_mb_addr_exact microblaze_0/Data dac1_program_bram_ctrl/S_AXI/Mem0 0xC0010000 0x00010000
+        assign_mb_addr_exact microblaze_0/Data dac2_program_bram_ctrl/S_AXI/Mem0 0xC0020000 0x00010000
+        assign_mb_addr_exact microblaze_0/Data dac3_program_bram_ctrl/S_AXI/Mem0 0xC0030000 0x00010000
+        assign_mb_addr_exact microblaze_0/Data adc_capture_bram_ctrl/S_AXI/Mem0 0xC0100000 0x00010000
     }
 
     validate_bd_design

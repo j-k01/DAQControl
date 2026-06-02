@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 
 module dac_bram_player #(
-    parameter integer BRAM_DEPTH_WORDS = 262144
+    parameter integer BRAM_DEPTH_WORDS = 8192
 ) (
     input  wire        clk,
     input  wire        rst,
@@ -77,14 +77,13 @@ module dac_bram_player #(
         end
     end
 
-    wire [16:0] status_index = output_index[16:0];
+    wire [16:0] status_index = output_index;
     assign status = {
         8'hD4,
-        4'd0,
         enable,
         valid,
         restart,
-        2'd0,
+        4'd0,
         status_index
     };
 

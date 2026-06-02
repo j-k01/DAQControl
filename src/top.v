@@ -82,21 +82,45 @@ module top #(
     wire ro_reg3_rdint;
 
 `ifdef DAQ_WITH_BRAM_DATAPLANE
-    wire [31:0] dac_bram_addr;
-    wire        dac_bram_clk;
-    wire [63:0] dac_bram_din;
-    wire [63:0] dac_bram_dout;
-    wire        dac_bram_en;
-    wire        dac_bram_rst;
-    wire [7:0]  dac_bram_we;
+    wire [31:0] dac0_bram_addr;
+    wire        dac0_bram_clk;
+    wire [63:0] dac0_bram_din;
+    wire [63:0] dac0_bram_dout;
+    wire        dac0_bram_en;
+    wire        dac0_bram_rst;
+    wire [7:0]  dac0_bram_we;
+
+    wire [31:0] dac1_bram_addr;
+    wire        dac1_bram_clk;
+    wire [63:0] dac1_bram_din;
+    wire [63:0] dac1_bram_dout;
+    wire        dac1_bram_en;
+    wire        dac1_bram_rst;
+    wire [7:0]  dac1_bram_we;
+
+    wire [31:0] dac2_bram_addr;
+    wire        dac2_bram_clk;
+    wire [63:0] dac2_bram_din;
+    wire [63:0] dac2_bram_dout;
+    wire        dac2_bram_en;
+    wire        dac2_bram_rst;
+    wire [7:0]  dac2_bram_we;
+
+    wire [31:0] dac3_bram_addr;
+    wire        dac3_bram_clk;
+    wire [63:0] dac3_bram_din;
+    wire [63:0] dac3_bram_dout;
+    wire        dac3_bram_en;
+    wire        dac3_bram_rst;
+    wire [7:0]  dac3_bram_we;
 
     wire [31:0] adc_bram_addr;
     wire        adc_bram_clk;
-    wire [31:0] adc_bram_din;
-    wire [31:0] adc_bram_dout;
+    wire [127:0] adc_bram_din;
+    wire [127:0] adc_bram_dout;
     wire        adc_bram_en;
     wire        adc_bram_rst;
-    wire [3:0]  adc_bram_we;
+    wire [15:0] adc_bram_we;
 `endif
 
     wire [31:0] status_reg;
@@ -133,13 +157,34 @@ module top #(
         .RO_REG3_RDINT_0      (ro_reg3_rdint)
 `ifdef DAQ_WITH_BRAM_DATAPLANE
         ,
-        .DAC_BRAM_PORTB_0_addr (dac_bram_addr),
-        .DAC_BRAM_PORTB_0_clk  (dac_bram_clk),
-        .DAC_BRAM_PORTB_0_din  (dac_bram_din),
-        .DAC_BRAM_PORTB_0_dout (dac_bram_dout),
-        .DAC_BRAM_PORTB_0_en   (dac_bram_en),
-        .DAC_BRAM_PORTB_0_rst  (dac_bram_rst),
-        .DAC_BRAM_PORTB_0_we   (dac_bram_we),
+        .DAC0_BRAM_PORTB_0_addr (dac0_bram_addr),
+        .DAC0_BRAM_PORTB_0_clk  (dac0_bram_clk),
+        .DAC0_BRAM_PORTB_0_din  (dac0_bram_din),
+        .DAC0_BRAM_PORTB_0_dout (dac0_bram_dout),
+        .DAC0_BRAM_PORTB_0_en   (dac0_bram_en),
+        .DAC0_BRAM_PORTB_0_rst  (dac0_bram_rst),
+        .DAC0_BRAM_PORTB_0_we   (dac0_bram_we),
+        .DAC1_BRAM_PORTB_0_addr (dac1_bram_addr),
+        .DAC1_BRAM_PORTB_0_clk  (dac1_bram_clk),
+        .DAC1_BRAM_PORTB_0_din  (dac1_bram_din),
+        .DAC1_BRAM_PORTB_0_dout (dac1_bram_dout),
+        .DAC1_BRAM_PORTB_0_en   (dac1_bram_en),
+        .DAC1_BRAM_PORTB_0_rst  (dac1_bram_rst),
+        .DAC1_BRAM_PORTB_0_we   (dac1_bram_we),
+        .DAC2_BRAM_PORTB_0_addr (dac2_bram_addr),
+        .DAC2_BRAM_PORTB_0_clk  (dac2_bram_clk),
+        .DAC2_BRAM_PORTB_0_din  (dac2_bram_din),
+        .DAC2_BRAM_PORTB_0_dout (dac2_bram_dout),
+        .DAC2_BRAM_PORTB_0_en   (dac2_bram_en),
+        .DAC2_BRAM_PORTB_0_rst  (dac2_bram_rst),
+        .DAC2_BRAM_PORTB_0_we   (dac2_bram_we),
+        .DAC3_BRAM_PORTB_0_addr (dac3_bram_addr),
+        .DAC3_BRAM_PORTB_0_clk  (dac3_bram_clk),
+        .DAC3_BRAM_PORTB_0_din  (dac3_bram_din),
+        .DAC3_BRAM_PORTB_0_dout (dac3_bram_dout),
+        .DAC3_BRAM_PORTB_0_en   (dac3_bram_en),
+        .DAC3_BRAM_PORTB_0_rst  (dac3_bram_rst),
+        .DAC3_BRAM_PORTB_0_we   (dac3_bram_we),
         .ADC_BRAM_PORTB_0_addr (adc_bram_addr),
         .ADC_BRAM_PORTB_0_clk  (adc_bram_clk),
         .ADC_BRAM_PORTB_0_din  (adc_bram_din),
@@ -229,7 +274,10 @@ module top #(
     wire [31:0] litejesd_triangle_word;
     wire [31:0] litejesd_sine_async;
     wire [31:0] litejesd_sine_word;
-    wire [63:0] dac_program_word_async;
+    wire [63:0] dac_program_word0_async;
+    wire [63:0] dac_program_word1_async;
+    wire [63:0] dac_program_word2_async;
+    wire [63:0] dac_program_word3_async;
     wire [31:0] dac_program_status_async;
     wire [31:0] dac_program_status_reg;
     wire [31:0] gth_tx_clk_count;
@@ -663,25 +711,104 @@ module top #(
     wire dac_program_restart = dac_program_req_sync[2] ^ dac_program_req_sync[1];
     wire dac_program_enable = dac_program_enable_sync[1];
 
-    dac_bram_player u_dac_bram_player (
+    wire [31:0] dac_program_status0_async;
+    wire [31:0] dac_program_status1_async;
+    wire [31:0] dac_program_status2_async;
+    wire [31:0] dac_program_status3_async;
+
+    dac_bram_player #(
+        .BRAM_DEPTH_WORDS (8192)
+    ) u_dac0_bram_player (
         .clk          (gth_tx_usrclk2),
         .rst          (litejesd_reset),
         .enable       (litejesd_active_async & dac_program_enable),
         .restart      (dac_program_restart),
         .frame_count  (dac_sine_phase_inc_tx),
-        .bram_addr    (dac_bram_addr),
-        .bram_clk     (dac_bram_clk),
-        .bram_din     (dac_bram_din),
-        .bram_dout    (dac_bram_dout),
-        .bram_en      (dac_bram_en),
-        .bram_rst     (dac_bram_rst),
-        .bram_we      (dac_bram_we),
-        .program_word (dac_program_word_async),
-        .status       (dac_program_status_async)
+        .bram_addr    (dac0_bram_addr),
+        .bram_clk     (dac0_bram_clk),
+        .bram_din     (dac0_bram_din),
+        .bram_dout    (dac0_bram_dout),
+        .bram_en      (dac0_bram_en),
+        .bram_rst     (dac0_bram_rst),
+        .bram_we      (dac0_bram_we),
+        .program_word (dac_program_word0_async),
+        .status       (dac_program_status0_async)
     );
+
+    dac_bram_player #(
+        .BRAM_DEPTH_WORDS (8192)
+    ) u_dac1_bram_player (
+        .clk          (gth_tx_usrclk2),
+        .rst          (litejesd_reset),
+        .enable       (litejesd_active_async & dac_program_enable),
+        .restart      (dac_program_restart),
+        .frame_count  (dac_sine_phase_inc_tx),
+        .bram_addr    (dac1_bram_addr),
+        .bram_clk     (dac1_bram_clk),
+        .bram_din     (dac1_bram_din),
+        .bram_dout    (dac1_bram_dout),
+        .bram_en      (dac1_bram_en),
+        .bram_rst     (dac1_bram_rst),
+        .bram_we      (dac1_bram_we),
+        .program_word (dac_program_word1_async),
+        .status       (dac_program_status1_async)
+    );
+
+    dac_bram_player #(
+        .BRAM_DEPTH_WORDS (8192)
+    ) u_dac2_bram_player (
+        .clk          (gth_tx_usrclk2),
+        .rst          (litejesd_reset),
+        .enable       (litejesd_active_async & dac_program_enable),
+        .restart      (dac_program_restart),
+        .frame_count  (dac_sine_phase_inc_tx),
+        .bram_addr    (dac2_bram_addr),
+        .bram_clk     (dac2_bram_clk),
+        .bram_din     (dac2_bram_din),
+        .bram_dout    (dac2_bram_dout),
+        .bram_en      (dac2_bram_en),
+        .bram_rst     (dac2_bram_rst),
+        .bram_we      (dac2_bram_we),
+        .program_word (dac_program_word2_async),
+        .status       (dac_program_status2_async)
+    );
+
+    dac_bram_player #(
+        .BRAM_DEPTH_WORDS (8192)
+    ) u_dac3_bram_player (
+        .clk          (gth_tx_usrclk2),
+        .rst          (litejesd_reset),
+        .enable       (litejesd_active_async & dac_program_enable),
+        .restart      (dac_program_restart),
+        .frame_count  (dac_sine_phase_inc_tx),
+        .bram_addr    (dac3_bram_addr),
+        .bram_clk     (dac3_bram_clk),
+        .bram_din     (dac3_bram_din),
+        .bram_dout    (dac3_bram_dout),
+        .bram_en      (dac3_bram_en),
+        .bram_rst     (dac3_bram_rst),
+        .bram_we      (dac3_bram_we),
+        .program_word (dac_program_word3_async),
+        .status       (dac_program_status3_async)
+    );
+
+    assign dac_program_status_async = {
+        8'hD5,
+        dac_program_enable,
+        dac_program_restart,
+        dac_program_status3_async[22],
+        dac_program_status2_async[22],
+        dac_program_status1_async[22],
+        dac_program_status0_async[22],
+        2'd0,
+        dac_program_status0_async[15:0]
+    };
 `else
     wire dac_program_enable = 1'b0;
-    assign dac_program_word_async = 64'd0;
+    assign dac_program_word0_async = 64'd0;
+    assign dac_program_word1_async = 64'd0;
+    assign dac_program_word2_async = 64'd0;
+    assign dac_program_word3_async = 64'd0;
     assign dac_program_status_async = 32'd0;
 `endif
 
@@ -699,7 +826,10 @@ module top #(
         .triangle_step    (16'd256),
         .sine_phase_inc   (dac_sine_phase_inc_tx),
         .program_enable   (dac_program_enable),
-        .program_word     (dac_program_word_async),
+        .program_word0    (dac_program_word0_async),
+        .program_word1    (dac_program_word1_async),
+        .program_word2    (dac_program_word2_async),
+        .program_word3    (dac_program_word3_async),
         .litejesd_ready   (litejesd_ready_async),
         .status           (litejesd_status_async),
         .triangle_word    (litejesd_triangle_async),
@@ -797,15 +927,36 @@ module top #(
     assign litejesd_status_async = 32'd0;
     assign litejesd_triangle_async = 32'd0;
     assign litejesd_sine_async = 32'd0;
-    assign dac_program_word_async = 64'd0;
+    assign dac_program_word0_async = 64'd0;
+    assign dac_program_word1_async = 64'd0;
+    assign dac_program_word2_async = 64'd0;
+    assign dac_program_word3_async = 64'd0;
     assign dac_program_status_async = 32'd0;
 `ifdef DAQ_WITH_BRAM_DATAPLANE
-    assign dac_bram_addr = 32'd0;
-    assign dac_bram_clk = clk_200;
-    assign dac_bram_din = 64'd0;
-    assign dac_bram_en = 1'b0;
-    assign dac_bram_rst = 1'b0;
-    assign dac_bram_we = 8'd0;
+    assign dac0_bram_addr = 32'd0;
+    assign dac0_bram_clk = clk_200;
+    assign dac0_bram_din = 64'd0;
+    assign dac0_bram_en = 1'b0;
+    assign dac0_bram_rst = 1'b0;
+    assign dac0_bram_we = 8'd0;
+    assign dac1_bram_addr = 32'd0;
+    assign dac1_bram_clk = clk_200;
+    assign dac1_bram_din = 64'd0;
+    assign dac1_bram_en = 1'b0;
+    assign dac1_bram_rst = 1'b0;
+    assign dac1_bram_we = 8'd0;
+    assign dac2_bram_addr = 32'd0;
+    assign dac2_bram_clk = clk_200;
+    assign dac2_bram_din = 64'd0;
+    assign dac2_bram_en = 1'b0;
+    assign dac2_bram_rst = 1'b0;
+    assign dac2_bram_we = 8'd0;
+    assign dac3_bram_addr = 32'd0;
+    assign dac3_bram_clk = clk_200;
+    assign dac3_bram_din = 64'd0;
+    assign dac3_bram_en = 1'b0;
+    assign dac3_bram_rst = 1'b0;
+    assign dac3_bram_we = 8'd0;
 `endif
 
     assign gth_userdata_tx = {8{32'hbcbc_bcbc}};
@@ -1040,18 +1191,12 @@ module top #(
 
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     (* ASYNC_REG = "TRUE" *) reg [2:0] adc_capture_req_sync = 3'b000;
-    (* ASYNC_REG = "TRUE" *) reg [1:0] adc_capture_source_meta = 2'b00;
-    (* ASYNC_REG = "TRUE" *) reg [1:0] adc_capture_source_sync = 2'b00;
 
     always @(posedge gth_rx_usrclk2) begin
         if (adc1_rx_reset) begin
             adc_capture_req_sync <= 3'b000;
-            adc_capture_source_meta <= 2'b00;
-            adc_capture_source_sync <= 2'b00;
         end else begin
             adc_capture_req_sync <= {adc_capture_req_sync[1:0], adc_capture_req_toggle};
-            adc_capture_source_meta <= rw_reg3[5:4];
-            adc_capture_source_sync <= adc_capture_source_meta;
         end
     end
 
@@ -1061,7 +1206,6 @@ module top #(
         .clk           (gth_rx_usrclk2),
         .rst           (adc1_rx_reset),
         .start         (adc_capture_start),
-        .source_select (adc_capture_source_sync),
         .data_valid    (adc1_litejesd_ready_async),
         .sample_a_low  (adc1_rx_sample_a_low_async),
         .sample_a_high (adc1_rx_sample_a_high_async),
@@ -1094,10 +1238,10 @@ module top #(
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     assign adc_bram_addr = 32'd0;
     assign adc_bram_clk = clk_200;
-    assign adc_bram_din = 32'd0;
+    assign adc_bram_din = 128'd0;
     assign adc_bram_en = 1'b0;
     assign adc_bram_rst = 1'b0;
-    assign adc_bram_we = 4'd0;
+    assign adc_bram_we = 16'd0;
 `endif
 `endif
 
@@ -1118,7 +1262,10 @@ module top #(
     assign litejesd_status_async = 32'd0;
     assign litejesd_triangle_async = 32'd0;
     assign litejesd_sine_async = 32'd0;
-    assign dac_program_word_async = 64'd0;
+    assign dac_program_word0_async = 64'd0;
+    assign dac_program_word1_async = 64'd0;
+    assign dac_program_word2_async = 64'd0;
+    assign dac_program_word3_async = 64'd0;
     assign dac_program_status_async = 32'd0;
     assign gth_tx_clk_count = 32'd0;
     assign gth_rx_clk_count = 32'd0;
@@ -1138,18 +1285,36 @@ module top #(
     assign adc1_rx_raw_lane_async = 32'd0;
     assign adc_capture_status_async = 32'd0;
 `ifdef DAQ_WITH_BRAM_DATAPLANE
-    assign dac_bram_addr = 32'd0;
-    assign dac_bram_clk = clk_200;
-    assign dac_bram_din = 64'd0;
-    assign dac_bram_en = 1'b0;
-    assign dac_bram_rst = 1'b0;
-    assign dac_bram_we = 8'd0;
+    assign dac0_bram_addr = 32'd0;
+    assign dac0_bram_clk = clk_200;
+    assign dac0_bram_din = 64'd0;
+    assign dac0_bram_en = 1'b0;
+    assign dac0_bram_rst = 1'b0;
+    assign dac0_bram_we = 8'd0;
+    assign dac1_bram_addr = 32'd0;
+    assign dac1_bram_clk = clk_200;
+    assign dac1_bram_din = 64'd0;
+    assign dac1_bram_en = 1'b0;
+    assign dac1_bram_rst = 1'b0;
+    assign dac1_bram_we = 8'd0;
+    assign dac2_bram_addr = 32'd0;
+    assign dac2_bram_clk = clk_200;
+    assign dac2_bram_din = 64'd0;
+    assign dac2_bram_en = 1'b0;
+    assign dac2_bram_rst = 1'b0;
+    assign dac2_bram_we = 8'd0;
+    assign dac3_bram_addr = 32'd0;
+    assign dac3_bram_clk = clk_200;
+    assign dac3_bram_din = 64'd0;
+    assign dac3_bram_en = 1'b0;
+    assign dac3_bram_rst = 1'b0;
+    assign dac3_bram_we = 8'd0;
     assign adc_bram_addr = 32'd0;
     assign adc_bram_clk = clk_200;
-    assign adc_bram_din = 32'd0;
+    assign adc_bram_din = 128'd0;
     assign adc_bram_en = 1'b0;
     assign adc_bram_rst = 1'b0;
-    assign adc_bram_we = 4'd0;
+    assign adc_bram_we = 16'd0;
 `endif
 `endif
 
@@ -1360,7 +1525,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0016;
+    wire [31:0] build_id = 32'hDA01_0017;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]

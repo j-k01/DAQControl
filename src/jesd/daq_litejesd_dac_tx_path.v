@@ -20,7 +20,10 @@ module daq_litejesd_dac_tx_path #(
     input  wire [15:0]   triangle_step,
     input  wire [23:0]   sine_phase_inc,
     input  wire          program_enable,
-    input  wire [63:0]   program_word,
+    input  wire [63:0]   program_word0,
+    input  wire [63:0]   program_word1,
+    input  wire [63:0]   program_word2,
+    input  wire [63:0]   program_word3,
 
     output wire          litejesd_ready,
     output wire [31:0]   status,
@@ -199,7 +202,6 @@ module daq_litejesd_dac_tx_path #(
         sine_sample1,
         sine_sample0
     };
-    wire [63:0] active_quad_word = program_enable ? program_word : sine_quad_word;
     wire [63:0] dac_zero64 = 64'd0;
 
     // Converter select is diagnostic-only:
@@ -232,26 +234,30 @@ module daq_litejesd_dac_tx_path #(
         end
     endfunction
 
-    wire [63:0] src_converter0 = drive_converter0 ? active_quad_word : dac_zero64;
-    wire [63:0] src_converter1 = drive_converter1 ? active_quad_word : dac_zero64;
-    wire [63:0] src_converter2 = drive_converter2 ? active_quad_word : dac_zero64;
-    wire [63:0] src_converter3 = drive_converter3 ? active_quad_word : dac_zero64;
+    wire [63:0] src_converter0 = program_enable ? program_word0 :
+                                  (drive_converter0 ? sine_quad_word : dac_zero64);
+    wire [63:0] src_converter1 = program_enable ? program_word1 :
+                                  (drive_converter1 ? sine_quad_word : dac_zero64);
+    wire [63:0] src_converter2 = program_enable ? program_word2 :
+                                  (drive_converter2 ? sine_quad_word : dac_zero64);
+    wire [63:0] src_converter3 = program_enable ? program_word3 :
+                                  (drive_converter3 ? sine_quad_word : dac_zero64);
 
-    wire [63:0] active_quad_word_bswap = swap_sample_bytes64(active_quad_word);
+    wire [63:0] sine_quad_word_bswap = swap_sample_bytes64(sine_quad_word);
 
     // sample_map_mode:
     //   0 = native LiteJESD converter buses, no DAC39J84 sample remap
-    //   1 = broadcast preimage + DAC39J84 sample remap (0xDA010015 shim)
+    //   1 = broadcast preimage + DAC39J84 sample remap (diagnostic shim)
     //   2 = direct source buses through DAC39J84 sample remap
     //   3 = reserved, currently same as native
-    wire use_preimage_remap = (sample_map_mode == 2'd1);
-    wire use_any_remap = (sample_map_mode == 2'd1) ||
+    wire use_preimage_remap = (sample_map_mode == 2'd1) && !program_enable;
+    wire use_any_remap = use_preimage_remap ||
                          (sample_map_mode == 2'd2);
 
-    wire [63:0] remap_in0 = use_preimage_remap ? active_quad_word_bswap : src_converter0;
-    wire [63:0] remap_in1 = use_preimage_remap ? active_quad_word_bswap : src_converter1;
-    wire [63:0] remap_in2 = use_preimage_remap ? active_quad_word       : src_converter2;
-    wire [63:0] remap_in3 = use_preimage_remap ? active_quad_word_bswap : src_converter3;
+    wire [63:0] remap_in0 = use_preimage_remap ? sine_quad_word_bswap : src_converter0;
+    wire [63:0] remap_in1 = use_preimage_remap ? sine_quad_word_bswap : src_converter1;
+    wire [63:0] remap_in2 = use_preimage_remap ? sine_quad_word       : src_converter2;
+    wire [63:0] remap_in3 = use_preimage_remap ? sine_quad_word_bswap : src_converter3;
     wire [63:0] remap_out0;
     wire [63:0] remap_out1;
     wire [63:0] remap_out2;
