@@ -204,6 +204,10 @@ proc verify_bram_dataplane_ips {} {
         require_ip_property $ip CONFIG.Read_Width_B 64
         require_ip_property $ip CONFIG.Write_Depth_A 8192
         require_ip_property $ip CONFIG.Use_Byte_Write_Enable true
+        require_ip_property $ip CONFIG.Register_PortA_Output_of_Memory_Primitives false
+        require_ip_property $ip CONFIG.Register_PortA_Output_of_Memory_Core false
+        require_ip_property $ip CONFIG.Register_PortB_Output_of_Memory_Primitives false
+        require_ip_property $ip CONFIG.Register_PortB_Output_of_Memory_Core false
     }
 
     require_ip_property adc_capture_bram CONFIG.Write_Width_A 32
@@ -212,6 +216,10 @@ proc verify_bram_dataplane_ips {} {
     require_ip_property adc_capture_bram CONFIG.Read_Width_B 128
     require_ip_property adc_capture_bram CONFIG.Write_Depth_A 16384
     require_ip_property adc_capture_bram CONFIG.Use_Byte_Write_Enable true
+    require_ip_property adc_capture_bram CONFIG.Register_PortA_Output_of_Memory_Primitives false
+    require_ip_property adc_capture_bram CONFIG.Register_PortA_Output_of_Memory_Core false
+    require_ip_property adc_capture_bram CONFIG.Register_PortB_Output_of_Memory_Primitives false
+    require_ip_property adc_capture_bram CONFIG.Register_PortB_Output_of_Memory_Core false
 }
 
 proc create_microblaze_bd {bd_name include_bram_dataplane} {
@@ -535,6 +543,10 @@ if {$include_bram_dataplane} {
             CONFIG.Read_Width_B           {64} \
             CONFIG.Write_Depth_A          {8192} \
             CONFIG.Assume_Synchronous_Clk {false} \
+            CONFIG.Register_PortA_Output_of_Memory_Primitives {false} \
+            CONFIG.Register_PortA_Output_of_Memory_Core {false} \
+            CONFIG.Register_PortB_Output_of_Memory_Primitives {false} \
+            CONFIG.Register_PortB_Output_of_Memory_Core {false} \
         ] [get_ips dac${ch}_program_bram]
     }
 
@@ -550,6 +562,10 @@ if {$include_bram_dataplane} {
         CONFIG.Read_Width_B           {128} \
         CONFIG.Write_Depth_A          {16384} \
         CONFIG.Assume_Synchronous_Clk {false} \
+        CONFIG.Register_PortA_Output_of_Memory_Primitives {false} \
+        CONFIG.Register_PortA_Output_of_Memory_Core {false} \
+        CONFIG.Register_PortB_Output_of_Memory_Primitives {false} \
+        CONFIG.Register_PortB_Output_of_Memory_Core {false} \
     ] [get_ips adc_capture_bram]
 }
 

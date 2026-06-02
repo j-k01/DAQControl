@@ -35,6 +35,13 @@ proc validate_ips_unlocked {} {
     }
 }
 
+proc require_ip_property {ip prop expected} {
+    set actual [get_property $prop [get_ips $ip]]
+    if {$actual ne "$expected"} {
+        error "Project IP contract failure: $ip $prop is '$actual', expected '$expected'. Re-run create_project.tcl --with-bram-dataplane."
+    }
+}
+
 proc validate_clock_contract {} {
     set expected_clk_hz 200000000
     set bd_files [get_files -quiet microblaze_bd.bd]
@@ -121,6 +128,15 @@ proc validate_microblaze_bd_contract {} {
         }
         if {!$expect_bram_dataplane && $count != 0} {
             error "Project IP contract failure: stale BRAM dataplane IP '$ip_name' exists in a non-BRAM build. Re-run create_project.tcl without --with-bram-dataplane."
+        }
+    }
+
+    if {$expect_bram_dataplane} {
+        foreach ip_name $bram_dataplane_ips {
+            require_ip_property $ip_name CONFIG.Register_PortA_Output_of_Memory_Primitives false
+            require_ip_property $ip_name CONFIG.Register_PortA_Output_of_Memory_Core false
+            require_ip_property $ip_name CONFIG.Register_PortB_Output_of_Memory_Primitives false
+            require_ip_property $ip_name CONFIG.Register_PortB_Output_of_Memory_Core false
         }
     }
 }
