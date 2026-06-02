@@ -46,11 +46,11 @@ module microblaze_bd_wrapper (
     output wire        RO_REG3_RDINT_0,
     input  wire [31:0] DAC_BRAM_PORTB_0_addr,
     input  wire        DAC_BRAM_PORTB_0_clk,
-    input  wire [31:0] DAC_BRAM_PORTB_0_din,
-    output wire [31:0] DAC_BRAM_PORTB_0_dout,
+    input  wire [63:0] DAC_BRAM_PORTB_0_din,
+    output wire [63:0] DAC_BRAM_PORTB_0_dout,
     input  wire        DAC_BRAM_PORTB_0_en,
     input  wire        DAC_BRAM_PORTB_0_rst,
-    input  wire [3:0]  DAC_BRAM_PORTB_0_we,
+    input  wire [7:0]  DAC_BRAM_PORTB_0_we,
     input  wire [31:0] ADC_BRAM_PORTB_0_addr,
     input  wire        ADC_BRAM_PORTB_0_clk,
     input  wire [31:0] ADC_BRAM_PORTB_0_din,
@@ -74,7 +74,7 @@ module microblaze_bd_wrapper (
     assign RO_REG1_RDINT_0 = 1'b0;
     assign RO_REG2_RDINT_0 = 1'b0;
     assign RO_REG3_RDINT_0 = 1'b0;
-    assign DAC_BRAM_PORTB_0_dout = 32'd0;
+    assign DAC_BRAM_PORTB_0_dout = 64'd0;
     assign ADC_BRAM_PORTB_0_dout = 32'd0;
 
     wire unused = Clk ^ reset ^ rs232_uart_rxd ^ RO_REG0_WE_0 ^ RO_REG1_WE_0 ^

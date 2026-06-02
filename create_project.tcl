@@ -239,17 +239,27 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
         }
         create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:* dac_program_bram
         create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:* adc_capture_bram
+        set_property -dict [list \
+            CONFIG.Memory_Type           {True_Dual_Port_RAM} \
+            CONFIG.Use_Byte_Write_Enable {true} \
+            CONFIG.Byte_Size             {8} \
+            CONFIG.Write_Width_A         {32} \
+            CONFIG.Read_Width_A          {32} \
+            CONFIG.Write_Width_B         {64} \
+            CONFIG.Read_Width_B          {64} \
+            CONFIG.Write_Depth_A         {262144} \
+        ] [get_bd_cells dac_program_bram]
+        set_property -dict [list \
+            CONFIG.Memory_Type           {True_Dual_Port_RAM} \
+            CONFIG.Use_Byte_Write_Enable {true} \
+            CONFIG.Byte_Size             {8} \
+            CONFIG.Write_Width_A         {32} \
+            CONFIG.Read_Width_A          {32} \
+            CONFIG.Write_Width_B         {32} \
+            CONFIG.Read_Width_B          {32} \
+            CONFIG.Write_Depth_A         {262144} \
+        ] [get_bd_cells adc_capture_bram]
         foreach bram_cell {dac_program_bram adc_capture_bram} {
-            set_property -dict [list \
-                CONFIG.Memory_Type           {True_Dual_Port_RAM} \
-                CONFIG.Use_Byte_Write_Enable {true} \
-                CONFIG.Byte_Size             {8} \
-                CONFIG.Write_Width_A         {32} \
-                CONFIG.Read_Width_A          {32} \
-                CONFIG.Write_Width_B         {32} \
-                CONFIG.Read_Width_B          {32} \
-                CONFIG.Write_Depth_A         {262144} \
-            ] [get_bd_cells $bram_cell]
             catch {set_property CONFIG.Assume_Synchronous_Clk {false} [get_bd_cells $bram_cell]}
         }
     }

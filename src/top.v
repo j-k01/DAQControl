@@ -84,11 +84,11 @@ module top #(
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     wire [31:0] dac_bram_addr;
     wire        dac_bram_clk;
-    wire [31:0] dac_bram_din;
-    wire [31:0] dac_bram_dout;
+    wire [63:0] dac_bram_din;
+    wire [63:0] dac_bram_dout;
     wire        dac_bram_en;
     wire        dac_bram_rst;
-    wire [3:0]  dac_bram_we;
+    wire [7:0]  dac_bram_we;
 
     wire [31:0] adc_bram_addr;
     wire        adc_bram_clk;
@@ -229,7 +229,7 @@ module top #(
     wire [31:0] litejesd_triangle_word;
     wire [31:0] litejesd_sine_async;
     wire [31:0] litejesd_sine_word;
-    wire [31:0] dac_program_word_async;
+    wire [63:0] dac_program_word_async;
     wire [31:0] dac_program_status_async;
     wire [31:0] dac_program_status_reg;
     wire [31:0] gth_tx_clk_count;
@@ -666,7 +666,7 @@ module top #(
     );
 `else
     wire dac_program_enable = 1'b0;
-    assign dac_program_word_async = 32'h8000_8000;
+    assign dac_program_word_async = 64'd0;
     assign dac_program_status_async = 32'd0;
 `endif
 
@@ -731,15 +731,15 @@ module top #(
     assign litejesd_status_async = 32'd0;
     assign litejesd_triangle_async = 32'd0;
     assign litejesd_sine_async = 32'd0;
-    assign dac_program_word_async = 32'h8000_8000;
+    assign dac_program_word_async = 64'd0;
     assign dac_program_status_async = 32'd0;
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     assign dac_bram_addr = 32'd0;
     assign dac_bram_clk = clk_200;
-    assign dac_bram_din = 32'd0;
+    assign dac_bram_din = 64'd0;
     assign dac_bram_en = 1'b0;
     assign dac_bram_rst = 1'b0;
-    assign dac_bram_we = 4'd0;
+    assign dac_bram_we = 8'd0;
 `endif
 
     assign gth_userdata_tx = {8{32'hbcbc_bcbc}};
@@ -1052,7 +1052,7 @@ module top #(
     assign litejesd_status_async = 32'd0;
     assign litejesd_triangle_async = 32'd0;
     assign litejesd_sine_async = 32'd0;
-    assign dac_program_word_async = 32'h8000_8000;
+    assign dac_program_word_async = 64'd0;
     assign dac_program_status_async = 32'd0;
     assign gth_tx_clk_count = 32'd0;
     assign gth_rx_clk_count = 32'd0;
@@ -1074,10 +1074,10 @@ module top #(
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     assign dac_bram_addr = 32'd0;
     assign dac_bram_clk = clk_200;
-    assign dac_bram_din = 32'd0;
+    assign dac_bram_din = 64'd0;
     assign dac_bram_en = 1'b0;
     assign dac_bram_rst = 1'b0;
-    assign dac_bram_we = 4'd0;
+    assign dac_bram_we = 8'd0;
     assign adc_bram_addr = 32'd0;
     assign adc_bram_clk = clk_200;
     assign adc_bram_din = 32'd0;

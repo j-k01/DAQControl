@@ -27,8 +27,21 @@ def clamp_u16(value):
     return max(0, min(0xFFFF, int(round(value))))
 
 
-def pack_pair(sample0, sample1):
-    return (clamp_u16(sample1) << 16) | clamp_u16(sample0)
+def clamp_s16(value):
+    return max(-0x8000, min(0x7FFF, int(round(value))))
+
+
+def encode_sample(value, sample_format):
+    if sample_format == "twos":
+        return clamp_s16(value) & 0xFFFF
+    return clamp_u16(value)
+
+
+def pack_pair(sample0, sample1, sample_format):
+    return (
+        (encode_sample(sample1, sample_format) << 16) |
+        encode_sample(sample0, sample_format)
+    )
 
 
 def parse_u32_token(token):
@@ -69,9 +82,38 @@ def load_program(path):
     return load_text_program(path)
 
 
-def make_triangle_program(words, step, offset, amplitude):
-    low = clamp_u16(offset - amplitude)
-    high = clamp_u16(offset + amplitude)
+def triangle_value(index, frequency_hz, sample_rate_hz, amplitude, offset):
+    phase = (index * frequency_hz / sample_rate_hz) % 1.0
+    if phase < 0.5:
+        return offset - amplitude + (4.0 * amplitude * phase)
+    return offset + amplitude - (4.0 * amplitude * (phase - 0.5))
+
+
+def make_triangle_program(
+    words,
+    step,
+    offset,
+    amplitude,
+    sample_format,
+    frequency_hz=None,
+    sample_rate_hz=None,
+):
+    if frequency_hz is not None:
+        out = []
+        for index in range(words):
+            out.append(pack_pair(
+                triangle_value(2 * index, frequency_hz, sample_rate_hz, amplitude, offset),
+                triangle_value(2 * index + 1, frequency_hz, sample_rate_hz, amplitude, offset),
+                sample_format,
+            ))
+        return out
+
+    if sample_format == "twos":
+        low = clamp_s16(offset - amplitude)
+        high = clamp_s16(offset + amplitude)
+    else:
+        low = clamp_u16(offset - amplitude)
+        high = clamp_u16(offset + amplitude)
     sample = low
     rising = True
     out = []
@@ -88,11 +130,11 @@ def make_triangle_program(words, step, offset, amplitude):
                 sample = max(low, sample - step)
                 if sample <= low:
                     rising = True
-        out.append(pack_pair(pair[0], pair[1]))
+        out.append(pack_pair(pair[0], pair[1], sample_format))
     return out
 
 
-def make_sine_program(words, cycles, amplitude, offset, phase=0.0):
+def make_sine_program(words, cycles, amplitude, offset, sample_format, phase=0.0):
     out = []
     sample_count = max(1, words * 2)
     for index in range(words):
@@ -101,20 +143,21 @@ def make_sine_program(words, cycles, amplitude, offset, phase=0.0):
         out.append(pack_pair(
             offset + amplitude * math.sin(phase0),
             offset + amplitude * math.sin(phase1),
+            sample_format,
         ))
     return out
 
 
-def make_square_sine_program(words, square_period_words, sine_cycles, amplitude, offset):
+def make_square_sine_program(words, square_period_words, sine_cycles, amplitude, offset, sample_format):
     half = words // 2
-    high = clamp_u16(offset + amplitude)
-    low = clamp_u16(offset - amplitude)
+    high = offset + amplitude
+    low = offset - amplitude
     out = []
 
     for index in range(half):
         phase = (index // max(1, square_period_words // 2)) & 1
         sample = high if phase == 0 else low
-        out.append(pack_pair(sample, sample))
+        out.append(pack_pair(sample, sample, sample_format))
 
     sine_word_count = words - half
     sine_sample_count = max(1, sine_word_count * 2)
@@ -124,6 +167,7 @@ def make_square_sine_program(words, square_period_words, sine_cycles, amplitude,
         out.append(pack_pair(
             offset + amplitude * math.sin(phase0),
             offset + amplitude * math.sin(phase1),
+            sample_format,
         ))
     return out
 
@@ -137,13 +181,22 @@ def make_program(args):
             args.sine_cycles,
             args.amplitude,
             args.offset,
+            args.sample_format,
         )
     elif args.program_mode == "triangle":
+        triangle_frequency_hz = None
+        sample_rate_hz = None
+        if args.triangle_frequency_mhz is not None:
+            triangle_frequency_hz = args.triangle_frequency_mhz * 1.0e6
+            sample_rate_hz = args.sample_rate_mhz * 1.0e6
         program = make_triangle_program(
             args.program_words,
             args.triangle_step,
             args.offset,
             args.amplitude,
+            args.sample_format,
+            triangle_frequency_hz,
+            sample_rate_hz,
         )
     elif args.program_mode == "square-sine":
         program = make_square_sine_program(
@@ -152,6 +205,7 @@ def make_program(args):
             args.sine_cycles,
             args.amplitude,
             args.offset,
+            args.sample_format,
         )
     else:
         program = []
@@ -445,11 +499,28 @@ def main():
     )
     parser.add_argument("--program", help="Upload a binary little-endian u32 or text/CSV DAC program.")
     parser.add_argument("--program-words", type=int, default=DEFAULT_WORDS)
+    parser.add_argument(
+        "--sample-format",
+        choices=["twos", "offset"],
+        default="twos",
+        help="Encoding for generated DAC program samples.",
+    )
+    parser.add_argument(
+        "--sample-rate-mhz",
+        type=float,
+        default=1000.0,
+        help="DAC sample rate used for frequency-generated program patterns.",
+    )
     parser.add_argument("--sine-cycles", type=float, default=128.0)
     parser.add_argument("--square-period-words", type=int, default=1024)
     parser.add_argument("--triangle-step", type=lambda x: int(x, 0), default=0x0100)
+    parser.add_argument(
+        "--triangle-frequency-mhz",
+        type=float,
+        help="Generate a triangle with this nominal frequency instead of using --triangle-step.",
+    )
     parser.add_argument("--amplitude", type=lambda x: int(x, 0), default=0x3000)
-    parser.add_argument("--offset", type=lambda x: int(x, 0), default=0x8000)
+    parser.add_argument("--offset", type=lambda x: int(x, 0), default=0)
     parser.add_argument("--outdir", default="captures")
     parser.add_argument("--prefix", default="adc_capture")
     parser.add_argument("--timeout", type=float, default=120.0)
