@@ -694,7 +694,7 @@ static void cmd_help(void)
     send_str("    [3] ADC BRAM capture/DAC program restart pulse, [5:4] capture source\r\n");
     send_str("    [6] DAC program BRAM mode enable; PCAP sets this, CAPT clears it\r\n");
 #endif
-    send_str("    [31:8] DAC converter-1 sine DDS step; 0 uses hardware default 0x010000\r\n");
+    send_str("    [31:8] DAC sine DDS step; 0 uses hardware default 0x19999A\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("Capture sources: 0=A low, 1=A high, 2=B low, 3=B high; full buffer is 262144 words\r\n");
 #endif

@@ -2,7 +2,7 @@
 
 module daq_litejesd_dac_tx_path #(
     parameter [15:0] DEFAULT_STEP = 16'd256,
-    parameter [23:0] DEFAULT_SINE_PHASE_INC = 24'h010000
+    parameter [23:0] DEFAULT_SINE_PHASE_INC = 24'h19999A
 ) (
     input  wire          jesd_clk,
     input  wire          jesd_rst,

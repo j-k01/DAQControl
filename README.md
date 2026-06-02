@@ -85,7 +85,8 @@ Selector `7` returns `{dac_sine_sample[15:0], triangle_debug_sample[15:0]}`.
 The sine sample is routed to all four DAC converters. The triangle value is a
 legacy debug counter and is not routed to the DAC outputs. The sine phase
 increment is `RW3[31:8]`; a zero increment selects the hardware default
-`0x010000`. The output frequency is:
+`0x19999A`, about 100 MHz for a 1 GSPS DAC converter sample rate. The output
+frequency is:
 
 ```text
 f_sine = dac_converter_sample_rate * phase_increment / 2^24
@@ -173,7 +174,7 @@ These bits are only used by the `--with-staged-gt` build.
 | 0 | Pulse HMC7044 auto-init/readback restart |
 | 1 | Pulse DAC39J84 auto-init restart |
 | 2 | Pulse ADS54J60 auto-init/readback restart |
-| 31:8 | DAC converter-1 sine DDS phase increment, zero selects default `0x010000` |
+| 31:8 | DAC sine DDS phase increment, zero selects default `0x19999A` |
 
 ## Build
 
