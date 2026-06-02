@@ -207,6 +207,15 @@ vivado -mode batch -source scripts/run_litejesd_compile.tcl
 This uses behavioral stubs for the GTH Wizard and checks the optional
 `DAQ_WITH_GTH` plus `DAQ_WITH_LITEJESD` wiring. It does not run implementation.
 
+Run the focused DAC/ADC BRAM dataplane primitive test:
+
+```tcl
+vivado -mode batch -source scripts/run_dataplane_unit_tests.tcl
+```
+
+This checks the DAC BRAM player's frame-count looping edge cases and the
+128-bit ADC capture BRAM packing without requiring a full Vivado project.
+
 ## Bitstream Build
 
 The project-generation and bitstream scripts now explicitly target Vivado
