@@ -288,6 +288,10 @@ python scripts/capture_plot_adc_uart.py --port COM10 --program-mode square-sine 
 python scripts/capture_plot_adc_uart.py --port COM10 --command PCAP --words 4096 --sources 0,1,2,3 --prefix four_channel_program
 ```
 
+All independently staged DAC programs must use the same uploaded word count.
+The four DAC BRAMs are independent, but they intentionally share the single
+`RW3[31:8]` loop frame count used by `PCAP`.
+
 Add `--verify-upload-words 16` to any upload command when separating CPU/AXI
 BRAM write problems from JESD/DAC playback problems. The helper will read back
 the first and last uploaded words from that DAC channel before continuing.
