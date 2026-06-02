@@ -164,6 +164,9 @@ These bits are only used by the `--with-staged-gt` build.
 | Bits | Function |
 | --- | --- |
 | 0 | Assert GTH reset-all while high |
+| 2:1 | DAC sample-map diagnostic mode: `0` native LiteJESD, `1` broadcast preimage + remap, `2` old direct remap |
+| 4:3 | DAC TX lane diagnostic mode: `0` identity, `1` FPGA board map, `2` inverse/check map |
+| 7:5 | DAC converter select: `0`/`5..7` broadcast, `1..4` drive only converter 0..3 |
 | 15:8 | Per-lane TX polarity invert |
 | 23:16 | Per-lane RX polarity invert |
 
@@ -174,7 +177,7 @@ These bits are only used by the `--with-staged-gt` build.
 | 0 | Pulse HMC7044 auto-init/readback restart |
 | 1 | Pulse DAC39J84 auto-init restart |
 | 2 | Pulse ADS54J60 auto-init/readback restart |
-| 31:8 | DAC sine DDS phase increment, zero selects default `0x19999A` |
+| 31:8 | DAC sine DDS phase increment when BRAM mode is off; DAC BRAM loop frame count when BRAM mode is on, zero loops the full BRAM |
 
 ## Build
 
@@ -265,6 +268,21 @@ bitstream:
 ```powershell
 python scripts/capture_plot_adc_uart.py --port COM10 --program-mode triangle --sample-format twos --triangle-frequency-mhz 50 --chunk-order 3,2,1,0 --sources 0,1 --prefix tri50_chunk_3210
 ```
+
+For the DAC ordering diagnostic, start with native sample mapping and identity
+TX lane mapping, then upload a slow frame-aligned trapezoid:
+
+```text
+WRTE 2 0x01000000
+```
+
+```powershell
+python scripts/capture_plot_adc_uart.py --port COM10 --program-mode trapezoid --sample-format twos --trapezoid-frequency-mhz 5 --program-words 4096 --sources 0,1 --prefix trap5_native
+```
+
+The helper sets `RW3[31:8]` to the uploaded 64-bit frame count before `PCAP`,
+so short diagnostic uploads loop over the uploaded waveform rather than the
+whole DAC BRAM.
 
 Its plot reconstructs ADC converter streams by interleaving source `0+1` for
 ADC1 converter0 and source `2+3` for ADC1 converter1. The raw source CSV is

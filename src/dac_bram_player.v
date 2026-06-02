@@ -7,6 +7,7 @@ module dac_bram_player #(
     input  wire        rst,
     input  wire        enable,
     input  wire        restart,
+    input  wire [23:0] frame_count,
 
     output wire [31:0] bram_addr,
     output wire        bram_clk,
@@ -27,6 +28,10 @@ module dac_bram_player #(
     reg [ADDR_W-1:0] read_index = {ADDR_W{1'b0}};
     reg [ADDR_W-1:0] output_index = {ADDR_W{1'b0}};
     reg              valid = 1'b0;
+    wire [ADDR_W-1:0] frame_count_w = frame_count[ADDR_W-1:0];
+    wire [ADDR_W-1:0] runtime_last_index =
+        (frame_count_w == {ADDR_W{1'b0}}) ? LAST_INDEX :
+        (frame_count_w - {{(ADDR_W-1){1'b0}}, 1'b1});
 
     assign bram_clk = clk;
     assign bram_rst = 1'b0;
@@ -52,7 +57,7 @@ module dac_bram_player #(
                 output_index <= {ADDR_W{1'b0}};
                 valid <= 1'b0;
             end else begin
-                if (read_index == LAST_INDEX) begin
+                if (read_index == runtime_last_index) begin
                     read_index <= {ADDR_W{1'b0}};
                 end else begin
                     read_index <= read_index + 1'b1;
@@ -60,7 +65,7 @@ module dac_bram_player #(
 
                 if (valid) begin
                     program_word <= bram_dout;
-                    if (output_index == LAST_INDEX) begin
+                    if (output_index == runtime_last_index) begin
                         output_index <= {ADDR_W{1'b0}};
                     end else begin
                         output_index <= output_index + 1'b1;

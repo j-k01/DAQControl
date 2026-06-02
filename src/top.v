@@ -632,6 +632,20 @@ module top #(
         .dest     (dac_sine_phase_inc_tx)
     );
 
+    wire [6:0] dac_tx_control_tx;
+    cdc_vector_sync #(
+        .WIDTH (7)
+    ) u_dac_tx_control_sync (
+        .dest_clk (gth_tx_usrclk2),
+        .dest_rst (litejesd_reset),
+        .src      (rw_reg2[7:1]),
+        .dest     (dac_tx_control_tx)
+    );
+
+    wire [1:0] dac_sample_map_mode_tx = dac_tx_control_tx[1:0];
+    wire [1:0] dac_tx_lane_mode_tx = dac_tx_control_tx[3:2];
+    wire [2:0] dac_active_converter_tx = dac_tx_control_tx[6:4];
+
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_program_req_sync = 3'b000;
     (* ASYNC_REG = "TRUE" *) reg [1:0] dac_program_enable_sync = 2'b00;
@@ -654,6 +668,7 @@ module top #(
         .rst          (litejesd_reset),
         .enable       (litejesd_active_async & dac_program_enable),
         .restart      (dac_program_restart),
+        .frame_count  (dac_sine_phase_inc_tx),
         .bram_addr    (dac_bram_addr),
         .bram_clk     (dac_bram_clk),
         .bram_din     (dac_bram_din),
@@ -679,7 +694,8 @@ module top #(
         .stpl_enable      (1'b0),
         .sysref           (litejesd_sysref_pipe[2]),
         .sync_n           (litejesd_sync_pipe[2]),
-        .active_converter (3'd0),
+        .active_converter (dac_active_converter_tx),
+        .sample_map_mode  (dac_sample_map_mode_tx),
         .triangle_step    (16'd256),
         .sine_phase_inc   (dac_sine_phase_inc_tx),
         .program_enable   (dac_program_enable),
@@ -692,19 +708,66 @@ module top #(
         .gth_txcharisk    (litejesd_txcharisk)
     );
 
-    // The DAC39J84 startup sequence uses Sundance's DAC-side lane remap
-    // (config95/config96 = 0x3021/0x7654). Keep the FPGA TX lane order
-    // identity here so the board mapping is corrected exactly once.
-    assign gth_userdata_tx = litejesd_txdata;
+    function [2:0] tx_src_lane;
+        input [1:0] mode;
+        input [2:0] phys;
+        begin
+            case (mode)
+            2'd1: begin
+                case (phys)
+                3'd0: tx_src_lane = 3'd1;
+                3'd1: tx_src_lane = 3'd3;
+                3'd2: tx_src_lane = 3'd2;
+                3'd3: tx_src_lane = 3'd0;
+                3'd4: tx_src_lane = 3'd7;
+                3'd5: tx_src_lane = 3'd6;
+                3'd6: tx_src_lane = 3'd5;
+                default: tx_src_lane = 3'd4;
+                endcase
+            end
+            2'd2: begin
+                case (phys)
+                3'd0: tx_src_lane = 3'd3;
+                3'd1: tx_src_lane = 3'd0;
+                3'd2: tx_src_lane = 3'd2;
+                3'd3: tx_src_lane = 3'd1;
+                3'd4: tx_src_lane = 3'd7;
+                3'd5: tx_src_lane = 3'd6;
+                3'd6: tx_src_lane = 3'd5;
+                default: tx_src_lane = 3'd4;
+                endcase
+            end
+            default: begin
+                tx_src_lane = phys;
+            end
+            endcase
+        end
+    endfunction
+
+    wire [255:0] litejesd_txdata_muxed;
+    wire [31:0] litejesd_txcharisk_muxed;
+
+    genvar tx_lane_index;
+    generate
+        for (tx_lane_index = 0; tx_lane_index < 8; tx_lane_index = tx_lane_index + 1) begin : gen_tx_lane_mux
+            wire [2:0] src_lane = tx_src_lane(dac_tx_lane_mode_tx, tx_lane_index);
+            assign litejesd_txdata_muxed[(32*tx_lane_index) +: 32] =
+                litejesd_txdata[(32*src_lane) +: 32];
+            assign litejesd_txcharisk_muxed[(4*tx_lane_index) +: 4] =
+                litejesd_txcharisk[(4*src_lane) +: 4];
+        end
+    endgenerate
+
+    assign gth_userdata_tx = litejesd_txdata_muxed;
     assign gth_txctrl2 = {
-        4'd0, litejesd_txcharisk[31:28],
-        4'd0, litejesd_txcharisk[27:24],
-        4'd0, litejesd_txcharisk[23:20],
-        4'd0, litejesd_txcharisk[19:16],
-        4'd0, litejesd_txcharisk[15:12],
-        4'd0, litejesd_txcharisk[11:8],
-        4'd0, litejesd_txcharisk[7:4],
-        4'd0, litejesd_txcharisk[3:0]
+        4'd0, litejesd_txcharisk_muxed[31:28],
+        4'd0, litejesd_txcharisk_muxed[27:24],
+        4'd0, litejesd_txcharisk_muxed[23:20],
+        4'd0, litejesd_txcharisk_muxed[19:16],
+        4'd0, litejesd_txcharisk_muxed[15:12],
+        4'd0, litejesd_txcharisk_muxed[11:8],
+        4'd0, litejesd_txcharisk_muxed[7:4],
+        4'd0, litejesd_txcharisk_muxed[3:0]
     };
 
 `ifdef DAQ_WITH_GTH_TX_ILA
@@ -1297,7 +1360,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0015;
+    wire [31:0] build_id = 32'hDA01_0016;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]

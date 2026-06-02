@@ -16,6 +16,7 @@ module daq_litejesd_dac_tx_path #(
     input  wire          sync_n,
 
     input  wire [2:0]    active_converter,
+    input  wire [1:0]    sample_map_mode,
     input  wire [15:0]   triangle_step,
     input  wire [23:0]   sine_phase_inc,
     input  wire          program_enable,
@@ -199,6 +200,24 @@ module daq_litejesd_dac_tx_path #(
         sine_sample0
     };
     wire [63:0] active_quad_word = program_enable ? program_word : sine_quad_word;
+    wire [63:0] dac_zero64 = 64'd0;
+
+    // Converter select is diagnostic-only:
+    //   0     broadcast the same scalar waveform to all four converters
+    //   1..4  drive only converter 0..3 respectively, others at midscale
+    //   5..7  broadcast, matching the original bring-up behavior
+    wire drive_converter0 = (active_converter == 3'd0) ||
+                            (active_converter == 3'd1) ||
+                            (active_converter >= 3'd5);
+    wire drive_converter1 = (active_converter == 3'd0) ||
+                            (active_converter == 3'd2) ||
+                            (active_converter >= 3'd5);
+    wire drive_converter2 = (active_converter == 3'd0) ||
+                            (active_converter == 3'd3) ||
+                            (active_converter >= 3'd5);
+    wire drive_converter3 = (active_converter == 3'd0) ||
+                            (active_converter == 3'd4) ||
+                            (active_converter >= 3'd5);
 
     function [63:0] swap_sample_bytes64;
         input [63:0] value;
@@ -213,26 +232,46 @@ module daq_litejesd_dac_tx_path #(
         end
     endfunction
 
+    wire [63:0] src_converter0 = drive_converter0 ? active_quad_word : dac_zero64;
+    wire [63:0] src_converter1 = drive_converter1 ? active_quad_word : dac_zero64;
+    wire [63:0] src_converter2 = drive_converter2 ? active_quad_word : dac_zero64;
+    wire [63:0] src_converter3 = drive_converter3 ? active_quad_word : dac_zero64;
+
     wire [63:0] active_quad_word_bswap = swap_sample_bytes64(active_quad_word);
-    wire [63:0] converter0 = active_quad_word_bswap;
-    wire [63:0] converter1 = active_quad_word_bswap;
-    wire [63:0] converter2 = active_quad_word;
-    wire [63:0] converter3 = active_quad_word_bswap;
-    wire [63:0] jesd_converter0;
-    wire [63:0] jesd_converter1;
-    wire [63:0] jesd_converter2;
-    wire [63:0] jesd_converter3;
+
+    // sample_map_mode:
+    //   0 = native LiteJESD converter buses, no DAC39J84 sample remap
+    //   1 = broadcast preimage + DAC39J84 sample remap (0xDA010015 shim)
+    //   2 = direct source buses through DAC39J84 sample remap
+    //   3 = reserved, currently same as native
+    wire use_preimage_remap = (sample_map_mode == 2'd1);
+    wire use_any_remap = (sample_map_mode == 2'd1) ||
+                         (sample_map_mode == 2'd2);
+
+    wire [63:0] remap_in0 = use_preimage_remap ? active_quad_word_bswap : src_converter0;
+    wire [63:0] remap_in1 = use_preimage_remap ? active_quad_word_bswap : src_converter1;
+    wire [63:0] remap_in2 = use_preimage_remap ? active_quad_word       : src_converter2;
+    wire [63:0] remap_in3 = use_preimage_remap ? active_quad_word_bswap : src_converter3;
+    wire [63:0] remap_out0;
+    wire [63:0] remap_out1;
+    wire [63:0] remap_out2;
+    wire [63:0] remap_out3;
 
     dac39j84_sample_remap u_dac39j84_sample_remap (
-        .converter0_in  (converter0),
-        .converter1_in  (converter1),
-        .converter2_in  (converter2),
-        .converter3_in  (converter3),
-        .converter0_out (jesd_converter0),
-        .converter1_out (jesd_converter1),
-        .converter2_out (jesd_converter2),
-        .converter3_out (jesd_converter3)
+        .converter0_in  (remap_in0),
+        .converter1_in  (remap_in1),
+        .converter2_in  (remap_in2),
+        .converter3_in  (remap_in3),
+        .converter0_out (remap_out0),
+        .converter1_out (remap_out1),
+        .converter2_out (remap_out2),
+        .converter3_out (remap_out3)
     );
+
+    wire [63:0] jesd_converter0 = use_any_remap ? remap_out0 : src_converter0;
+    wire [63:0] jesd_converter1 = use_any_remap ? remap_out1 : src_converter1;
+    wire [63:0] jesd_converter2 = use_any_remap ? remap_out2 : src_converter2;
+    wire [63:0] jesd_converter3 = use_any_remap ? remap_out3 : src_converter3;
 
     wire [31:0] tx_data0;
     wire [31:0] tx_data1;
@@ -321,7 +360,8 @@ module daq_litejesd_dac_tx_path #(
     };
 
     assign status = {
-        8'd0,
+        6'd0,
+        sample_map_mode,
         active_converter,
         stpl_enable,
         sync_n,

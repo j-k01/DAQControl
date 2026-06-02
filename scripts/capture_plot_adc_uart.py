@@ -202,6 +202,38 @@ def make_square_sine_program(words, square_period_words, sine_cycles, amplitude,
     return out
 
 
+def trapezoid_value(index, period_samples, amplitude, offset):
+    segment = max(1, period_samples // 4)
+    top_start = segment
+    fall_start = top_start + segment
+    bottom_start = fall_start + segment
+    phase = index % period_samples
+    low = offset - amplitude
+    high = offset + amplitude
+
+    if phase < top_start:
+        return low + (high - low) * phase / max(1, top_start - 1)
+    if phase < fall_start:
+        return high
+    if phase < bottom_start:
+        fall_phase = phase - fall_start
+        return high - (high - low) * fall_phase / max(1, bottom_start - fall_start - 1)
+    return low
+
+
+def make_trapezoid_program(words, frequency_hz, sample_rate_hz, amplitude, offset, sample_format):
+    period_samples = int(round(sample_rate_hz / frequency_hz))
+    period_samples = max(64, ((period_samples + 3) // 4) * 4)
+    out = []
+    for index in range(words):
+        out.append(pack_pair(
+            trapezoid_value(2 * index, period_samples, amplitude, offset),
+            trapezoid_value(2 * index + 1, period_samples, amplitude, offset),
+            sample_format,
+        ))
+    return out
+
+
 def make_program(args):
     if args.program:
         program = load_program(args.program)
@@ -237,11 +269,22 @@ def make_program(args):
             args.offset,
             args.sample_format,
         )
+    elif args.program_mode == "trapezoid":
+        program = make_trapezoid_program(
+            args.program_words,
+            args.trapezoid_frequency_mhz * 1.0e6,
+            args.sample_rate_mhz * 1.0e6,
+            args.amplitude,
+            args.offset,
+            args.sample_format,
+        )
     else:
         program = []
 
     if len(program) > MAX_WORDS:
         raise ValueError(f"program has {len(program)} words; max is {MAX_WORDS}")
+    if program and len(program) % 2:
+        raise ValueError("DAC 64-bit program frames require an even number of u32 words")
     return reorder_u32_program_chunks(program, args.chunk_order)
 
 
@@ -270,6 +313,12 @@ def upload_program(port, words):
     port.write(struct.pack(f"<{len(words)}I", *words))
     port.flush()
     print(wait_for_line_prefix(port, "OK PROG"))
+    frame_count = len(words) // 2
+    rw3_value = (frame_count << 8) & 0xFFFFFF00
+    port.write(f"WRTE 3 0x{rw3_value:08X}\n".encode("ascii"))
+    port.flush()
+    print(wait_for_line_prefix(port, "OK"))
+    print(f"Set DAC BRAM loop frame_count={frame_count} via RW3=0x{rw3_value:08X}")
 
 
 def parse_sources(text):
@@ -523,7 +572,7 @@ def main():
     parser.add_argument("--command", choices=["CAPT", "PCAP"], default="CAPT")
     parser.add_argument(
         "--program-mode",
-        choices=["none", "sine", "triangle", "square-sine"],
+        choices=["none", "sine", "triangle", "square-sine", "trapezoid"],
         default="none",
         help="Generate and upload a DAC BRAM program before capture.",
     )
@@ -543,6 +592,7 @@ def main():
     )
     parser.add_argument("--sine-cycles", type=float, default=128.0)
     parser.add_argument("--square-period-words", type=int, default=1024)
+    parser.add_argument("--trapezoid-frequency-mhz", type=float, default=5.0)
     parser.add_argument("--triangle-step", type=lambda x: int(x, 0), default=0x0100)
     parser.add_argument(
         "--chunk-order",

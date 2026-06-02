@@ -57,6 +57,12 @@
 #define RW2_ADC1_RAW_SHIFT     28
 #define RW2_ADC1_RAW_MASK      (3u << RW2_ADC1_RAW_SHIFT)
 #define RW2_GTH_RESET          (1u << 0)
+#define RW2_DAC_SAMPLE_MAP_SHIFT 1
+#define RW2_DAC_SAMPLE_MAP_MASK  (3u << RW2_DAC_SAMPLE_MAP_SHIFT)
+#define RW2_DAC_TX_LANE_SHIFT    3
+#define RW2_DAC_TX_LANE_MASK     (3u << RW2_DAC_TX_LANE_SHIFT)
+#define RW2_DAC_CONV_SHIFT       5
+#define RW2_DAC_CONV_MASK        (7u << RW2_DAC_CONV_SHIFT)
 #define RW2_CAPTURE_STATUS_SEL (1u << 31)
 #define RW2_LAUNCH_DEFAULT     RW2_ADC1_ILAS_BYPASS
 
@@ -677,6 +683,36 @@ static void cmd_program(u32 words)
     send_str("\r\n");
 }
 
+static void cmd_dprd(u32 start_word, u32 words)
+{
+    u32 i;
+
+    if (start_word >= CAPTURE_WORDS) {
+        send_str("ERR DPRD start out of range\r\n");
+        return;
+    }
+    if (words == 0u) {
+        words = 16u;
+    }
+    if (start_word + words > CAPTURE_WORDS) {
+        words = CAPTURE_WORDS - start_word;
+    }
+
+    send_str("DPRD start=");
+    send_uint(start_word);
+    send_str(" words=");
+    send_uint(words);
+    send_str("\r\n");
+
+    for (i = 0; i < words; i++) {
+        u32 index = start_word + i;
+        send_uint(index);
+        send_str(": ");
+        send_hex(Xil_In32(DAC_PROGRAM_BRAM_BASE + index * 4u));
+        send_str("\r\n");
+    }
+}
+
 static void cmd_capture(u32 words, u32 source, int use_dac_program)
 {
     u32 status = 0;
@@ -723,6 +759,7 @@ static void cmd_help(void)
     send_str("  WRTE n value     write RW register 0..3; use 0x prefix for hex masks\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("  PROG [n]         upload n little-endian 32-bit DAC program words after PGRD\r\n");
+    send_str("  DPRD [start] [n] read back n DAC program BRAM u32 words\r\n");
     send_str("  CAPS             print ADC BRAM capture status\r\n");
     send_str("  CAPT [n] [src]   capture current ADC stream to BRAM and stream binary data\r\n");
     send_str("  PCAP [n] [src]   restart DAC BRAM program, capture ADC BRAM, stream binary data\r\n");
@@ -747,6 +784,9 @@ static void cmd_help(void)
 #if HAS_BRAM_DATAPLANE
     send_str("                 selector 7 returns DAC program player status when RW3[6]=1\r\n");
 #endif
+    send_str("RW2 DAC TX diag: [2:1] sample_map 0=native 1=preimage 2=old_remap\r\n");
+    send_str("                 [4:3] tx_lane 0=identity 1=board_map 2=inverse_check\r\n");
+    send_str("                 [7:5] DAC select 0/5..7=all, 1..4=converter0..3\r\n");
     send_str("RW2 ADC1 JESD RX: [24] bypass ILAS check, [25] STPL check, [26] DP order\r\n");
     send_str("                  firmware default is RW2=0x01000000 for ADC1 bring-up\r\n");
     send_str("                  [29:28] raw RX lane shown in selector 31/0x1F\r\n");
@@ -754,6 +794,7 @@ static void cmd_help(void)
 #if HAS_BRAM_DATAPLANE
     send_str("    [3] ADC BRAM capture/DAC program restart pulse, [5:4] capture source\r\n");
     send_str("    [6] DAC program BRAM mode enable; PCAP sets this, CAPT clears it\r\n");
+    send_str("    [31:8] DAC BRAM loop frame count when [6]=1; 0 loops full BRAM\r\n");
 #endif
     send_str("    [31:8] DAC sine DDS step; 0 uses hardware default 0x19999A\r\n");
 #if HAS_BRAM_DATAPLANE
@@ -794,6 +835,13 @@ static void cmd_status(void)
     send_str((s & (1u << 18)) ? "rx_ready " : "rx_not_ready ");
     send_str((s & (1u << 19)) ? "litejesd_active " : "litejesd_in_reset ");
     send_str((s & (1u << 20)) ? "litejesd_ready" : "litejesd_not_ready");
+    send_str("\r\n");
+    send_str("dac_diag: sample_map=");
+    send_uint((rw2 & RW2_DAC_SAMPLE_MAP_MASK) >> RW2_DAC_SAMPLE_MAP_SHIFT);
+    send_str(" tx_lane=");
+    send_uint((rw2 & RW2_DAC_TX_LANE_MASK) >> RW2_DAC_TX_LANE_SHIFT);
+    send_str(" conv_sel=");
+    send_uint((rw2 & RW2_DAC_CONV_MASK) >> RW2_DAC_CONV_SHIFT);
     send_str("\r\n");
     print_uart_config();
 }
@@ -857,6 +905,13 @@ static void process_cmd(void)
         u32 words = CAPTURE_WORDS;
         parse_u32_arg(&p, &words);
         cmd_program(words);
+    } else if (strncmp(cmd, "DPRD", 4) == 0) {
+        char *p = &cmd[4];
+        u32 start_word = 0;
+        u32 words = 16;
+        parse_u32_arg(&p, &start_word);
+        parse_u32_arg(&p, &words);
+        cmd_dprd(start_word, words);
     } else if (strncmp(cmd, "CAPS", 4) == 0) {
         print_capture_status();
     } else if (strncmp(cmd, "CAPT", 4) == 0) {
@@ -875,6 +930,7 @@ static void process_cmd(void)
         cmd_capture(words, source, 1);
 #else
     } else if (strncmp(cmd, "PROG", 4) == 0 ||
+               strncmp(cmd, "DPRD", 4) == 0 ||
                strncmp(cmd, "CAPS", 4) == 0 ||
                strncmp(cmd, "CAPT", 4) == 0 ||
                strncmp(cmd, "PCAP", 4) == 0) {
