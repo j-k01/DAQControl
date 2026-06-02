@@ -220,14 +220,40 @@ before synthesis/implementation:
 vivado.bat -mode batch -source rebuild.tcl -tclargs --with-staged-gt --jobs 8
 ```
 
-The BRAM DAC/ADC loopback dataplane is intentionally not part of that baseline
-bring-up build. Add it only when isolating the PC-loaded waveform/capture path:
+The BRAM ADC capture dataplane is intentionally not part of that baseline
+bring-up build. Add it when capturing the live DAC-to-ADC loopback stream, or
+when isolating the optional PC-loaded DAC waveform path:
 
 ```powershell
 vivado.bat -mode batch -source rebuild.tcl -tclargs --with-bram-dataplane --jobs 8
 ```
 
 `--with-bram-dataplane` implies `--with-staged-gt` and `--with-litejesd`.
+
+After programming a BRAM dataplane build and loading MicroBlaze firmware,
+capture the currently generated DAC triangle through the ADC loopback with:
+
+```text
+CAPS
+CAPT 4096 0
+```
+
+`CAPT [words] [src]` leaves the normal DAC generator running and writes ADC1
+samples into the ADC capture BRAM before streaming little-endian 32-bit words
+over UART after sync bytes `FE 10 CA FE`. Sources `0..3` select ADC1
+`sample_a_low`, `sample_a_high`, `sample_b_low`, and `sample_b_high`
+respectively; the first three are also visible through selectors `28..30`.
+`PCAP [words] [src]` is the explicit variant that enables/restarts the DAC
+BRAM program player first; use it only after uploading words with `PROG`.
+
+The helper script captures the live generator by default:
+
+```powershell
+python scripts/capture_adc_bram_uart.py --port COM10 --words 4096 --source 0 --out adc_triangle_capture.csv
+```
+
+Use `--program <file>` or `--upload-triangle` only when deliberately testing
+the DAC BRAM program path.
 
 Always rerun `create_project.tcl` after pulling HDL/Tcl changes. The old flow
 used imported source copies under `project/DAQ_LAUNCH.srcs/`, so running only

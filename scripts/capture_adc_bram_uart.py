@@ -142,8 +142,9 @@ def upload_program(port, words):
     print(wait_for_line_prefix(port, "OK PROG"))
 
 
-def capture(port, words, source):
-    command = f"CAPT {words} {source}\n".encode("ascii")
+def capture(port, words, source, use_program):
+    command_name = "PCAP" if use_program else "CAPT"
+    command = f"{command_name} {words} {source}\n".encode("ascii")
     port.write(command)
     wait_for_sync(port)
     return read_exact(port, words * 4)
@@ -152,8 +153,9 @@ def capture(port, words, source):
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Upload a DAC BRAM program, restart the DAC player, capture ADC1 BRAM "
-            "samples, and write the capture to CSV."
+            "Capture ADC1 BRAM samples from the live loopback stream and write the "
+            "capture to CSV. Optionally upload a DAC BRAM program and capture that "
+            "programmed output instead."
         )
     )
     parser.add_argument("--port", default="COM10")
@@ -163,7 +165,16 @@ def main():
     parser.add_argument("--program", help="binary little-endian u32 or text/CSV DAC program")
     parser.add_argument("--program-words", type=int, default=DEFAULT_WORDS)
     parser.add_argument("--triangle-step", type=lambda x: int(x, 0), default=0x0100)
-    parser.add_argument("--no-upload", action="store_true", help="reuse the current DAC BRAM contents")
+    parser.add_argument(
+        "--upload-triangle",
+        action="store_true",
+        help="upload a generated DAC BRAM triangle instead of capturing the live generator",
+    )
+    parser.add_argument(
+        "--no-upload",
+        action="store_true",
+        help="deprecated compatibility flag; live capture is already the default",
+    )
     parser.add_argument("--out", default="adc_capture.csv")
     parser.add_argument("--timeout", type=float, default=120.0)
     args = parser.parse_args()
@@ -173,14 +184,14 @@ def main():
     if args.program_words <= 0 or args.program_words > DEFAULT_WORDS:
         raise ValueError(f"--program-words must be 1..{DEFAULT_WORDS}")
 
-    if args.no_upload:
-        program_words = []
-    elif args.program:
+    if args.program:
         program_words = load_program(args.program)
         if len(program_words) > DEFAULT_WORDS:
             raise ValueError(f"program has {len(program_words)} words; max is {DEFAULT_WORDS}")
-    else:
+    elif args.upload_triangle and not args.no_upload:
         program_words = default_triangle_program(args.program_words, args.triangle_step)
+    else:
+        program_words = []
 
     started = time.time()
 
@@ -190,7 +201,7 @@ def main():
             print(f"Uploading {len(program_words)} DAC program words...")
             upload_program(port, program_words)
         print(f"Capturing {args.words} ADC words from source {args.source}...")
-        raw = capture(port, args.words, args.source)
+        raw = capture(port, args.words, args.source, use_program=bool(program_words))
 
     with open(args.out, "w", newline="") as f:
         writer = csv.writer(f)

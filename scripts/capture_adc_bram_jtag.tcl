@@ -43,7 +43,7 @@ set old_rw1 [read32 $RW_REG1]
 set old_rw2 [read32 $RW_REG2]
 set old_rw3 [read32 $RW_REG3]
 
-set capture_rw3 [expr {($old_rw3 & ~0x00000078) | (($source & 3) << 4) | 0x00000040}]
+set capture_rw3 [expr {($old_rw3 & ~0x00000078) | (($source & 3) << 4)}]
 write32 $RW_REG3 [expr {$capture_rw3 | 0x00000008}]
 write32 $RW_REG3 $capture_rw3
 

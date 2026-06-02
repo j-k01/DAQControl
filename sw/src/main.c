@@ -501,13 +501,19 @@ static int wait_capture_done(u32 *last_status)
     return 0;
 }
 
-static void trigger_capture(u32 source)
+static void trigger_capture(u32 source, int use_dac_program)
 {
     u32 rw3 = Xil_In32(RW_REG3);
 
-    rw3 &= ~(RW3_CAPTURE_SRC_MASK | RW3_CAPTURE_START);
-    rw3 |= ((source & 3u) << RW3_CAPTURE_SRC_SHIFT) | RW3_DAC_PROGRAM_EN;
+    rw3 &= ~(RW3_CAPTURE_SRC_MASK | RW3_CAPTURE_START | RW3_DAC_PROGRAM_EN);
+    rw3 |= ((source & 3u) << RW3_CAPTURE_SRC_SHIFT);
+    if (use_dac_program) {
+        rw3 |= RW3_DAC_PROGRAM_EN;
+    }
+    Xil_Out32(RW_REG3, rw3);
+    short_delay();
     Xil_Out32(RW_REG3, rw3 | RW3_CAPTURE_START);
+    short_delay();
     Xil_Out32(RW_REG3, rw3);
 }
 
@@ -532,7 +538,7 @@ static void cmd_program(u32 words)
     send_str("\r\n");
 }
 
-static void cmd_capture(u32 words, u32 source)
+static void cmd_capture(u32 words, u32 source, int use_dac_program)
 {
     u32 status = 0;
     u32 i;
@@ -541,7 +547,7 @@ static void cmd_capture(u32 words, u32 source)
         words = CAPTURE_WORDS;
     }
 
-    trigger_capture(source);
+    trigger_capture(source, use_dac_program);
     if (!wait_capture_done(&status)) {
         send_str("ERR capture timeout; ");
         send_hex(status);
@@ -577,9 +583,10 @@ static void cmd_help(void)
 #if HAS_BRAM_DATAPLANE
     send_str("  PROG [n]         upload n little-endian 32-bit DAC program words after PGRD\r\n");
     send_str("  CAPS             print ADC BRAM capture status\r\n");
-    send_str("  CAPT [n] [src]   restart DAC program, capture ADC BRAM, stream binary data\r\n");
+    send_str("  CAPT [n] [src]   capture current ADC stream to BRAM and stream binary data\r\n");
+    send_str("  PCAP [n] [src]   restart DAC BRAM program, capture ADC BRAM, stream binary data\r\n");
 #else
-    send_str("  PROG/CAPS/CAPT   unavailable; rebuild with --with-bram-dataplane\r\n");
+    send_str("  PROG/CAPS/CAPT/PCAP unavailable; rebuild with --with-bram-dataplane\r\n");
 #endif
     send_str("\r\n");
     send_str("RW0 control bits:\r\n");
@@ -604,7 +611,7 @@ static void cmd_help(void)
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("    [3] ADC BRAM capture/DAC program restart pulse, [5:4] capture source\r\n");
-    send_str("    [6] DAC program BRAM mode enable; CAPT sets this automatically\r\n");
+    send_str("    [6] DAC program BRAM mode enable; PCAP sets this, CAPT clears it\r\n");
 #endif
     send_str("    [31:8] DAC converter-1 sine DDS step; 0 uses hardware default 0x010000\r\n");
 #if HAS_BRAM_DATAPLANE
@@ -714,11 +721,19 @@ static void process_cmd(void)
         u32 source = 0;
         parse_u32_arg(&p, &words);
         parse_u32_arg(&p, &source);
-        cmd_capture(words, source);
+        cmd_capture(words, source, 0);
+    } else if (strncmp(cmd, "PCAP", 4) == 0) {
+        char *p = &cmd[4];
+        u32 words = CAPTURE_WORDS;
+        u32 source = 0;
+        parse_u32_arg(&p, &words);
+        parse_u32_arg(&p, &source);
+        cmd_capture(words, source, 1);
 #else
     } else if (strncmp(cmd, "PROG", 4) == 0 ||
                strncmp(cmd, "CAPS", 4) == 0 ||
-               strncmp(cmd, "CAPT", 4) == 0) {
+               strncmp(cmd, "CAPT", 4) == 0 ||
+               strncmp(cmd, "PCAP", 4) == 0) {
         send_str("ERR BRAM dataplane not built; rebuild with --with-bram-dataplane\r\n");
 #endif
     } else {
