@@ -138,10 +138,18 @@ def default_triangle_program(words, step):
 def upload_program(port, words, channel):
     command = f"PROG {channel} {len(words)}\n".encode("ascii")
     port.write(command)
+    port.flush()
     line = wait_for_line_prefix(port, "PGRD")
     print(line)
     port.write(struct.pack(f"<{len(words)}I", *words))
+    port.flush()
     print(wait_for_line_prefix(port, "OK PROG"))
+    frame_count = len(words) // 2
+    rw3_value = (frame_count << 8) & 0xFFFFFF00
+    port.write(f"WRTE 3 0x{rw3_value:08X}\n".encode("ascii"))
+    port.flush()
+    print(wait_for_line_prefix(port, "OK"))
+    print(f"Set DAC BRAM loop frame_count={frame_count} via RW3=0x{rw3_value:08X}")
 
 
 def capture(port, frames, use_program):
