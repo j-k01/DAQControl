@@ -257,6 +257,15 @@ The helper script captures the live generator by default:
 python scripts/capture_plot_adc_uart.py --port COM10 --words 4096 --sources 0,1,2,3
 ```
 
+It can also upload a generated DAC BRAM program and then capture the loopback.
+Use `--chunk-order` to test whether the four 16-bit time slots inside each
+64-bit DAC BRAM frame are ordered incorrectly; this does not require a new
+bitstream:
+
+```powershell
+python scripts/capture_plot_adc_uart.py --port COM10 --program-mode triangle --sample-format twos --triangle-frequency-mhz 50 --chunk-order 3,2,1,0 --sources 0,1 --prefix tri50_chunk_3210
+```
+
 Its plot reconstructs ADC converter streams by interleaving source `0+1` for
 ADC1 converter0 and source `2+3` for ADC1 converter1. The raw source CSV is
 still written, and a `_combined.csv` file contains the reconstructed signed

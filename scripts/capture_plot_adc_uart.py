@@ -44,6 +44,36 @@ def pack_pair(sample0, sample1, sample_format):
     )
 
 
+def parse_chunk_order(text):
+    tokens = [token for token in re.split(r"[\s,]+", text.strip()) if token]
+    order = [int(token, 0) for token in tokens]
+    if len(order) != 4 or sorted(order) != [0, 1, 2, 3]:
+        raise argparse.ArgumentTypeError("--chunk-order must be a permutation of 0,1,2,3")
+    return order
+
+
+def reorder_u32_program_chunks(words, order):
+    if order == [0, 1, 2, 3]:
+        return words
+    if len(words) % 2:
+        raise ValueError("DAC 64-bit program frames require an even number of u32 words")
+
+    out = []
+    for index in range(0, len(words), 2):
+        low_word = words[index]
+        high_word = words[index + 1]
+        chunks = [
+            low_word & 0xFFFF,
+            (low_word >> 16) & 0xFFFF,
+            high_word & 0xFFFF,
+            (high_word >> 16) & 0xFFFF,
+        ]
+        reordered = [chunks[slot] for slot in order]
+        out.append(reordered[0] | (reordered[1] << 16))
+        out.append(reordered[2] | (reordered[3] << 16))
+    return out
+
+
 def parse_u32_token(token):
     token = token.strip()
     if not token:
@@ -212,7 +242,7 @@ def make_program(args):
 
     if len(program) > MAX_WORDS:
         raise ValueError(f"program has {len(program)} words; max is {MAX_WORDS}")
-    return program
+    return reorder_u32_program_chunks(program, args.chunk_order)
 
 
 def read_line(port):
@@ -514,6 +544,15 @@ def main():
     parser.add_argument("--sine-cycles", type=float, default=128.0)
     parser.add_argument("--square-period-words", type=int, default=1024)
     parser.add_argument("--triangle-step", type=lambda x: int(x, 0), default=0x0100)
+    parser.add_argument(
+        "--chunk-order",
+        type=parse_chunk_order,
+        default=[0, 1, 2, 3],
+        help=(
+            "Permutation of the four 16-bit samples in each 64-bit DAC BRAM "
+            "frame. Default is 0,1,2,3."
+        ),
+    )
     parser.add_argument(
         "--triangle-frequency-mhz",
         type=float,
