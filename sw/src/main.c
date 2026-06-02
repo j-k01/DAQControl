@@ -678,7 +678,7 @@ static void cmd_help(void)
     send_str("  [31] FMC_C2M_PG override enable\r\n");
     send_str("RW1[4:0] selects RO3: 0=HMC status, 1=HMC last write\r\n");
     send_str("                 2=raw pins, 3=build ID, 4=GTH, 5=GTH lanes\r\n");
-    send_str("                 6=LiteJESD, 7=DAC wave {sine,triangle}, 8..D=HMC readbacks\r\n");
+    send_str("                 6=LiteJESD, 7=DAC wave debug, 8..D=HMC readbacks\r\n");
     send_str("                 E=DAC status, F=DAC last write\r\n");
     send_str("                 16/0x10=ADC status, 17..19/0x11..0x13=ADC1\r\n");
     send_str("                 20..22/0x14..0x16=ADC2, 23/0x17=ADC write, 24/0x18=ADC read\r\n");

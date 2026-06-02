@@ -22,9 +22,9 @@ channels. It proves the board-health layer first:
 The optional `--with-staged-gt` project flow instantiates the checked-in
 8-lane GTH Wizard XCI and the generated LiteJESD204B DAC TX block. The staged
 wizard is for the HPC0/J5 GT column, `GTHE4_CHANNEL_X1Y4` through `X1Y11`.
-That build starts automatically after the GTH TX reset completes, sends a
-continuous triangle wave on converter 0, sends a programmable DDS sine wave on
-converter 1, and holds the remaining DAC converters at midscale.
+That build starts automatically after the GTH TX reset completes and sends the
+same programmable DDS sine wave on all four DAC converters so any DAC output
+connector can be used during loopback bring-up.
 
 ## ZCU102 FMC Power Note
 
@@ -81,10 +81,11 @@ is selected by `RW1[4:0]`: `0=HMC7044 auto-init status`,
 readbacks`, `11=HMC7044 PLL1 status readbacks`, `12=HMC7044 PLL2/SYSREF
 status readbacks`, `13=HMC7044 scratchpad readback`.
 
-Selector `7` returns `{dac_converter1_sine_sample[15:0],
-dac_converter0_triangle_sample[15:0]}`. Converter 0 is the startup triangle.
-Converter 1 is a DDS sine wave. Its phase increment is `RW3[31:8]`; a zero
-increment selects the hardware default `0x010000`. The output frequency is:
+Selector `7` returns `{dac_sine_sample[15:0], triangle_debug_sample[15:0]}`.
+The sine sample is routed to all four DAC converters. The triangle value is a
+legacy debug counter and is not routed to the DAC outputs. The sine phase
+increment is `RW3[31:8]`; a zero increment selects the hardware default
+`0x010000`. The output frequency is:
 
 ```text
 f_sine = dac_converter_sample_rate * phase_increment / 2^24
@@ -296,10 +297,10 @@ WRTE 1 7
 RDRO 3
 ```
 
-Selector `7` packs the DAC debug samples as upper 16 bits = converter-1 sine
-sample, lower 16 bits = converter-0 triangle sample. Set the sine frequency by
-writing `RW3[31:8]`; for example `WRTE 3 0x02000000` sets the phase increment
-to `0x020000`.
+Selector `7` packs the DAC debug samples as upper 16 bits = sine sample routed
+to all four DAC converters, lower 16 bits = legacy triangle debug counter. Set
+the sine frequency by writing `RW3[31:8]`; for example `WRTE 3 0x02000000`
+sets the phase increment to `0x020000`.
 
 ADC1 JESD RX debug is exposed through selectors `25..31`:
 
