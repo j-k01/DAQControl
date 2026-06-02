@@ -199,10 +199,25 @@ module daq_litejesd_dac_tx_path #(
         sine_sample0
     };
     wire [63:0] active_quad_word = program_enable ? program_word : sine_quad_word;
-    wire [63:0] converter0 = active_quad_word;
-    wire [63:0] converter1 = active_quad_word;
+
+    function [63:0] swap_sample_bytes64;
+        input [63:0] value;
+        integer j;
+        begin
+            for (j = 0; j < 4; j = j + 1) begin
+                swap_sample_bytes64[(16*j) +: 16] = {
+                    value[(16*j) +: 8],
+                    value[(16*j + 8) +: 8]
+                };
+            end
+        end
+    endfunction
+
+    wire [63:0] active_quad_word_bswap = swap_sample_bytes64(active_quad_word);
+    wire [63:0] converter0 = active_quad_word_bswap;
+    wire [63:0] converter1 = active_quad_word_bswap;
     wire [63:0] converter2 = active_quad_word;
-    wire [63:0] converter3 = active_quad_word;
+    wire [63:0] converter3 = active_quad_word_bswap;
     wire [63:0] jesd_converter0;
     wire [63:0] jesd_converter1;
     wire [63:0] jesd_converter2;

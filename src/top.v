@@ -1297,7 +1297,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0014;
+    wire [31:0] build_id = 32'hDA01_0015;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]
