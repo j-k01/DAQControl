@@ -13,6 +13,7 @@ set common_sources [list \
     ../../src/ads54j60_init.v \
     ../../src/dac_bram_player.v \
     ../../src/adc_bram_capture.v \
+    ../../src/jesd/dac39j84_sample_remap.v \
     ../../src/jesd/litejesd_dac_tx.v \
     ../../src/jesd/daq_litejesd_dac_tx_path.v \
     ../../src/jesd/litejesd_adc1_rx.v \

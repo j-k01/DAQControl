@@ -203,6 +203,21 @@ module daq_litejesd_dac_tx_path #(
     wire [63:0] converter1 = active_quad_word;
     wire [63:0] converter2 = active_quad_word;
     wire [63:0] converter3 = active_quad_word;
+    wire [63:0] jesd_converter0;
+    wire [63:0] jesd_converter1;
+    wire [63:0] jesd_converter2;
+    wire [63:0] jesd_converter3;
+
+    dac39j84_sample_remap u_dac39j84_sample_remap (
+        .converter0_in  (converter0),
+        .converter1_in  (converter1),
+        .converter2_in  (converter2),
+        .converter3_in  (converter3),
+        .converter0_out (jesd_converter0),
+        .converter1_out (jesd_converter1),
+        .converter2_out (jesd_converter2),
+        .converter3_out (jesd_converter3)
+    );
 
     wire [31:0] tx_data0;
     wire [31:0] tx_data1;
@@ -223,10 +238,10 @@ module daq_litejesd_dac_tx_path #(
     wire [3:0] tx_ctrl7;
 
     litejesd_dac_tx u_litejesd_dac_tx (
-        .converter0       (converter0),
-        .converter1       (converter1),
-        .converter2       (converter2),
-        .converter3       (converter3),
+        .converter0       (jesd_converter0),
+        .converter1       (jesd_converter1),
+        .converter2       (jesd_converter2),
+        .converter3       (jesd_converter3),
         .enable           (enable),
         .jesd_clk         (jesd_clk),
         .jesd_rst         (jesd_rst),
