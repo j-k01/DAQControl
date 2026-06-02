@@ -308,6 +308,50 @@ def wait_for_line_prefix(port, prefix):
             return line
 
 
+def parse_reg_line(line, register_name):
+    pattern = re.compile(rf"^{register_name}\s*=\s*0x([0-9a-fA-F]{{8}})\s*$")
+    match = pattern.match(line.strip())
+    if not match:
+        raise TimeoutError(f"unexpected {register_name} line: {line!r}")
+    return int(match.group(1), 16)
+
+
+def uart_command_ok(port, command):
+    port.write((command + "\n").encode("ascii"))
+    port.flush()
+    print(wait_for_line_prefix(port, "OK"))
+
+
+def read_rw_register(port, index):
+    port.write(f"RDRW {index}\n".encode("ascii"))
+    port.flush()
+    return parse_reg_line(wait_for_line_prefix(port, f"RW{index}"), f"RW{index}")
+
+
+def read_ro_register(port, index):
+    port.write(f"RDRO {index}\n".encode("ascii"))
+    port.flush()
+    return parse_reg_line(wait_for_line_prefix(port, f"RO{index}"), f"RO{index}")
+
+
+def check_build_id(port, expected):
+    old_rw1 = read_rw_register(port, 1)
+    uart_command_ok(port, "WRTE 1 3")
+    actual = read_ro_register(port, 3)
+    uart_command_ok(port, f"WRTE 1 0x{old_rw1:08X}")
+    if actual != expected:
+        raise ValueError(f"build ID mismatch: expected 0x{expected:08X}, got 0x{actual:08X}")
+    print(f"Build ID OK: 0x{actual:08X}")
+
+
+def set_rw2(port, value):
+    uart_command_ok(port, f"WRTE 2 0x{value:08X}")
+    actual = read_rw_register(port, 2)
+    if actual != value:
+        raise ValueError(f"RW2 write did not stick: expected 0x{value:08X}, got 0x{actual:08X}")
+    print(f"RW2 set to 0x{actual:08X}")
+
+
 def upload_program(port, words, channel):
     port.write(f"PROG {channel} {len(words)}\n".encode("ascii"))
     port.flush()
@@ -704,6 +748,16 @@ def main():
     parser.add_argument("--plot-words", type=int, default=4096)
     parser.add_argument("--max-points", type=int, default=8000)
     parser.add_argument(
+        "--rw2",
+        type=lambda x: int(x, 0),
+        help="Write this RW2 value before upload/capture, for deterministic lane/sample-map tests.",
+    )
+    parser.add_argument(
+        "--expect-build-id",
+        type=lambda x: int(x, 0),
+        help="Fail unless selector 3 reports this build ID before capture.",
+    )
+    parser.add_argument(
         "--plot-raw-sources",
         action="store_true",
         help="Plot raw capture sources as lo16/hi16 instead of reconstructed ADC converter streams.",
@@ -738,6 +792,10 @@ def main():
     with serial.Serial(args.port, args.baud, timeout=args.timeout) as port:
         time.sleep(0.2)
         port.reset_input_buffer()
+        if args.expect_build_id is not None:
+            check_build_id(port, args.expect_build_id)
+        if args.rw2 is not None:
+            set_rw2(port, args.rw2)
         if program:
             for channel in program_channels:
                 print(f"Uploading {len(program)} DAC program words to DAC channel {channel}...")

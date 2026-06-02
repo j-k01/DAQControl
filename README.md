@@ -164,7 +164,7 @@ These bits are only used by the `--with-staged-gt` build.
 | Bits | Function |
 | --- | --- |
 | 0 | Assert GTH reset-all while high |
-| 2:1 | DAC sample-map diagnostic mode: `0` native LiteJESD, `1` broadcast preimage + remap, `2` old direct remap |
+| 2:1 | DAC sample-map diagnostic mode: `0` native LiteJESD, `1` general four-channel preimage + remap, `2` old direct remap |
 | 4:3 | DAC TX lane diagnostic mode: `0` identity, `1` FPGA board map, `2` inverse/check map |
 | 7:5 | DAC converter select: `0`/`5..7` broadcast, `1..4` drive only converter 0..3 |
 | 15:8 | Per-lane TX polarity invert |
@@ -316,11 +316,11 @@ currently validated inverse-check TX lane mapping, then upload a slow
 frame-aligned trapezoid:
 
 ```text
-WRTE 2 0x01000010
+WRTE 2 0x01000012
 ```
 
 ```powershell
-python scripts/capture_plot_adc_uart.py --port COM10 --program-mode trapezoid --sample-format twos --trapezoid-frequency-mhz 5 --program-words 8192 --program-channel all --sources 0,1 --prefix trap5_native
+python scripts/capture_plot_adc_uart.py --port COM10 --rw2 0x01000012 --program-mode trapezoid --sample-format twos --trapezoid-frequency-mhz 5 --program-words 8192 --program-channel all --sources 0,1 --prefix trap5_preimage
 ```
 
 The helper sets `RW3[31:8]` to the uploaded 64-bit frame count before `PCAP`,
@@ -398,9 +398,10 @@ status, `27` is event counters, `28..30` are captured converter sample words,
 and `31` is raw lane data selected by `RW2[29:28]`. `RW2[24]=1` bypasses ILAS
 checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL checker, and
 `RW2[26]=1` switches ADC1 from Sundance signal order to physical DP0-DP3 order.
-The MicroBlaze firmware defaults `RW2` to `0x01000010`: ADS54J60 ILAS checking
-is bypassed for bring-up, and the DAC TX lane mux uses the inverse-check order
-that produced the clean scope waveform. Clear bit 24 only when deliberately
+The MicroBlaze firmware defaults `RW2` to `0x01000012`: ADS54J60 ILAS checking
+is bypassed for bring-up, the DAC sample adapter uses the general four-channel
+preimage/remap path, and the DAC TX lane mux uses the inverse-check order that
+produced the clean scope waveform. Clear bit 24 only when deliberately
 re-enabling ADC ILAS checking while debugging the expected ILAS fields.
 
 To force a small ADS54J60 JESD test pattern over SPI without rebuilding HDL,

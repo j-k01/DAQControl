@@ -234,30 +234,53 @@ module daq_litejesd_dac_tx_path #(
         end
     endfunction
 
-    wire [63:0] src_converter0 = program_enable ? program_word0 :
+    wire [63:0] program_converter0 = drive_converter0 ? program_word0 : dac_zero64;
+    wire [63:0] program_converter1 = drive_converter1 ? program_word1 : dac_zero64;
+    wire [63:0] program_converter2 = drive_converter2 ? program_word2 : dac_zero64;
+    wire [63:0] program_converter3 = drive_converter3 ? program_word3 : dac_zero64;
+
+    wire [63:0] src_converter0 = program_enable ? program_converter0 :
                                   (drive_converter0 ? sine_quad_word : dac_zero64);
-    wire [63:0] src_converter1 = program_enable ? program_word1 :
+    wire [63:0] src_converter1 = program_enable ? program_converter1 :
                                   (drive_converter1 ? sine_quad_word : dac_zero64);
-    wire [63:0] src_converter2 = program_enable ? program_word2 :
+    wire [63:0] src_converter2 = program_enable ? program_converter2 :
                                   (drive_converter2 ? sine_quad_word : dac_zero64);
-    wire [63:0] src_converter3 = program_enable ? program_word3 :
+    wire [63:0] src_converter3 = program_enable ? program_converter3 :
                                   (drive_converter3 ? sine_quad_word : dac_zero64);
 
-    wire [63:0] sine_quad_word_bswap = swap_sample_bytes64(sine_quad_word);
+    wire [63:0] preimage_converter0;
+    wire [63:0] preimage_converter1;
+    wire [63:0] preimage_converter2;
+    wire [63:0] preimage_converter3;
+
+    genvar preimage_index;
+    generate
+        for (preimage_index = 0; preimage_index < 4; preimage_index = preimage_index + 1) begin : gen_dac_sample_preimage
+            wire [15:0] desired0 = src_converter0[(16*preimage_index) +: 16];
+            wire [15:0] desired1 = src_converter1[(16*preimage_index) +: 16];
+            wire [15:0] desired2 = src_converter2[(16*preimage_index) +: 16];
+            wire [15:0] desired3 = src_converter3[(16*preimage_index) +: 16];
+
+            assign preimage_converter0[(16*preimage_index) +: 16] = {desired2[7:0], desired2[15:8]};
+            assign preimage_converter1[(16*preimage_index) +: 16] = {desired3[7:0], desired3[15:8]};
+            assign preimage_converter2[(16*preimage_index) +: 16] = {desired1[15:8], desired0[7:0]};
+            assign preimage_converter3[(16*preimage_index) +: 16] = {desired1[7:0], desired0[15:8]};
+        end
+    endgenerate
 
     // sample_map_mode:
     //   0 = native LiteJESD converter buses, no DAC39J84 sample remap
-    //   1 = broadcast preimage + DAC39J84 sample remap (diagnostic shim)
+    //   1 = four-channel preimage + DAC39J84 sample remap
     //   2 = direct source buses through DAC39J84 sample remap
     //   3 = reserved, currently same as native
-    wire use_preimage_remap = (sample_map_mode == 2'd1) && !program_enable;
+    wire use_preimage_remap = (sample_map_mode == 2'd1);
     wire use_any_remap = use_preimage_remap ||
                          (sample_map_mode == 2'd2);
 
-    wire [63:0] remap_in0 = use_preimage_remap ? sine_quad_word_bswap : src_converter0;
-    wire [63:0] remap_in1 = use_preimage_remap ? sine_quad_word_bswap : src_converter1;
-    wire [63:0] remap_in2 = use_preimage_remap ? sine_quad_word       : src_converter2;
-    wire [63:0] remap_in3 = use_preimage_remap ? sine_quad_word_bswap : src_converter3;
+    wire [63:0] remap_in0 = use_preimage_remap ? preimage_converter0 : src_converter0;
+    wire [63:0] remap_in1 = use_preimage_remap ? preimage_converter1 : src_converter1;
+    wire [63:0] remap_in2 = use_preimage_remap ? preimage_converter2 : src_converter2;
+    wire [63:0] remap_in3 = use_preimage_remap ? preimage_converter3 : src_converter3;
     wire [63:0] remap_out0;
     wire [63:0] remap_out1;
     wire [63:0] remap_out2;

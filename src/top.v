@@ -278,6 +278,10 @@ module top #(
     wire [63:0] dac_program_word1_async;
     wire [63:0] dac_program_word2_async;
     wire [63:0] dac_program_word3_async;
+    wire [63:0] dac_program_word0_reg;
+    wire [63:0] dac_program_word1_reg;
+    wire [63:0] dac_program_word2_reg;
+    wire [63:0] dac_program_word3_reg;
     wire [31:0] dac_program_status_async;
     wire [31:0] dac_program_status_reg;
     wire [31:0] gth_tx_clk_count;
@@ -1318,7 +1322,7 @@ module top #(
 `endif
 `endif
 
-    localparam integer FABRIC_DEBUG_SYNC_WIDTH = 239;
+    localparam integer FABRIC_DEBUG_SYNC_WIDTH = 495;
     wire [FABRIC_DEBUG_SYNC_WIDTH-1:0] fabric_debug_sync;
     cdc_vector_sync #(
         .WIDTH (FABRIC_DEBUG_SYNC_WIDTH)
@@ -1335,6 +1339,10 @@ module top #(
             gth_txctrl2_lane0_async,
             gth_txdata_lane0_async,
             dac_program_status_async,
+            dac_program_word3_async,
+            dac_program_word2_async,
+            dac_program_word1_async,
+            dac_program_word0_async,
             litejesd_sine_async,
             litejesd_triangle_async,
             litejesd_status_async,
@@ -1354,6 +1362,10 @@ module top #(
         gth_txctrl2_lane0_debug,
         gth_txdata_lane0_debug,
         dac_program_status_reg,
+        dac_program_word3_reg,
+        dac_program_word2_reg,
+        dac_program_word1_reg,
+        dac_program_word0_reg,
         litejesd_sine_word,
         litejesd_triangle_word,
         litejesd_status_reg,
@@ -1525,11 +1537,25 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0017;
+    wire [31:0] build_id = 32'hDA01_0018;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]
     };
+    reg [31:0] dac_program_word_debug;
+
+    always @* begin
+        case (rw_reg2[30:28])
+            3'd0: dac_program_word_debug = dac_program_word0_reg[31:0];
+            3'd1: dac_program_word_debug = dac_program_word0_reg[63:32];
+            3'd2: dac_program_word_debug = dac_program_word1_reg[31:0];
+            3'd3: dac_program_word_debug = dac_program_word1_reg[63:32];
+            3'd4: dac_program_word_debug = dac_program_word2_reg[31:0];
+            3'd5: dac_program_word_debug = dac_program_word2_reg[63:32];
+            3'd6: dac_program_word_debug = dac_program_word3_reg[31:0];
+            default: dac_program_word_debug = dac_program_word3_reg[63:32];
+        endcase
+    end
 
     always @* begin
         case (rw_reg1[4:0])
@@ -1540,7 +1566,8 @@ module top #(
             5'd4:  selected_count = gth_status_reg;
             5'd5:  selected_count = gth_rx_status_reg;
             5'd6:  selected_count = litejesd_status_reg;
-            5'd7:  selected_count = rw_reg3[6] ? dac_program_status_reg :
+            5'd7:  selected_count = rw_reg3[6] ? (rw_reg2[31] ? dac_program_word_debug :
+                                                              dac_program_status_reg) :
                                                  litejesd_wave_word;
             5'd8:  selected_count = hmc_readback_summary_reg;
             5'd9:  selected_count = hmc_readback_id_word;
