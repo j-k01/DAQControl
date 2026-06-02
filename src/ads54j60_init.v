@@ -17,6 +17,8 @@ module ads54j60_init #(
     input  wire        rst,
     input  wire        start,
     input  wire        restart,
+    input  wire        test_restart,
+    input  wire [2:0]  test_mode,
     input  wire        adc1_sdout,
     input  wire        adc2_sdout,
     output reg         busy,
@@ -70,8 +72,11 @@ module ads54j60_init #(
     localparam [6:0] INIT_LEN   = 7'd28;
     localparam [6:0] VERIFY_LEN = 7'd15;
     localparam [6:0] OP_LEN     = INIT_LEN + VERIFY_LEN;
+    localparam [6:0] TEST_LEN   = 7'd8;
 
     reg [3:0]  state = ST_IDLE;
+    reg        run_test = 1'b0;
+    reg [2:0]  active_test_mode = 3'd0;
     reg [31:0] delay_count = 32'd0;
     reg [31:0] spi_div_count = 32'd0;
     reg [23:0] spi_shift = 24'd0;
@@ -86,13 +91,17 @@ module ads54j60_init #(
     reg        chip_ok_accum = 1'b0;
 
     wire [6:0] verify_index = op_index - INIT_LEN;
-    wire       seq_is_verify = (op_index >= INIT_LEN);
+    wire [6:0] seq_len = run_test ? TEST_LEN : OP_LEN;
+    wire       seq_is_verify = !run_test && (op_index >= INIT_LEN);
     wire       seq_is_read = seq_is_verify && verify_op_is_read(verify_index);
-    wire [15:0] seq_addr = seq_is_verify ? verify_op_addr(verify_index) :
-                                            init_reg_addr(op_index);
-    wire [7:0] seq_data = seq_is_verify ? verify_op_data(verify_index) :
-                                          init_reg_data(op_index);
-    wire [7:0] seq_expected = verify_op_expected(verify_index);
+    wire [15:0] seq_addr = run_test ? test_reg_addr(op_index) :
+                            (seq_is_verify ? verify_op_addr(verify_index) :
+                                             init_reg_addr(op_index));
+    wire [7:0] seq_data = run_test ? test_reg_data(op_index, active_test_mode) :
+                          (seq_is_verify ? verify_op_data(verify_index) :
+                                           init_reg_data(op_index));
+    wire [7:0] seq_expected = run_test ? 8'h00 :
+                                          verify_op_expected(verify_index);
     wire       active_sdout = chip_index ? adc2_sdout : adc1_sdout;
     wire [7:0] spi_cmd_hi = seq_is_read ? (seq_addr[15:8] | 8'h80) :
                                            seq_addr[15:8];
@@ -117,7 +126,9 @@ module ads54j60_init #(
     };
 
     assign last_write = {
-        7'd0,
+        3'd0,
+        run_test,
+        active_test_mode,
         chip_index,
         last_addr,
         last_data
@@ -198,6 +209,55 @@ module ads54j60_init #(
                 7'd25: init_reg_data = 8'h01;
                 7'd26: init_reg_data = 8'h00;
                 default: init_reg_data = 8'h00;
+            endcase
+        end
+    endfunction
+
+    function [15:0] test_reg_addr;
+        input [6:0] idx;
+        begin
+            case (idx)
+                7'd0:  test_reg_addr = 16'h4003; // JESD digital page
+                7'd1:  test_reg_addr = 16'h4004;
+                7'd2:  test_reg_addr = 16'h6000; // preserve CTRL-K bit, optionally enable transport test
+                7'd3:  test_reg_addr = 16'h6002; // link-layer test pattern select
+                7'd4:  test_reg_addr = 16'h4003; // main digital page
+                7'd5:  test_reg_addr = 16'h4004;
+                7'd6:  test_reg_addr = 16'h6000; // pulse main digital reset to apply JESD-page update
+                7'd7:  test_reg_addr = 16'h6000;
+                default: test_reg_addr = 16'h0000;
+            endcase
+        end
+    endfunction
+
+    function [7:0] test_link_pattern_data;
+        input [2:0] mode;
+        begin
+            case (mode)
+                3'd1: test_link_pattern_data = 8'h20; // D21.5 high-frequency jitter pattern
+                3'd2: test_link_pattern_data = 8'h40; // K28.5 mixed-frequency/comma pattern
+                3'd3: test_link_pattern_data = 8'h60; // repeat initial lane alignment
+                3'd4: test_link_pattern_data = 8'h80; // RPAT jitter pattern
+                default: test_link_pattern_data = 8'h00; // normal ADC data
+            endcase
+        end
+    endfunction
+
+    function [7:0] test_reg_data;
+        input [6:0] idx;
+        input [2:0] mode;
+        begin
+            case (idx)
+                7'd0:  test_reg_data = 8'h00;
+                7'd1:  test_reg_data = 8'h69;
+                7'd2:  test_reg_data = 8'h80 | ((mode == 3'd5) ? 8'h10 : 8'h00);
+                7'd3:  test_reg_data = (mode == 3'd5) ? 8'h00 :
+                                                        test_link_pattern_data(mode);
+                7'd4:  test_reg_data = 8'h00;
+                7'd5:  test_reg_data = 8'h68;
+                7'd6:  test_reg_data = 8'h01;
+                7'd7:  test_reg_data = 8'h00;
+                default: test_reg_data = 8'h00;
             endcase
         end
     endfunction
@@ -321,6 +381,8 @@ module ads54j60_init #(
             adc2_reset <= 1'b1;
             chip_index <= 1'b0;
             op_index <= 7'd0;
+            run_test <= 1'b0;
+            active_test_mode <= 3'd0;
             last_addr <= 16'd0;
             last_data <= 8'd0;
             clear_readback_words();
@@ -333,11 +395,26 @@ module ads54j60_init #(
             adc2_reset <= 1'b1;
             chip_index <= 1'b0;
             op_index <= 7'd0;
+            run_test <= 1'b0;
+            active_test_mode <= 3'd0;
             last_addr <= 16'd0;
             last_data <= 8'd0;
             clear_readback_words();
             reset_spi_state();
             delay_count <= RESET_ASSERT_CYCLES[31:0];
+        end else if (test_restart && done && !busy) begin
+            state <= ST_LOAD;
+            busy <= 1'b1;
+            done <= 1'b0;
+            adc1_reset <= 1'b0;
+            adc2_reset <= 1'b0;
+            chip_index <= 1'b0;
+            op_index <= 7'd0;
+            run_test <= 1'b1;
+            active_test_mode <= test_mode;
+            last_addr <= 16'd0;
+            last_data <= 8'd0;
+            reset_spi_state();
         end else begin
             case (state)
                 ST_IDLE: begin
@@ -353,6 +430,8 @@ module ads54j60_init #(
                     op_index <= 7'd0;
                     if (start) begin
                         busy <= 1'b1;
+                        run_test <= 1'b0;
+                        active_test_mode <= 3'd0;
                         clear_readback_words();
                         read_nonzero_or <= 8'd0;
                         read_allones_and <= 8'hff;
@@ -392,7 +471,7 @@ module ads54j60_init #(
                     spi_sclk <= 1'b0;
                     spi_cs1_n <= 1'b1;
                     spi_cs2_n <= 1'b1;
-                    if (op_index >= OP_LEN) begin
+                    if (op_index >= seq_len) begin
                         state <= ST_NEXT_CHIP;
                     end else begin
                         last_addr <= seq_addr;
@@ -493,12 +572,14 @@ module ads54j60_init #(
 
                 ST_NEXT_CHIP: begin
                     if (!chip_index) begin
-                        readback_done1 <= 1'b1;
-                        sdout_stuck1 <= (read_nonzero_or == 8'h00) ||
-                                        (read_allones_and == 8'hff);
-                        readback_ok1 <= chip_ok_accum &&
-                                        (read_nonzero_or != 8'h00) &&
-                                        (read_allones_and != 8'hff);
+                        if (!run_test) begin
+                            readback_done1 <= 1'b1;
+                            sdout_stuck1 <= (read_nonzero_or == 8'h00) ||
+                                            (read_allones_and == 8'hff);
+                            readback_ok1 <= chip_ok_accum &&
+                                            (read_nonzero_or != 8'h00) &&
+                                            (read_allones_and != 8'hff);
+                        end
                         chip_index <= 1'b1;
                         op_index <= 7'd0;
                         read_nonzero_or <= 8'd0;
@@ -506,12 +587,14 @@ module ads54j60_init #(
                         chip_ok_accum <= 1'b1;
                         state <= ST_LOAD;
                     end else begin
-                        readback_done2 <= 1'b1;
-                        sdout_stuck2 <= (read_nonzero_or == 8'h00) ||
-                                        (read_allones_and == 8'hff);
-                        readback_ok2 <= chip_ok_accum &&
-                                        (read_nonzero_or != 8'h00) &&
-                                        (read_allones_and != 8'hff);
+                        if (!run_test) begin
+                            readback_done2 <= 1'b1;
+                            sdout_stuck2 <= (read_nonzero_or == 8'h00) ||
+                                            (read_allones_and == 8'hff);
+                            readback_ok2 <= chip_ok_accum &&
+                                            (read_nonzero_or != 8'h00) &&
+                                            (read_allones_and != 8'hff);
+                        end
                         state <= ST_DONE;
                     end
                 end

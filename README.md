@@ -69,6 +69,7 @@ STAT
 RDRO n
 RDRW n
 WRTE n value
+ADCT mode
 ```
 
 `RO0` is packed status. `RO1` is the latest one-second `CLK_FMC` sampled-edge
@@ -149,6 +150,8 @@ actual baud.
 | 20 | HMC SCLK, active when bit 30 enables manual SPI |
 | 21 | HMC SDIO output value |
 | 22 | HMC SDIO output-enable |
+| 28:26 | ADS54J60 JESD test mode selected by the `ADCT` command |
+| 29 | Pulse ADS54J60 JESD test-mode SPI update, normally driven by `ADCT` |
 | 30 | Manual SPI enable |
 | 31 | Unused on ZCU102 HPC0 |
 
@@ -249,11 +252,14 @@ BRAM program player first; use it only after uploading words with `PROG`.
 The helper script captures the live generator by default:
 
 ```powershell
-python scripts/capture_adc_bram_uart.py --port COM10 --words 4096 --source 0 --out adc_triangle_capture.csv
+python scripts/capture_plot_adc_uart.py --port COM10 --words 4096 --sources 0,1,2,3
 ```
 
-Use `--program <file>` or `--upload-triangle` only when deliberately testing
-the DAC BRAM program path.
+Its plot reconstructs ADC converter streams by interleaving source `0+1` for
+ADC1 converter0 and source `2+3` for ADC1 converter1. The raw source CSV is
+still written, and a `_combined.csv` file contains the reconstructed signed
+16-bit sample streams. Add `--plot-raw-sources` only when deliberately
+inspecting the split `lo16`/`hi16` capture words.
 
 Always rerun `create_project.tcl` after pulling HDL/Tcl changes. The old flow
 used imported source copies under `project/DAQ_LAUNCH.srcs/`, so running only
@@ -322,6 +328,23 @@ checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL checker, and
 The MicroBlaze firmware defaults `RW2` to `0x01000000` because the ADS54J60 link
 comes up cleanly with ILAS checking bypassed; use `WRTE 2 0x00000000` to
 re-enable ILAS checking while debugging the expected ILAS fields.
+
+To force a small ADS54J60 JESD test pattern over SPI without rebuilding HDL,
+use:
+
+```text
+ADCT off
+ADCT d21
+ADCT k28
+ADCT ila
+ADCT rpat
+ADCT transport
+```
+
+`off` restores normal ADC data mode. The other modes write the ADS54J60 JESD
+digital page test controls on both ADC chips, then pulse the main digital-page
+reset so the update is applied. After an `ADCT` command, use `LOOP` or selectors
+`25..31` to inspect the ADC1 JESD receiver and raw lane data.
 
 For clock-chip bring-up, use these HMC readback selectors:
 

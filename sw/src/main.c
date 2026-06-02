@@ -43,6 +43,9 @@
 #define CTRL_HMC_SCLK          (1u << 20)
 #define CTRL_HMC_SDIO_OUT      (1u << 21)
 #define CTRL_HMC_SDIO_OE       (1u << 22)
+#define CTRL_ADC_TEST_MODE_SHIFT 26
+#define CTRL_ADC_TEST_MODE_MASK  (7u << CTRL_ADC_TEST_MODE_SHIFT)
+#define CTRL_ADC_TEST_REQ        (1u << 29)
 #define CTRL_SPI_MANUAL_EN     (1u << 30)
 #define CTRL_FMC_PG_OVERRIDE   (1u << 31)
 
@@ -381,6 +384,82 @@ static void short_delay(void)
         ;
 }
 
+static char ascii_upper(char c)
+{
+    if (c >= 'a' && c <= 'z')
+        return (char)(c - ('a' - 'A'));
+    return c;
+}
+
+static int token_eq_ci(const char *token, const char *word)
+{
+    while (*word != '\0') {
+        if (ascii_upper(*token) != ascii_upper(*word))
+            return 0;
+        token++;
+        word++;
+    }
+
+    return *token == '\0' || *token == ' ' || *token == '\t';
+}
+
+static int parse_adc_test_mode(char **cursor, u32 *mode)
+{
+    char *p = *cursor;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (*p == '\0')
+        return 0;
+
+    if (token_eq_ci(p, "off") || token_eq_ci(p, "normal")) {
+        *mode = 0u;
+    } else if (token_eq_ci(p, "d21")) {
+        *mode = 1u;
+    } else if (token_eq_ci(p, "k28")) {
+        *mode = 2u;
+    } else if (token_eq_ci(p, "ila")) {
+        *mode = 3u;
+    } else if (token_eq_ci(p, "rpat")) {
+        *mode = 4u;
+    } else if (token_eq_ci(p, "transport")) {
+        *mode = 5u;
+    } else if (!parse_u32_arg(&p, mode)) {
+        return 0;
+    }
+
+    return *mode <= 5u;
+}
+
+static void cmd_adct(void)
+{
+    char *p = &cmd[4];
+    u32 mode;
+    u32 rw0;
+
+    if (!parse_adc_test_mode(&p, &mode)) {
+        send_str("ERR ADCT expects off|d21|k28|ila|rpat|transport or 0..5\r\n");
+        return;
+    }
+
+    rw0 = Xil_In32(RW_REG0);
+    rw0 &= ~(CTRL_ADC_TEST_MODE_MASK | CTRL_ADC_TEST_REQ);
+    rw0 |= (mode & 7u) << CTRL_ADC_TEST_MODE_SHIFT;
+
+    Xil_Out32(RW_REG0, rw0);
+    short_delay();
+    Xil_Out32(RW_REG0, rw0 | CTRL_ADC_TEST_REQ);
+    short_delay();
+    Xil_Out32(RW_REG0, rw0);
+
+    send_str("OK ADCT mode=");
+    send_uint(mode);
+    send_str(" RW0=");
+    send_hex(rw0);
+    send_str("\r\n");
+}
+
 static void cmd_rxsw(void)
 {
     static const u32 bases[4] = {
@@ -577,6 +656,7 @@ static void cmd_help(void)
     send_str("  STAT             dump status, counters, controls\r\n");
     send_str("  LOOP             dump DAC TX / ADC1 RX loopback diagnostics\r\n");
     send_str("  RXSW             sweep ADC1 RX ILAS/order/polarity diagnostics\r\n");
+    send_str("  ADCT mode        ADS54J60 test mode: off,d21,k28,ila,rpat,transport\r\n");
     send_str("  RDRO n           read RO register 0..3\r\n");
     send_str("  RDRW n           read RW register 0..3\r\n");
     send_str("  WRTE n value     write RW register 0..3; use 0x prefix for hex masks\r\n");
@@ -594,6 +674,7 @@ static void cmd_help(void)
     send_str("  [1] HMC reset, [2] DAC_RESET_N, [3] DAC_TXEN\r\n");
     send_str("  [4] ADC1 reset, [5] ADC2 reset when manual SPI is enabled\r\n");
     send_str("  [16:22] manual DAC/HMC SPI pins, enabled by [30]\r\n");
+    send_str("  [28:26] ADC test mode, [29] ADC test-mode SPI one-shot request\r\n");
     send_str("  [31] FMC_C2M_PG override enable\r\n");
     send_str("RW1[4:0] selects RO3: 0=HMC status, 1=HMC last write\r\n");
     send_str("                 2=raw pins, 3=build ID, 4=GTH, 5=GTH lanes\r\n");
@@ -677,6 +758,8 @@ static void process_cmd(void)
         cmd_loop();
     } else if (strncmp(cmd, "RXSW", 4) == 0) {
         cmd_rxsw();
+    } else if (strncmp(cmd, "ADCT", 4) == 0) {
+        cmd_adct();
     } else if (strncmp(cmd, "RDRO", 4) == 0) {
         char *p = &cmd[5];
         u32 idx;

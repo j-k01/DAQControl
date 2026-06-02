@@ -1,0 +1,538 @@
+import argparse
+import csv
+import math
+import re
+import struct
+import sys
+import time
+from pathlib import Path
+
+try:
+    import serial
+except ImportError as exc:
+    raise SystemExit("pyserial is required: python -m pip install pyserial") from exc
+
+
+SYNC_WORD = b"\xFE\x10\xCA\xFE"
+DEFAULT_WORDS = 4096
+MAX_WORDS = 262144
+
+
+def signed16(value):
+    value &= 0xFFFF
+    return value - 0x10000 if value & 0x8000 else value
+
+
+def clamp_u16(value):
+    return max(0, min(0xFFFF, int(round(value))))
+
+
+def pack_pair(sample0, sample1):
+    return (clamp_u16(sample1) << 16) | clamp_u16(sample0)
+
+
+def parse_u32_token(token):
+    token = token.strip()
+    if not token:
+        raise ValueError("empty token")
+    return int(token, 0) & 0xFFFFFFFF
+
+
+def load_text_program(path):
+    words = []
+    numeric = re.compile(r"^(?:0x[0-9a-fA-F]+|[0-9]+)$")
+    with path.open(newline="") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if not row:
+                continue
+            if row[0].strip().startswith("#"):
+                continue
+            cells = [cell.strip() for cell in row]
+            if len(cells) > 1 and numeric.match(cells[1]):
+                words.append(parse_u32_token(cells[1]))
+                continue
+            for cell in cells:
+                if numeric.match(cell):
+                    words.append(parse_u32_token(cell))
+                    break
+    return words
+
+
+def load_program(path):
+    path = Path(path)
+    if path.suffix.lower() == ".bin":
+        data = path.read_bytes()
+        if len(data) % 4:
+            raise ValueError(f"{path} length is not a multiple of 4 bytes")
+        return list(struct.unpack(f"<{len(data) // 4}I", data))
+    return load_text_program(path)
+
+
+def make_triangle_program(words, step, offset, amplitude):
+    low = clamp_u16(offset - amplitude)
+    high = clamp_u16(offset + amplitude)
+    sample = low
+    rising = True
+    out = []
+
+    for _ in range(words):
+        pair = []
+        for _ in range(2):
+            pair.append(sample)
+            if rising:
+                sample = min(high, sample + step)
+                if sample >= high:
+                    rising = False
+            else:
+                sample = max(low, sample - step)
+                if sample <= low:
+                    rising = True
+        out.append(pack_pair(pair[0], pair[1]))
+    return out
+
+
+def make_sine_program(words, cycles, amplitude, offset, phase=0.0):
+    out = []
+    sample_count = max(1, words * 2)
+    for index in range(words):
+        phase0 = 2.0 * math.pi * cycles * (2 * index) / sample_count + phase
+        phase1 = 2.0 * math.pi * cycles * (2 * index + 1) / sample_count + phase
+        out.append(pack_pair(
+            offset + amplitude * math.sin(phase0),
+            offset + amplitude * math.sin(phase1),
+        ))
+    return out
+
+
+def make_square_sine_program(words, square_period_words, sine_cycles, amplitude, offset):
+    half = words // 2
+    high = clamp_u16(offset + amplitude)
+    low = clamp_u16(offset - amplitude)
+    out = []
+
+    for index in range(half):
+        phase = (index // max(1, square_period_words // 2)) & 1
+        sample = high if phase == 0 else low
+        out.append(pack_pair(sample, sample))
+
+    sine_word_count = words - half
+    sine_sample_count = max(1, sine_word_count * 2)
+    for index in range(sine_word_count):
+        phase0 = 2.0 * math.pi * sine_cycles * (2 * index) / sine_sample_count
+        phase1 = 2.0 * math.pi * sine_cycles * (2 * index + 1) / sine_sample_count
+        out.append(pack_pair(
+            offset + amplitude * math.sin(phase0),
+            offset + amplitude * math.sin(phase1),
+        ))
+    return out
+
+
+def make_program(args):
+    if args.program:
+        program = load_program(args.program)
+    elif args.program_mode == "sine":
+        program = make_sine_program(
+            args.program_words,
+            args.sine_cycles,
+            args.amplitude,
+            args.offset,
+        )
+    elif args.program_mode == "triangle":
+        program = make_triangle_program(
+            args.program_words,
+            args.triangle_step,
+            args.offset,
+            args.amplitude,
+        )
+    elif args.program_mode == "square-sine":
+        program = make_square_sine_program(
+            args.program_words,
+            args.square_period_words,
+            args.sine_cycles,
+            args.amplitude,
+            args.offset,
+        )
+    else:
+        program = []
+
+    if len(program) > MAX_WORDS:
+        raise ValueError(f"program has {len(program)} words; max is {MAX_WORDS}")
+    return program
+
+
+def read_line(port):
+    line = bytearray()
+    while True:
+        byte = port.read(1)
+        if not byte:
+            raise TimeoutError("timed out waiting for UART line")
+        line.extend(byte)
+        if byte == b"\n":
+            return bytes(line).decode("ascii", errors="replace").strip()
+
+
+def wait_for_line_prefix(port, prefix):
+    while True:
+        line = read_line(port)
+        if line.startswith(prefix):
+            return line
+
+
+def upload_program(port, words):
+    port.write(f"PROG {len(words)}\n".encode("ascii"))
+    port.flush()
+    print(wait_for_line_prefix(port, "PGRD"))
+    port.write(struct.pack(f"<{len(words)}I", *words))
+    port.flush()
+    print(wait_for_line_prefix(port, "OK PROG"))
+
+
+def parse_sources(text):
+    sources = []
+    for token in text.replace(",", " ").split():
+        source = int(token, 0)
+        if source < 0 or source > 3:
+            raise ValueError("sources must be in the range 0..3")
+        sources.append(source)
+    if not sources:
+        raise ValueError("at least one source is required")
+    return sources
+
+
+def read_exact(port, count):
+    data = bytearray()
+    while len(data) < count:
+        chunk = port.read(min(65536, count - len(data)))
+        if not chunk:
+            raise TimeoutError(f"expected {count} bytes, got {len(data)}")
+        data.extend(chunk)
+        print(
+            f"\r{len(data)}/{count} bytes ({100 * len(data) // count}%)",
+            end="",
+            flush=True,
+        )
+    print()
+    return bytes(data)
+
+
+def wait_for_sync(port):
+    window = bytearray()
+    presync = bytearray()
+
+    while True:
+        byte = port.read(1)
+        if not byte:
+            tail = presync[-200:].decode("ascii", errors="replace")
+            raise TimeoutError(f"timed out waiting for capture sync; UART tail={tail!r}")
+        presync.extend(byte)
+        window.extend(byte)
+        if len(window) > len(SYNC_WORD):
+            del window[0]
+        if bytes(window) == SYNC_WORD:
+            return bytes(presync[:-len(SYNC_WORD)])
+
+
+def capture_source(port, command_name, words, source):
+    port.reset_input_buffer()
+    port.write(f"{command_name} {words} {source}\n".encode("ascii"))
+    port.flush()
+    presync = wait_for_sync(port)
+    raw = read_exact(port, words * 4)
+    unpacked = struct.unpack(f"<{words}I", raw)
+    return presync, list(unpacked)
+
+
+def split_words(words):
+    lo = [signed16(word & 0xFFFF) for word in words]
+    hi = [signed16((word >> 16) & 0xFFFF) for word in words]
+    return lo, hi
+
+
+def combine_converter(low_words, high_words):
+    samples = []
+    for low_word, high_word in zip(low_words, high_words):
+        samples.append(signed16(low_word & 0xFFFF))
+        samples.append(signed16((low_word >> 16) & 0xFFFF))
+        samples.append(signed16(high_word & 0xFFFF))
+        samples.append(signed16((high_word >> 16) & 0xFFFF))
+    return samples
+
+
+def build_converter_streams(captures):
+    streams = {}
+    if 0 in captures and 1 in captures:
+        streams["adc1_converter0"] = combine_converter(captures[0], captures[1])
+    if 2 in captures and 3 in captures:
+        streams["adc1_converter1"] = combine_converter(captures[2], captures[3])
+    return streams
+
+
+def diff_stats(values):
+    diffs = [b - a for a, b in zip(values, values[1:])]
+    positive = sum(1 for diff in diffs if diff > 0)
+    negative = sum(1 for diff in diffs if diff < 0)
+    zero = sum(1 for diff in diffs if diff == 0)
+    signs = [1 if diff > 0 else -1 if diff < 0 else 0 for diff in diffs]
+    nonzero = [sign for sign in signs if sign]
+    changes = sum(1 for a, b in zip(nonzero, nonzero[1:]) if a != b)
+    return positive, negative, zero, changes
+
+
+def summarize(source, words, presync):
+    lo, hi = split_words(words)
+    lo_diff = diff_stats(lo)
+    hi_diff = diff_stats(hi)
+    presync_text = presync.decode("ascii", errors="replace").replace("\r", "").strip()
+
+    lines = [
+        f"source {source}",
+        f"  words: {len(words)}",
+        f"  presync: {presync_text!r}" if presync_text else "  presync: <none>",
+        "  first_words: " + " ".join(f"0x{word:08X}" for word in words[:16]),
+        (
+            f"  lo16: min={min(lo)} max={max(lo)} "
+            f"mean={sum(lo) / len(lo):.2f} unique={len(set(lo))}"
+        ),
+        (
+            f"  hi16: min={min(hi)} max={max(hi)} "
+            f"mean={sum(hi) / len(hi):.2f} unique={len(set(hi))}"
+        ),
+        (
+            f"  lo_diffs: +={lo_diff[0]} -={lo_diff[1]} "
+            f"0={lo_diff[2]} sign_changes={lo_diff[3]}"
+        ),
+        (
+            f"  hi_diffs: +={hi_diff[0]} -={hi_diff[1]} "
+            f"0={hi_diff[2]} sign_changes={hi_diff[3]}"
+        ),
+    ]
+    return "\n".join(lines)
+
+
+def summarize_stream(name, samples):
+    sample_diff = diff_stats(samples)
+    lines = [
+        f"{name}",
+        f"  samples: {len(samples)}",
+        "  first_samples: " + " ".join(str(sample) for sample in samples[:16]),
+        (
+            f"  signed16: min={min(samples)} max={max(samples)} "
+            f"mean={sum(samples) / len(samples):.2f} unique={len(set(samples))}"
+        ),
+        (
+            f"  diffs: +={sample_diff[0]} -={sample_diff[1]} "
+            f"0={sample_diff[2]} sign_changes={sample_diff[3]}"
+        ),
+    ]
+    return "\n".join(lines)
+
+
+def write_csv(path, captures):
+    with path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["source", "index", "word_hex", "lo16_signed", "hi16_signed"])
+        for source, words in captures.items():
+            for index, word in enumerate(words):
+                writer.writerow([
+                    source,
+                    index,
+                    f"0x{word:08X}",
+                    signed16(word & 0xFFFF),
+                    signed16((word >> 16) & 0xFFFF),
+                ])
+
+
+def write_combined_csv(path, streams):
+    with path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["stream", "sample_index", "sample_signed"])
+        for name, samples in streams.items():
+            for index, sample in enumerate(samples):
+                writer.writerow([name, index, sample])
+
+
+def decimate(values, max_points):
+    if len(values) <= max_points:
+        return list(range(len(values))), values
+    step = (len(values) + max_points - 1) // max_points
+    return list(range(0, len(values), step)), values[::step]
+
+
+def write_plot(path, captures, plot_words, max_points, show, plot_raw_sources):
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise SystemExit("matplotlib is required for plotting: python -m pip install matplotlib") from exc
+
+    streams = build_converter_streams({
+        source: words[:plot_words] for source, words in captures.items()
+    })
+    if streams and not plot_raw_sources:
+        fig, axes = plt.subplots(
+            len(streams),
+            1,
+            figsize=(13, max(3.0, 3.0 * len(streams))),
+            sharex=True,
+            constrained_layout=True,
+        )
+        if len(streams) == 1:
+            axes = [axes]
+
+        for ax, (name, samples) in zip(axes, streams.items()):
+            x, sample_plot = decimate(samples, max_points)
+            ax.plot(x, sample_plot, label="combined signed16 samples", linewidth=0.9)
+            ax.set_title(f"ADC CAPT {name}")
+            ax.set_ylabel("signed 16-bit")
+            ax.grid(True, alpha=0.25)
+            ax.legend(loc="best")
+
+        axes[-1].set_xlabel("ADC sample index")
+        fig.savefig(path, dpi=150)
+        print(f"Wrote {path}")
+
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
+        return
+
+    fig, axes = plt.subplots(
+        len(captures),
+        1,
+        figsize=(13, max(3.0, 2.7 * len(captures))),
+        sharex=True,
+        constrained_layout=True,
+    )
+    if len(captures) == 1:
+        axes = [axes]
+
+    for ax, (source, words) in zip(axes, captures.items()):
+        lo, hi = split_words(words[:plot_words])
+        x_lo, lo_plot = decimate(lo, max_points)
+        x_hi, hi_plot = decimate(hi, max_points)
+        ax.plot(x_lo, lo_plot, label="lo16", linewidth=0.9)
+        ax.plot(x_hi, hi_plot, label="hi16", linewidth=0.9, alpha=0.78)
+        ax.set_title(f"ADC CAPT source {source}")
+        ax.set_ylabel("signed 16-bit")
+        ax.grid(True, alpha=0.25)
+        ax.legend(loc="best")
+
+    axes[-1].set_xlabel("capture word index")
+    fig.savefig(path, dpi=150)
+    print(f"Wrote {path}")
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Capture ADC BRAM data over UART and generate CSV/PNG plots."
+    )
+    parser.add_argument("--port", default="COM10")
+    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--words", type=int, default=DEFAULT_WORDS)
+    parser.add_argument("--sources", default="0,1,2,3")
+    parser.add_argument("--command", choices=["CAPT", "PCAP"], default="CAPT")
+    parser.add_argument(
+        "--program-mode",
+        choices=["none", "sine", "triangle", "square-sine"],
+        default="none",
+        help="Generate and upload a DAC BRAM program before capture.",
+    )
+    parser.add_argument("--program", help="Upload a binary little-endian u32 or text/CSV DAC program.")
+    parser.add_argument("--program-words", type=int, default=DEFAULT_WORDS)
+    parser.add_argument("--sine-cycles", type=float, default=128.0)
+    parser.add_argument("--square-period-words", type=int, default=1024)
+    parser.add_argument("--triangle-step", type=lambda x: int(x, 0), default=0x0100)
+    parser.add_argument("--amplitude", type=lambda x: int(x, 0), default=0x3000)
+    parser.add_argument("--offset", type=lambda x: int(x, 0), default=0x8000)
+    parser.add_argument("--outdir", default="captures")
+    parser.add_argument("--prefix", default="adc_capture")
+    parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--plot-words", type=int, default=4096)
+    parser.add_argument("--max-points", type=int, default=8000)
+    parser.add_argument(
+        "--plot-raw-sources",
+        action="store_true",
+        help="Plot raw capture sources as lo16/hi16 instead of reconstructed ADC converter streams.",
+    )
+    parser.add_argument("--show", action="store_true")
+    args = parser.parse_args()
+
+    if args.words <= 0 or args.words > MAX_WORDS:
+        raise ValueError(f"--words must be 1..{MAX_WORDS}")
+    if args.plot_words <= 0:
+        raise ValueError("--plot-words must be positive")
+    if args.program_words <= 0 or args.program_words > MAX_WORDS:
+        raise ValueError(f"--program-words must be 1..{MAX_WORDS}")
+    if args.program and args.program_mode != "none":
+        raise ValueError("use either --program or --program-mode, not both")
+
+    sources = parse_sources(args.sources)
+    program = make_program(args)
+    command_name = "PCAP" if program and args.command == "CAPT" else args.command
+    outdir = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    captures = {}
+    summaries = []
+    started = time.time()
+
+    with serial.Serial(args.port, args.baud, timeout=args.timeout) as port:
+        time.sleep(0.2)
+        port.reset_input_buffer()
+        if program:
+            print(f"Uploading {len(program)} DAC program words...")
+            upload_program(port, program)
+        for source in sources:
+            print(f"Capturing {args.words} words from source {source} with {command_name}...")
+            presync, words = capture_source(port, command_name, args.words, source)
+            captures[source] = words
+            summary = summarize(source, words, presync)
+            summaries.append(summary)
+            print(summary)
+
+    source_tag = "_".join(str(source) for source in sources)
+    csv_path = outdir / f"{args.prefix}_sources_{source_tag}.csv"
+    combined_csv_path = outdir / f"{args.prefix}_sources_{source_tag}_combined.csv"
+    png_path = outdir / f"{args.prefix}_sources_{source_tag}.png"
+    summary_path = outdir / f"{args.prefix}_sources_{source_tag}_summary.txt"
+    streams = build_converter_streams(captures)
+
+    write_csv(csv_path, captures)
+    print(f"Wrote {csv_path}")
+    if streams:
+        write_combined_csv(combined_csv_path, streams)
+        print(f"Wrote {combined_csv_path}")
+        summaries.append(
+            "combined streams note: source 0+1 reconstruct ADC1 converter0; "
+            "source 2+3 reconstruct ADC1 converter1. This is time-aligned when "
+            "each capture is restart-aligned, for example with PCAP."
+        )
+        for name, samples in streams.items():
+            summaries.append(summarize_stream(name, samples))
+    summary_path.write_text("\n\n".join(summaries) + "\n")
+    print(f"Wrote {summary_path}")
+    write_plot(
+        png_path,
+        captures,
+        min(args.plot_words, args.words),
+        args.max_points,
+        args.show,
+        args.plot_raw_sources,
+    )
+
+    elapsed = time.time() - started
+    print(f"Done in {elapsed:.1f}s")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("Interrupted", file=sys.stderr)
+        raise SystemExit(130)

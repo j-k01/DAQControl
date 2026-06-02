@@ -331,6 +331,7 @@ module top #(
     reg  hmc_restart_req_d = 1'b0;
     reg  dac_restart_req_d = 1'b0;
     reg  adc_restart_req_d = 1'b0;
+    reg  adc_test_req_d = 1'b0;
     reg  adc_capture_req_d = 1'b0;
     reg  adc_capture_req_toggle = 1'b0;
     always @(posedge clk_200) begin
@@ -338,12 +339,14 @@ module top #(
             hmc_restart_req_d <= 1'b0;
             dac_restart_req_d <= 1'b0;
             adc_restart_req_d <= 1'b0;
+            adc_test_req_d <= 1'b0;
             adc_capture_req_d <= 1'b0;
             adc_capture_req_toggle <= 1'b0;
         end else begin
             hmc_restart_req_d <= rw_reg3[0];
             dac_restart_req_d <= rw_reg3[1];
             adc_restart_req_d <= rw_reg3[2];
+            adc_test_req_d <= rw_reg0[29];
             adc_capture_req_d <= rw_reg3[3];
             if (rw_reg3[3] & ~adc_capture_req_d) begin
                 adc_capture_req_toggle <= ~adc_capture_req_toggle;
@@ -355,6 +358,9 @@ module top #(
                               rw_reg3[1] & ~dac_restart_req_d;
     wire adc_restart_pulse = ~fabric_rst & hmc_auto_done &
                               rw_reg3[2] & ~adc_restart_req_d;
+    wire adc_test_pulse = ~fabric_rst & hmc_auto_done & adc_auto_done &
+                          rw_reg0[29] & ~adc_test_req_d;
+    wire [2:0] adc_test_mode = rw_reg0[28:26];
 
     hmc7044_init #(
         .CLK_HZ           (200_000_000),
@@ -424,6 +430,8 @@ module top #(
         .rst                    (fabric_rst | ~hmc_auto_done),
         .start                  (1'b1),
         .restart                (adc_restart_pulse),
+        .test_restart           (adc_test_pulse),
+        .test_mode              (adc_test_mode),
         .adc1_sdout             (ADC1_SDOUT),
         .adc2_sdout             (ADC2_SDOUT),
         .busy                   (adc_auto_busy),
@@ -1286,7 +1294,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_000C;
+    wire [31:0] build_id = 32'hDA01_000D;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]
