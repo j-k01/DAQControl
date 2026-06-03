@@ -45,9 +45,12 @@ TX control/charisk path per lane. At 10 Gbps with 8B/10B and 32-bit user
 data, the TX user clock is 250 MHz.
 
 `daq_litejesd_dac_tx_path.v` is the hardware-facing shell for the launch test.
-It instantiates `litejesd_dac_tx`, drives all four DAC converters with the same
-programmable sine waveform during normal operation, drives all four converters
-from the uploaded BRAM program word in program mode, and exports:
+It instantiates `litejesd_dac_tx`, builds four 64-bit source words, and can
+route those source words through `dac39j84_physical_mapper`. In that normal
+mode, the source words are physical DAC outputs 0..3, not raw LiteJESD
+converter buses. The mapper then splits the sample bytes across LiteJESD
+converter inputs to match the Sundance/DAC39J84 byte-lane adapter. The shell
+exports:
 
 ```verilog
 gth_txdata[255:0]    // {lane7, ..., lane0}, 32 bits per lane

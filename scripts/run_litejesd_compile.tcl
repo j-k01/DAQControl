@@ -38,6 +38,7 @@ set common_sources [list \
     ../../src/izh_dac_channel.v \
     ../../src/izh_dac_bank.sv \
     ../../src/jesd/dac39j84_sample_remap.v \
+    ../../src/jesd/dac39j84_physical_mapper.v \
     ../../src/jesd/litejesd_dac_tx.v \
     ../../src/jesd/daq_litejesd_dac_tx_path.v \
     ../../src/jesd/adc1_sundance_halfbeat.v \

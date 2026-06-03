@@ -343,14 +343,31 @@ module daq_litejesd_dac_tx_path #(
         end
     endgenerate
 
+    wire [63:0] physical_converter0;
+    wire [63:0] physical_converter1;
+    wire [63:0] physical_converter2;
+    wire [63:0] physical_converter3;
+
+    dac39j84_physical_mapper u_dac39j84_physical_mapper (
+        .dac_out0   (src_converter0),
+        .dac_out1   (src_converter1),
+        .dac_out2   (src_converter2),
+        .dac_out3   (src_converter3),
+        .converter0 (physical_converter0),
+        .converter1 (physical_converter1),
+        .converter2 (physical_converter2),
+        .converter3 (physical_converter3)
+    );
+
     // sample_map_mode:
-    //   0 = native LiteJESD converter buses, no DAC39J84 sample remap
-    //   1 = four-channel preimage + DAC39J84 sample remap
-    //   2 = direct source buses through DAC39J84 sample remap
-    //   3 = reserved, currently same as native
+    //   0 = native LiteJESD converter buses, diagnostic only
+    //   1 = four-channel preimage + legacy DAC39J84 sample remap
+    //   2 = direct source buses through legacy DAC39J84 sample remap
+    //   3 = physical DAC output mapper, normal four-channel path
     wire use_preimage_remap = (sample_map_mode == 2'd1);
     wire use_any_remap = use_preimage_remap ||
                          (sample_map_mode == 2'd2);
+    wire use_physical_map = (sample_map_mode == 2'd3);
 
     wire [63:0] remap_in0 = use_preimage_remap ? preimage_converter0 : src_converter0;
     wire [63:0] remap_in1 = use_preimage_remap ? preimage_converter1 : src_converter1;
@@ -372,10 +389,14 @@ module daq_litejesd_dac_tx_path #(
         .converter3_out (remap_out3)
     );
 
-    wire [63:0] jesd_converter0 = use_any_remap ? remap_out0 : src_converter0;
-    wire [63:0] jesd_converter1 = use_any_remap ? remap_out1 : src_converter1;
-    wire [63:0] jesd_converter2 = use_any_remap ? remap_out2 : src_converter2;
-    wire [63:0] jesd_converter3 = use_any_remap ? remap_out3 : src_converter3;
+    wire [63:0] jesd_converter0 = use_physical_map ? physical_converter0 :
+                                   use_any_remap ? remap_out0 : src_converter0;
+    wire [63:0] jesd_converter1 = use_physical_map ? physical_converter1 :
+                                   use_any_remap ? remap_out1 : src_converter1;
+    wire [63:0] jesd_converter2 = use_physical_map ? physical_converter2 :
+                                   use_any_remap ? remap_out2 : src_converter2;
+    wire [63:0] jesd_converter3 = use_physical_map ? physical_converter3 :
+                                   use_any_remap ? remap_out3 : src_converter3;
 
     wire [31:0] tx_data0;
     wire [31:0] tx_data1;

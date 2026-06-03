@@ -374,16 +374,15 @@ bitstream:
 python scripts/capture_plot_adc_uart.py --port COM10 --program-mode triangle --sample-format twos --triangle-frequency-mhz 50 --chunk-order 3,2,1,0 --program-channel all --sources 0,1 --prefix tri50_chunk_3210
 ```
 
-For the DAC ordering diagnostic, start with native sample mapping and the
-currently validated inverse-check TX lane mapping, then upload a slow
-frame-aligned trapezoid:
+For the DAC ordering diagnostic, start with the physical DAC output mapper and
+identity TX lane mapping, then upload a slow frame-aligned trapezoid:
 
 ```text
-WRTE 2 0x01000010
+WRTE 2 0x01000006
 ```
 
 ```powershell
-python scripts/capture_plot_adc_uart.py --port COM10 --rw2 0x01000010 --program-mode trapezoid --sample-format twos --trapezoid-frequency-mhz 5 --program-words 8192 --program-channel all --sources 0,1 --prefix trap5_native
+python scripts/capture_plot_adc_uart.py --port COM10 --rw2 0x01000006 --program-mode trapezoid --sample-format twos --trapezoid-frequency-mhz 5 --program-words 8192 --program-channel all --sources 0,1 --prefix trap5_physical
 ```
 
 The helper sets `RW3[31:8]` to the uploaded 64-bit frame count before `PCAP`,
@@ -465,11 +464,13 @@ reconstruction, or Sundance-style reversed-byte reconstruction. `RW2[24]=1`
 bypasses ILAS checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL
 checker, and `RW2[26]=1` switches ADC1 from Sundance signal order to physical
 DP0-DP3 order.
-The MicroBlaze firmware defaults `RW2` to `0x01000010`: ADS54J60 ILAS checking
-is bypassed for bring-up, the DAC sample adapter uses native LiteJESD converter
-mapping, and the DAC TX lane mux uses the inverse-check order that produced the
-clean scope waveform. Clear bit 24 only when deliberately
-re-enabling ADC ILAS checking while debugging the expected ILAS fields.
+The MicroBlaze firmware defaults `RW2` to `0x01000006`: ADS54J60 ILAS checking
+is bypassed for bring-up, the DAC sample adapter uses the physical DAC output
+mapper, and the DAC TX lane mux uses identity order. In this path, BRAM/DDS
+sources 0..3 are treated as the four desired physical DAC outputs before the
+mapper splits their bytes across the LiteJESD converter buses. Clear bit 24
+only when deliberately re-enabling ADC ILAS checking while debugging the
+expected ILAS fields.
 
 To force a small ADS54J60 JESD test pattern over SPI without rebuilding HDL,
 use:
