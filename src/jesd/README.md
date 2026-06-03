@@ -45,12 +45,20 @@ TX control/charisk path per lane. At 10 Gbps with 8B/10B and 32-bit user
 data, the TX user clock is 250 MHz.
 
 `daq_litejesd_dac_tx_path.v` is the hardware-facing shell for the launch test.
-It instantiates `litejesd_dac_tx` and builds four 64-bit source words. The
-bring-up default routes those source words through `dac39j84_physical_mapper`,
-which builds the Sundance DAC39J84 byte placement and then preimages it into
-LiteJESD logical lanes for the active DAC-side `0x3021/0x7654` crossbar plus
-TX lane mode 3. The native and legacy remap paths remain available only as
-diagnostics. The shell
+It instantiates `litejesd_dac_tx` and builds four 64-bit source words. There
+are two primary DAC mapping hypotheses exposed at runtime:
+
+- `sample_map=0`: native LMF841, where LiteJESD logical lanes are adjacent
+  high/low byte pairs for converters A/B/C/D.
+- `sample_map=3`: Sundance core-lane preimage, where
+  `dac39j84_physical_mapper` reproduces Sundance's `dac1_data_o` /
+  `dac2_data_o` byte placement and then preimages that placement into
+  LiteJESD logical lanes for the active DAC-side `0x3021/0x7654` crossbar plus
+  TX lane mode 3.
+
+The Sundance preimage is a diagnostic hypothesis to verify on the scope, not a
+claim that the DAC39J84 itself requires non-adjacent logical byte pairs. The
+legacy remap paths remain available only as diagnostics. The shell
 exports:
 
 ```verilog
@@ -64,10 +72,10 @@ implementation run. Source order `0` uses Sundance's internal
 `dac2_ch2/dac2_ch1/dac1_ch2/dac1_ch1` order. Source order `1` uses the user
 guide's physical `OUT_A/OUT_B/OUT_C/OUT_D` order. Source orders `2` and `3`
 swap one Sundance pair at a time for diagnostics. `map_mode[3:2]=0` is the
-normal logical-lane preimage for TX lane mode 3. `map_mode[3:2]=1` emits
-Sundance physical-lane bytes directly for identity-lane diagnostics, `2`
-keeps the old upper-lane reverse check, and `3` flips byte orientation as a
-last-resort diagnostic.
+Sundance-core-lane preimage after the DAC-side `0x3021/0x7654` crossbar and
+TX lane mode 3. `map_mode[3:2]=1` emits Sundance core-lane bytes directly for
+identity-lane diagnostics, `2` keeps the old upper-lane reverse check, and `3`
+flips byte orientation as a last-resort diagnostic.
 
 For the current DAC39J84 initialization, the firmware default uses TX lane mode
 3, the inverse map implied by Sundance's `init8411_dac_remapped`

@@ -79,13 +79,16 @@ module dac39j84_physical_mapper (
                 end
                 endcase
 
-                // Sundance's adapter builds physical lane bytes first:
+                // Hypothesis B: Sundance's adapter builds core-lane bytes
+                // first:
                 //   p0..p3 are DAC1_DATA_o lanes 0..3 (DP4..DP7)
                 //   p4..p7 are DAC2_DATA_o lanes 0..3 (DP0..DP3)
                 //
-                // These are not LiteJESD converter buses. The generated
-                // LiteJESD core converts converterN[15:0] into logical lane
-                // bytes as {L(2N), L(2N+1)}.
+                // These lane bytes are a Sundance-core-lane preimage to test,
+                // not a statement that the DAC39J84 itself requires
+                // non-adjacent logical byte pairs. The generated LiteJESD core
+                // converts converterN[15:0] into logical lane bytes as
+                // {L(2N), L(2N+1)}.
                 p0 = sd_dac2_ch2[7:0];
                 p1 = sd_dac2_ch1[7:0];
                 p2 = sd_dac2_ch1[15:8];
@@ -139,11 +142,12 @@ module dac39j84_physical_mapper (
                     l7 = p4;
                 end
                 default: begin
-                    // Normal path for the current DAC39J84 config95/config96
-                    // value 0x3021/0x7654 and tx_lane_mode=3.  The top-level
-                    // lane mux sends physical lanes 0..7 <= logical lanes
-                    // [3,0,2,1,4,5,6,7], so put each Sundance physical byte
-                    // into the logical lane that will reach that physical lane.
+                    // Sundance-core-lane preimage after the current DAC39J84
+                    // config95/config96 value 0x3021/0x7654 and tx_lane_mode=3.
+                    // The top-level lane mux sends physical lanes 0..7 <=
+                    // logical lanes [3,0,2,1,4,5,6,7], so put each Sundance
+                    // core-lane byte into the logical lane that will reach that
+                    // physical/core lane.
                     l0 = p1;
                     l1 = p3;
                     l2 = p2;
