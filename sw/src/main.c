@@ -73,7 +73,12 @@
 #define RW2_DAC_CONV_SHIFT       5
 #define RW2_DAC_CONV_MASK        (7u << RW2_DAC_CONV_SHIFT)
 #define RW2_CAPTURE_STATUS_SEL (1u << 31)
-#define RW2_LAUNCH_DEFAULT     (RW2_ADC1_ILAS_BYPASS | (3u << RW2_DAC_SAMPLE_MAP_SHIFT))
+#define RW2_DAC_PHYSICAL_ORDER_SHIFT 8
+#define RW2_DAC_PHYSICAL_ORDER_MASK  (3u << RW2_DAC_PHYSICAL_ORDER_SHIFT)
+#define RW2_DAC_PHYSICAL_ORDER_USER_GUIDE (1u << RW2_DAC_PHYSICAL_ORDER_SHIFT)
+#define RW2_LAUNCH_DEFAULT     (RW2_ADC1_ILAS_BYPASS | \
+                                (3u << RW2_DAC_SAMPLE_MAP_SHIFT) | \
+                                RW2_DAC_PHYSICAL_ORDER_USER_GUIDE)
 
 #define RO0_DAC_DONE           (1u << 31)
 #define RO0_DAC_BUSY           (1u << 30)
@@ -1028,10 +1033,10 @@ static void cmd_help(void)
     send_str("RW2 DAC TX diag: [2:1] sample_map 0=native 1=general_preimage 2=old_remap 3=physical\r\n");
     send_str("                 [4:3] tx_lane 0=identity 1=board_map 2=inverse_check\r\n");
     send_str("                 [7:5] DAC source select 0/5..7=all, 1..4=outputs0..3 in physical mode\r\n");
-    send_str("                 physical mode [9:8]=outputs0/1 map, [11:10]=outputs2/3 map\r\n");
-    send_str("                 pair maps: 0=Sundance, 1=swap outputs, 2=native, 3=byte-flip\r\n");
+    send_str("                 physical mode [9:8]=source order: 0=Sundance internal, 1=OUT_A..D\r\n");
+    send_str("                         2=swap first pair, 3=swap second pair; [11:10]=3 byte-flip diag\r\n");
     send_str("RW2 ADC1 JESD RX: [24] bypass ILAS check, [25] STPL check, [26] DP order\r\n");
-    send_str("                  firmware default is RW2=0x01000006 for ADC1/DAC bring-up\r\n");
+    send_str("                  firmware default is RW2=0x01000106 for ADC1/DAC bring-up\r\n");
     send_str("                  [29:28] capture format: 0=LiteJESD converters, 1=post-link lanes\r\n");
     send_str("                         2=Sundance normal, 3=Sundance reversed-byte\r\n");
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");

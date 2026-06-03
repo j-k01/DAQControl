@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Sweep DAC physical pair-map modes and score ADC loopback captures.
+"""Sweep DAC physical source-order modes and score ADC loopback captures.
 
 This is a focused bring-up helper for the current wiring:
   DAC physical output 0 -> ADC1 channel A
   DAC physical output 1 -> ADC1 channel B
 
 It uploads different deterministic programs to DAC output sources 0 and 1,
-zeros sources 2 and 3, sweeps RW2[9:8], captures ADC sources 0..3, and scores
-the reconstructed ADC converter streams against the expected waveforms.
+zeros sources 2 and 3, sweeps RW2[9:8] physical source-order modes, captures
+ADC sources 0..3, and scores the reconstructed ADC converter streams against
+the expected waveforms.
 """
 
 from __future__ import annotations
@@ -99,8 +100,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="COM10")
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--expect-build-id", type=lambda x: int(x, 0), default=0xDA010021)
-    parser.add_argument("--rw2-base", type=lambda x: int(x, 0), default=0x01000006)
+    parser.add_argument("--expect-build-id", type=lambda x: int(x, 0), default=0xDA010022)
+    parser.add_argument("--rw2-base", type=lambda x: int(x, 0), default=0x01000106)
     parser.add_argument("--words", type=int, default=4096)
     parser.add_argument("--program-words", type=int, default=8192)
     parser.add_argument("--sample-rate-mhz", type=float, default=1000.0)
@@ -168,11 +169,11 @@ def main():
         )
 
         rows = []
-        for pair_map in range(4):
-            rw2 = (args.rw2_base & ~(3 << 8)) | (pair_map << 8)
+        for source_order in range(4):
+            rw2 = (args.rw2_base & ~(3 << 8)) | (source_order << 8)
             cap.set_rw2(port, rw2)
-            case_prefix = f"{args.prefix}_pair01_{pair_map}"
-            print(f"Capturing pair_map={pair_map} RW2=0x{rw2:08X}...")
+            case_prefix = f"{args.prefix}_source_order_{source_order}"
+            print(f"Capturing source_order={source_order} RW2=0x{rw2:08X}...")
             _presync, captures, streams = capture_once(port, args.words)
             write_outputs(outdir, case_prefix, captures, streams, args.plot_words, args.max_points)
 
@@ -182,12 +183,12 @@ def main():
             c0_to_ch1 = best_match(conv0, expected1, args.skip, args.max_shift)
             c1_to_ch0 = best_match(conv1, expected0, args.skip, args.max_shift)
             c1_to_ch1 = best_match(conv1, expected1, args.skip, args.max_shift)
-            rows.append((pair_map, rw2, c0_to_ch0, c0_to_ch1, c1_to_ch0, c1_to_ch1))
+            rows.append((source_order, rw2, c0_to_ch0, c0_to_ch1, c1_to_ch0, c1_to_ch1))
 
-        print("\nPair-map scores: correlation, shift, inverted")
-        for pair_map, rw2, c0_ch0, c0_ch1, c1_ch0, c1_ch1 in rows:
+        print("\nSource-order scores: correlation, shift, inverted")
+        for source_order, rw2, c0_ch0, c0_ch1, c1_ch0, c1_ch1 in rows:
             print(
-                f"pair_map={pair_map} RW2=0x{rw2:08X} "
+                f"source_order={source_order} RW2=0x{rw2:08X} "
                 f"ADC_A<-DAC0 {c0_ch0[0]:+.3f}/{c0_ch0[1]}/{int(c0_ch0[2])} "
                 f"ADC_A<-DAC1 {c0_ch1[0]:+.3f}/{c0_ch1[1]}/{int(c0_ch1[2])} "
                 f"ADC_B<-DAC0 {c1_ch0[0]:+.3f}/{c1_ch0[1]}/{int(c1_ch0[2])} "

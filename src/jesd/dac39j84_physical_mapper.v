@@ -20,6 +20,10 @@ module dac39j84_physical_mapper (
             wire [15:0] out2 = dac_out2[(16*i) +: 16];
             wire [15:0] out3 = dac_out3[(16*i) +: 16];
 
+            reg [15:0] sd_dac2_ch2;
+            reg [15:0] sd_dac2_ch1;
+            reg [15:0] sd_dac1_ch2;
+            reg [15:0] sd_dac1_ch1;
             reg [7:0] lane0;
             reg [7:0] lane1;
             reg [7:0] lane2;
@@ -32,65 +36,65 @@ module dac39j84_physical_mapper (
             always @(*) begin
                 case (map_mode[1:0])
                 2'd1: begin
-                    // Swap physical output labels within the first DAC pair.
-                    lane0 = out1[7:0];
-                    lane1 = out0[7:0];
-                    lane2 = out0[15:8];
-                    lane3 = out1[15:8];
+                    // User-guide OUT_A/OUT_B/OUT_C/OUT_D order:
+                    // OUT_A=Channel 1=dac1_ch1, OUT_B=dac1_ch2,
+                    // OUT_C=dac2_ch1, OUT_D=dac2_ch2.
+                    sd_dac1_ch1 = out0;
+                    sd_dac1_ch2 = out1;
+                    sd_dac2_ch1 = out2;
+                    sd_dac2_ch2 = out3;
                 end
                 2'd2: begin
-                    // Native LiteJESD pair ordering for comparison.
-                    lane0 = out0[15:8];
-                    lane1 = out0[7:0];
-                    lane2 = out1[15:8];
-                    lane3 = out1[7:0];
+                    // Swap the first Sundance pair. This directly tests the
+                    // observed case where physical OUT1 appeared to be driven
+                    // by the source intended for OUT0.
+                    sd_dac2_ch2 = out1;
+                    sd_dac2_ch1 = out0;
+                    sd_dac1_ch2 = out2;
+                    sd_dac1_ch1 = out3;
                 end
                 2'd3: begin
-                    // Sundance lane placement with byte orientation flipped.
-                    lane0 = out0[15:8];
-                    lane1 = out1[15:8];
-                    lane2 = out1[7:0];
-                    lane3 = out0[7:0];
+                    // Swap the second Sundance pair.
+                    sd_dac2_ch2 = out0;
+                    sd_dac2_ch1 = out1;
+                    sd_dac1_ch2 = out3;
+                    sd_dac1_ch1 = out2;
                 end
                 default: begin
-                    // Sundance lane placement for physical outputs 0/1:
-                    // out0 on lanes 3/0 and out1 on lanes 2/1.
-                    lane0 = out0[7:0];
-                    lane1 = out1[7:0];
-                    lane2 = out1[15:8];
-                    lane3 = out0[15:8];
+                    // Exact Sundance adapter source order. Sundance's
+                    // dac_ena[0..3] feed dac2_ch2, dac2_ch1, dac1_ch2,
+                    // dac1_ch1 respectively.
+                    sd_dac2_ch2 = out0;
+                    sd_dac2_ch1 = out1;
+                    sd_dac1_ch2 = out2;
+                    sd_dac1_ch1 = out3;
                 end
                 endcase
 
+                lane0 = sd_dac2_ch2[7:0];
+                lane1 = sd_dac2_ch1[7:0];
+                lane2 = sd_dac2_ch1[15:8];
+                lane3 = sd_dac2_ch2[15:8];
+
                 case (map_mode[3:2])
-                2'd1: begin
-                    // Swap physical output labels within the second DAC pair.
-                    lane4 = out2[7:0];
-                    lane5 = out2[15:8];
-                    lane6 = out3[7:0];
-                    lane7 = out3[15:8];
-                end
-                2'd2: begin
-                    // Native LiteJESD pair ordering for comparison.
-                    lane4 = out2[15:8];
-                    lane5 = out2[7:0];
-                    lane6 = out3[15:8];
-                    lane7 = out3[7:0];
-                end
                 2'd3: begin
-                    // Sundance lane placement with byte orientation flipped.
-                    lane4 = out3[15:8];
-                    lane5 = out3[7:0];
-                    lane6 = out2[15:8];
-                    lane7 = out2[7:0];
+                    // Byte-orientation diagnostic: keep source ownership but
+                    // invert the high/low byte placement on all DAC outputs.
+                    lane0 = sd_dac2_ch2[15:8];
+                    lane1 = sd_dac2_ch1[15:8];
+                    lane2 = sd_dac2_ch1[7:0];
+                    lane3 = sd_dac2_ch2[7:0];
+                    lane4 = sd_dac1_ch1[15:8];
+                    lane5 = sd_dac1_ch1[7:0];
+                    lane6 = sd_dac1_ch2[15:8];
+                    lane7 = sd_dac1_ch2[7:0];
                 end
                 default: begin
-                    // Sundance lane placement for physical outputs 2/3:
-                    // out2 on lanes 7/6 and out3 on lanes 5/4.
-                    lane4 = out3[7:0];
-                    lane5 = out3[15:8];
-                    lane6 = out2[7:0];
-                    lane7 = out2[15:8];
+                    // Exact Sundance byte-lane placement.
+                    lane4 = sd_dac1_ch1[7:0];
+                    lane5 = sd_dac1_ch1[15:8];
+                    lane6 = sd_dac1_ch2[7:0];
+                    lane7 = sd_dac1_ch2[15:8];
                 end
                 endcase
             end

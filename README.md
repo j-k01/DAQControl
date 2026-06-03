@@ -378,11 +378,11 @@ For the DAC ordering diagnostic, start with the physical DAC output mapper and
 identity TX lane mapping, then upload a slow frame-aligned trapezoid:
 
 ```text
-WRTE 2 0x01000006
+WRTE 2 0x01000106
 ```
 
 ```powershell
-python scripts/capture_plot_adc_uart.py --port COM10 --rw2 0x01000006 --program-mode trapezoid --sample-format twos --trapezoid-frequency-mhz 5 --program-words 8192 --program-channel all --sources 0,1 --prefix trap5_physical
+python scripts/capture_plot_adc_uart.py --port COM10 --rw2 0x01000106 --program-mode trapezoid --sample-format twos --trapezoid-frequency-mhz 5 --program-words 8192 --program-channel all --sources 0,1 --prefix trap5_physical
 ```
 
 The helper sets `RW3[31:8]` to the uploaded 64-bit frame count before `PCAP`,
@@ -464,7 +464,7 @@ reconstruction, or Sundance-style reversed-byte reconstruction. `RW2[24]=1`
 bypasses ILAS checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL
 checker, and `RW2[26]=1` switches ADC1 from Sundance signal order to physical
 DP0-DP3 order.
-The MicroBlaze firmware defaults `RW2` to `0x01000006`: ADS54J60 ILAS checking
+The MicroBlaze firmware defaults `RW2` to `0x01000106`: ADS54J60 ILAS checking
 is bypassed for bring-up, the DAC sample adapter uses the physical DAC output
 mapper, and the DAC TX lane mux uses identity order. In this path, BRAM/DDS
 sources 0..3 are treated as the four desired physical DAC outputs before the
@@ -472,22 +472,23 @@ mapper splits their bytes across the LiteJESD converter buses. Clear bit 24
 only when deliberately re-enabling ADC ILAS checking while debugging the
 expected ILAS fields.
 
-For the physical mapper, `RW2[9:8]` selects the byte-lane mapping for physical
-DAC outputs 0/1 and `RW2[11:10]` selects the mapping for outputs 2/3:
+For the physical mapper, `RW2[9:8]` selects how source words are assigned to
+the DAC39J84 internal channel names before the Sundance byte-lane placement:
 
-| Pair map | Meaning |
+| Source order | Meaning |
 | --- | --- |
-| `0` | Sundance adapter placement |
-| `1` | Swap the two physical outputs within the pair |
-| `2` | Native LiteJESD converter pair |
-| `3` | Sundance placement with byte orientation flipped |
+| `0` | Sundance internal order: `dac2_ch2`, `dac2_ch1`, `dac1_ch2`, `dac1_ch1` |
+| `1` | User-guide physical order: `OUT_A`, `OUT_B`, `OUT_C`, `OUT_D` |
+| `2` | Swap the first Sundance pair for diagnostics |
+| `3` | Swap the second Sundance pair for diagnostics |
 
-With `sample_map=3`, sweep the cabled output-0/output-1 pair using:
+Set `RW2[11:10]=3` only for the byte-orientation diagnostic; normal builds keep
+those bits clear. With `sample_map=3`, sweep source ownership using:
 `RW2=0x01000006`, `0x01000106`, `0x01000206`, and `0x01000306`.
 The automated cabled-pair sweep is:
 
 ```powershell
-python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010021
+python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010022
 ```
 
 To force a small ADS54J60 JESD test pattern over SPI without rebuilding HDL,
