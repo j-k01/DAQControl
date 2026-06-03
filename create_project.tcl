@@ -467,6 +467,12 @@ foreach ext {*.v *.sv *.vhd} {
     }
 }
 
+set izh_neuron_file [file normalize [file join $script_dir .. .. IZH_neuron izh_neuron.v]]
+if {![file exists $izh_neuron_file]} {
+    error "IZH neuron source not found: $izh_neuron_file"
+}
+add_files -fileset sources_1 -norecurse $izh_neuron_file
+
 if {$include_litejesd} {
     set litejesd_dir [file join $script_dir src jesd]
     set litejesd_rtl [glob -nocomplain -directory $litejesd_dir *.v]

@@ -19,11 +19,16 @@ module daq_litejesd_dac_tx_path #(
     input  wire [1:0]    sample_map_mode,
     input  wire [15:0]   triangle_step,
     input  wire [23:0]   sine_phase_inc,
+    input  wire [7:0]    source_modes,
     input  wire          program_enable,
     input  wire [63:0]   program_word0,
     input  wire [63:0]   program_word1,
     input  wire [63:0]   program_word2,
     input  wire [63:0]   program_word3,
+    input  wire [63:0]   neuron_word0,
+    input  wire [63:0]   neuron_word1,
+    input  wire [63:0]   neuron_word2,
+    input  wire [63:0]   neuron_word3,
 
     output wire          litejesd_ready,
     output wire [31:0]   status,
@@ -239,14 +244,84 @@ module daq_litejesd_dac_tx_path #(
     wire [63:0] program_converter2 = drive_converter2 ? program_word2 : dac_zero64;
     wire [63:0] program_converter3 = drive_converter3 ? program_word3 : dac_zero64;
 
-    wire [63:0] src_converter0 = program_enable ? program_converter0 :
-                                  (drive_converter0 ? sine_quad_word : dac_zero64);
-    wire [63:0] src_converter1 = program_enable ? program_converter1 :
-                                  (drive_converter1 ? sine_quad_word : dac_zero64);
-    wire [63:0] src_converter2 = program_enable ? program_converter2 :
-                                  (drive_converter2 ? sine_quad_word : dac_zero64);
-    wire [63:0] src_converter3 = program_enable ? program_converter3 :
-                                  (drive_converter3 ? sine_quad_word : dac_zero64);
+    wire [63:0] sine_converter0 = drive_converter0 ? sine_quad_word : dac_zero64;
+    wire [63:0] sine_converter1 = drive_converter1 ? sine_quad_word : dac_zero64;
+    wire [63:0] sine_converter2 = drive_converter2 ? sine_quad_word : dac_zero64;
+    wire [63:0] sine_converter3 = drive_converter3 ? sine_quad_word : dac_zero64;
+
+    wire [63:0] neuron_converter0 = drive_converter0 ? neuron_word0 : dac_zero64;
+    wire [63:0] neuron_converter1 = drive_converter1 ? neuron_word1 : dac_zero64;
+    wire [63:0] neuron_converter2 = drive_converter2 ? neuron_word2 : dac_zero64;
+    wire [63:0] neuron_converter3 = drive_converter3 ? neuron_word3 : dac_zero64;
+
+    wire [1:0] source_mode0 = source_modes[1:0];
+    wire [1:0] source_mode1 = source_modes[3:2];
+    wire [1:0] source_mode2 = source_modes[5:4];
+    wire [1:0] source_mode3 = source_modes[7:6];
+
+    wire [1:0] effective_source_mode0 = (source_mode0 == 2'd0) ?
+        (program_enable ? 2'd2 : 2'd1) : source_mode0;
+    wire [1:0] effective_source_mode1 = (source_mode1 == 2'd0) ?
+        (program_enable ? 2'd2 : 2'd1) : source_mode1;
+    wire [1:0] effective_source_mode2 = (source_mode2 == 2'd0) ?
+        (program_enable ? 2'd2 : 2'd1) : source_mode2;
+    wire [1:0] effective_source_mode3 = (source_mode3 == 2'd0) ?
+        (program_enable ? 2'd2 : 2'd1) : source_mode3;
+
+    reg [63:0] src_converter0;
+    reg [63:0] src_converter1;
+    reg [63:0] src_converter2;
+    reg [63:0] src_converter3;
+
+    always @(*) begin
+        case (effective_source_mode0)
+        2'd2: begin
+            src_converter0 = program_converter0;
+        end
+        2'd3: begin
+            src_converter0 = neuron_converter0;
+        end
+        default: begin
+            src_converter0 = sine_converter0;
+        end
+        endcase
+
+        case (effective_source_mode1)
+        2'd2: begin
+            src_converter1 = program_converter1;
+        end
+        2'd3: begin
+            src_converter1 = neuron_converter1;
+        end
+        default: begin
+            src_converter1 = sine_converter1;
+        end
+        endcase
+
+        case (effective_source_mode2)
+        2'd2: begin
+            src_converter2 = program_converter2;
+        end
+        2'd3: begin
+            src_converter2 = neuron_converter2;
+        end
+        default: begin
+            src_converter2 = sine_converter2;
+        end
+        endcase
+
+        case (effective_source_mode3)
+        2'd2: begin
+            src_converter3 = program_converter3;
+        end
+        2'd3: begin
+            src_converter3 = neuron_converter3;
+        end
+        default: begin
+            src_converter3 = sine_converter3;
+        end
+        endcase
+    end
 
     wire [63:0] preimage_converter0;
     wire [63:0] preimage_converter1;
@@ -389,7 +464,8 @@ module daq_litejesd_dac_tx_path #(
     };
 
     assign status = {
-        6'd0,
+        4'd0,
+        effective_source_mode0,
         sample_map_mode,
         active_converter,
         stpl_enable,

@@ -401,6 +401,13 @@ module top #(
     wire [63:0] dac_program_word1_reg;
     wire [63:0] dac_program_word2_reg;
     wire [63:0] dac_program_word3_reg;
+    wire [63:0] dac_neuron_word0_async;
+    wire [63:0] dac_neuron_word1_async;
+    wire [63:0] dac_neuron_word2_async;
+    wire [63:0] dac_neuron_word3_async;
+    wire [7:0]  dac_source_modes_tx;
+    wire [31:0] dac_neuron_debug_async;
+    wire [31:0] dac_neuron_debug_reg;
     wire [31:0] dac_program_status_async;
     wire [31:0] dac_program_status_reg;
     wire [31:0] gth_tx_clk_count;
@@ -817,6 +824,51 @@ module top #(
     wire [1:0] dac_tx_lane_mode_tx = dac_tx_control_tx[3:2];
     wire [2:0] dac_active_converter_tx = dac_tx_control_tx[6:4];
 
+    wire [43:0] izh_cfg_bus_tx;
+    cdc_vector_sync #(
+        .WIDTH (44)
+    ) u_izh_cfg_bus_sync (
+        .dest_clk (gth_tx_usrclk2),
+        .dest_rst (litejesd_reset),
+        .src      ({rw_reg1, rw_reg3[15:4]}),
+        .dest     (izh_cfg_bus_tx)
+    );
+
+    wire [31:0] izh_cfg_value_tx = izh_cfg_bus_tx[43:12];
+    wire [11:0] izh_cfg_ctrl_tx = izh_cfg_bus_tx[11:0];
+    wire       izh_cfg_strobe_level_tx = izh_cfg_ctrl_tx[3];
+    wire [3:0] izh_cfg_param_tx = izh_cfg_ctrl_tx[7:4];
+    wire [1:0] izh_cfg_channel_tx = izh_cfg_ctrl_tx[9:8];
+    wire       izh_cfg_all_tx = izh_cfg_ctrl_tx[10];
+
+    reg izh_cfg_strobe_d_tx = 1'b0;
+    always @(posedge gth_tx_usrclk2) begin
+        if (litejesd_reset) begin
+            izh_cfg_strobe_d_tx <= 1'b0;
+        end else begin
+            izh_cfg_strobe_d_tx <= izh_cfg_strobe_level_tx;
+        end
+    end
+    wire izh_cfg_strobe_tx = izh_cfg_strobe_level_tx & ~izh_cfg_strobe_d_tx;
+
+    izh_dac_bank u_izh_dac_bank (
+        .clk           (gth_tx_usrclk2),
+        .reset         (litejesd_reset),
+        .cfg_strobe    (izh_cfg_strobe_tx),
+        .cfg_channel   (izh_cfg_channel_tx),
+        .cfg_all       (izh_cfg_all_tx),
+        .cfg_param     (izh_cfg_param_tx),
+        .cfg_value     (izh_cfg_value_tx),
+        .debug_channel (dac_active_converter_tx),
+        .dac_word0     (dac_neuron_word0_async),
+        .dac_word1     (dac_neuron_word1_async),
+        .dac_word2     (dac_neuron_word2_async),
+        .dac_word3     (dac_neuron_word3_async),
+        .source_modes  (dac_source_modes_tx),
+        .debug_word    (dac_neuron_debug_async),
+        .spike_flags   ()
+    );
+
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_program_req_sync = 3'b000;
     (* ASYNC_REG = "TRUE" *) reg [1:0] dac_program_enable_sync = 2'b00;
@@ -948,11 +1000,16 @@ module top #(
         .sample_map_mode  (dac_sample_map_mode_tx),
         .triangle_step    (16'd256),
         .sine_phase_inc   (dac_sine_phase_inc_tx),
+        .source_modes     (dac_source_modes_tx),
         .program_enable   (dac_program_enable),
         .program_word0    (dac_program_word0_async),
         .program_word1    (dac_program_word1_async),
         .program_word2    (dac_program_word2_async),
         .program_word3    (dac_program_word3_async),
+        .neuron_word0     (dac_neuron_word0_async),
+        .neuron_word1     (dac_neuron_word1_async),
+        .neuron_word2     (dac_neuron_word2_async),
+        .neuron_word3     (dac_neuron_word3_async),
         .litejesd_ready   (litejesd_ready_async),
         .status           (litejesd_status_async),
         .triangle_word    (litejesd_triangle_async),
@@ -1054,6 +1111,12 @@ module top #(
     assign dac_program_word1_async = 64'd0;
     assign dac_program_word2_async = 64'd0;
     assign dac_program_word3_async = 64'd0;
+    assign dac_neuron_word0_async = 64'd0;
+    assign dac_neuron_word1_async = 64'd0;
+    assign dac_neuron_word2_async = 64'd0;
+    assign dac_neuron_word3_async = 64'd0;
+    assign dac_source_modes_tx = 8'd0;
+    assign dac_neuron_debug_async = 32'd0;
     assign dac_program_status_async = 32'd0;
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     assign dac0_bram_addr = 32'd0;
@@ -1442,7 +1505,7 @@ module top #(
 `endif
 `endif
 
-    localparam integer FABRIC_DEBUG_SYNC_WIDTH = 495;
+    localparam integer FABRIC_DEBUG_SYNC_WIDTH = 527;
     wire [FABRIC_DEBUG_SYNC_WIDTH-1:0] fabric_debug_sync;
     cdc_vector_sync #(
         .WIDTH (FABRIC_DEBUG_SYNC_WIDTH)
@@ -1458,6 +1521,7 @@ module top #(
             litejesd_active_async,
             gth_txctrl2_lane0_async,
             gth_txdata_lane0_async,
+            dac_neuron_debug_async,
             dac_program_status_async,
             dac_program_word3_async,
             dac_program_word2_async,
@@ -1481,6 +1545,7 @@ module top #(
         litejesd_active,
         gth_txctrl2_lane0_debug,
         gth_txdata_lane0_debug,
+        dac_neuron_debug_reg,
         dac_program_status_reg,
         dac_program_word3_reg,
         dac_program_word2_reg,
@@ -1657,7 +1722,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_001B;
+    wire [31:0] build_id = 32'hDA01_001C;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]
@@ -1686,9 +1751,10 @@ module top #(
             5'd4:  selected_count = gth_status_reg;
             5'd5:  selected_count = gth_rx_status_reg;
             5'd6:  selected_count = litejesd_status_reg;
-            5'd7:  selected_count = rw_reg3[6] ? (rw_reg2[31] ? dac_program_word_debug :
-                                                              dac_program_status_reg) :
-                                                 litejesd_wave_word;
+            5'd7:  selected_count = (rw_reg3[5:4] == 2'd3) ? dac_neuron_debug_reg :
+                                     (rw_reg3[6] ? (rw_reg2[31] ? dac_program_word_debug :
+                                                                 dac_program_status_reg) :
+                                                   litejesd_wave_word);
             5'd8:  selected_count = hmc_readback_summary_reg;
             5'd9:  selected_count = hmc_readback_id_word;
             5'd10: selected_count = hmc_readback_alarm_word;

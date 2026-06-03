@@ -181,7 +181,41 @@ These bits are only used by the `--with-staged-gt` build.
 | 0 | Pulse HMC7044 auto-init/readback restart |
 | 1 | Pulse DAC39J84 auto-init restart |
 | 2 | Pulse ADS54J60 auto-init/readback restart |
+| 5:4 | Last DAC source requested by `NSRC`: `0` legacy auto (`RW3[6]` selects DDS/BRAM), `1` DDS, `2` DAC BRAM, `3` IZH neuron |
+| 7 | IZH neuron config strobe, pulsed by firmware command `NEUR` |
+| 11:8 | IZH/source parameter select during firmware config pulses: `0=a`, `1=b`, `2=c`, `3=d`, `4=I`, `5=dt`, `6=I_constant`, `7=v_offset`, `8=DAC source`, `E=defaults`, `F=reset` |
+| 13:12 | IZH channel select during `NEUR` |
+| 14 | IZH all-channel write during `NEUR` |
 | 31:8 | DAC sine DDS phase increment when BRAM mode is off; DAC BRAM loop frame count when BRAM mode is on, zero loops the full BRAM |
+
+## IZH Neuron DAC Source
+
+The design instantiates the original neuron from
+`D:\DAVIS\Research\IZH_neuron\izh_neuron.v`. Do not edit that file for DAQ
+integration behavior; the DAQ-specific clamp, scale, source select, and config
+logic is in `src/izh_dac_channel.v` and `src/izh_dac_bank.sv`.
+
+The neuron output `v_out` is Q16.16 millivolts. The wrapper clamps it to
+`-80 mV .. +30 mV` and maps that biological range over the DAC's full signed
+16-bit range. Each LiteJESD converter word is four chronological 16-bit samples,
+so the current neuron value is repeated across all four slots:
+`{sample, sample, sample, sample}`.
+
+UART controls:
+
+```text
+NSRC dds        # force existing DDS source on all DACs
+NSRC bram       # force DAC BRAM source on all DACs; also enables BRAM playback
+NSRC izh        # force IZH neuron source on all DACs
+NSRC 0 izh      # force only DAC converter 0 to IZH source
+NEUR all reset  # reset all four neurons
+NEUR 0 i 0x00100000
+NEUR 0 offset 0x00000000
+```
+
+`NEUR` values are raw Q16.16, matching the original IZH testbench. Defaults are
+regular-spiking testbench values: `a=0.02`, `b=0.20`, `c=-65`, `d=8`,
+`I=0x000FFF00`, `dt=0.0625`, and `I_constant=10`.
 
 ## Build
 

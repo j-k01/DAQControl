@@ -89,7 +89,15 @@
 #if HAS_BRAM_DATAPLANE
 #define RW3_CAPTURE_START      (1u << 3)
 #define RW3_DAC_PROGRAM_EN     (1u << 6)
+#endif
+#define RW3_DAC_SOURCE_SHIFT   4
+#define RW3_DAC_SOURCE_MASK    (3u << RW3_DAC_SOURCE_SHIFT)
+#define RW3_IZH_CFG_STROBE     (1u << 7)
+#define RW3_IZH_CFG_PARAM_SHIFT 8
+#define RW3_IZH_CFG_CHANNEL_SHIFT 12
+#define RW3_IZH_CFG_ALL        (1u << 14)
 
+#if HAS_BRAM_DATAPLANE
 #define CAPTURE_SYNC0          0xFEu
 #define CAPTURE_SYNC1          0x10u
 #define CAPTURE_SYNC2          0xCAu
@@ -109,6 +117,8 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
 static XUartNs550 uart;
 static char cmd[96];
 static int cmd_idx = 0;
+
+static void pulse_neuron_config(u32 channel, u32 all_channels, u32 param, u32 value);
 
 static void firmware_marker(u32 stage)
 {
@@ -511,6 +521,201 @@ static int parse_adc_test_mode(char **cursor, u32 *mode)
     return *mode <= 5u;
 }
 
+static int parse_dac_source_mode(char **cursor, u32 *mode)
+{
+    char *p = *cursor;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (*p == '\0')
+        return 0;
+
+    if (token_eq_ci(p, "auto")) {
+        *mode = 0u;
+    } else if (token_eq_ci(p, "dds") || token_eq_ci(p, "sine")) {
+        *mode = 1u;
+    } else if (token_eq_ci(p, "bram") || token_eq_ci(p, "program")) {
+        *mode = 2u;
+    } else if (token_eq_ci(p, "izh") || token_eq_ci(p, "neuron")) {
+        *mode = 3u;
+    } else if (!parse_u32_arg(&p, mode)) {
+        return 0;
+    }
+
+    *cursor = p;
+    return 1;
+}
+
+static void cmd_nsrc(void)
+{
+    char *p = &cmd[4];
+    char *save_p;
+    u32 channel = 0;
+    u32 all_channels = 1;
+    u32 first;
+    u32 mode;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (token_eq_ci(p, "all")) {
+        while (*p != '\0' && *p != ' ' && *p != '\t')
+            p++;
+    } else {
+        save_p = p;
+        if (parse_u32_arg(&p, &first) && first < 4u) {
+            channel = first;
+            all_channels = 0;
+        } else {
+            p = save_p;
+        }
+    }
+
+    if (!parse_dac_source_mode(&p, &mode) || mode > 3u) {
+        send_str("ERR NSRC expects [all|0..3] auto, dds, bram, izh, or 0..3\r\n");
+        return;
+    }
+
+    pulse_neuron_config(channel, all_channels, 8u, mode);
+
+    {
+        u32 rw3 = Xil_In32(RW_REG3);
+        rw3 &= ~(RW3_DAC_SOURCE_MASK
+#if HAS_BRAM_DATAPLANE
+                 | (all_channels ? RW3_DAC_PROGRAM_EN : 0u)
+#endif
+                 | RW3_IZH_CFG_STROBE);
+        rw3 |= (mode << RW3_DAC_SOURCE_SHIFT);
+#if HAS_BRAM_DATAPLANE
+        if (mode == 2u) {
+            rw3 |= RW3_DAC_PROGRAM_EN;
+        }
+#endif
+        Xil_Out32(RW_REG3, rw3);
+    }
+
+    send_str("DAC source ");
+    send_str(all_channels ? "all" : "ch");
+    if (!all_channels) {
+        send_uint(channel);
+    }
+    send_str(" = ");
+    send_uint(mode);
+    send_str("\r\n");
+}
+
+static int parse_neuron_param(char **cursor, u32 *param, int *needs_value)
+{
+    char *p = *cursor;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (*p == '\0')
+        return 0;
+
+    *needs_value = 1;
+    if (token_eq_ci(p, "a")) {
+        *param = 0u;
+    } else if (token_eq_ci(p, "b")) {
+        *param = 1u;
+    } else if (token_eq_ci(p, "c")) {
+        *param = 2u;
+    } else if (token_eq_ci(p, "d")) {
+        *param = 3u;
+    } else if (token_eq_ci(p, "i") || token_eq_ci(p, "current")) {
+        *param = 4u;
+    } else if (token_eq_ci(p, "dt") || token_eq_ci(p, "timestep")) {
+        *param = 5u;
+    } else if (token_eq_ci(p, "iconst") || token_eq_ci(p, "bias")) {
+        *param = 6u;
+    } else if (token_eq_ci(p, "offset") || token_eq_ci(p, "offs")) {
+        *param = 7u;
+    } else if (token_eq_ci(p, "source") || token_eq_ci(p, "src")) {
+        *param = 8u;
+    } else if (token_eq_ci(p, "default") || token_eq_ci(p, "defaults")) {
+        *param = 14u;
+        *needs_value = 0;
+    } else if (token_eq_ci(p, "reset")) {
+        *param = 15u;
+        *needs_value = 0;
+    } else if (!parse_u32_arg(&p, param)) {
+        return 0;
+    }
+
+    while (*p != '\0' && *p != ' ' && *p != '\t')
+        p++;
+    *cursor = p;
+    return *param <= 15u;
+}
+
+static void pulse_neuron_config(u32 channel, u32 all_channels, u32 param, u32 value)
+{
+    u32 old_rw1 = Xil_In32(RW_REG1);
+    u32 old_rw3 = Xil_In32(RW_REG3);
+    u32 base_rw3 = old_rw3 & RW3_DAC_SOURCE_MASK;
+    u32 restore_rw3 = old_rw3 & ~RW3_IZH_CFG_STROBE;
+    u32 cfg_rw3 = base_rw3 |
+                  RW3_IZH_CFG_STROBE |
+                  ((param & 0xFu) << RW3_IZH_CFG_PARAM_SHIFT) |
+                  ((channel & 3u) << RW3_IZH_CFG_CHANNEL_SHIFT);
+
+    if (all_channels) {
+        cfg_rw3 |= RW3_IZH_CFG_ALL;
+    }
+
+    Xil_Out32(RW_REG1, value);
+    Xil_Out32(RW_REG3, cfg_rw3);
+    short_delay();
+    Xil_Out32(RW_REG3, restore_rw3);
+    Xil_Out32(RW_REG1, old_rw1);
+}
+
+static void cmd_neur(void)
+{
+    char *p = &cmd[4];
+    u32 channel = 0;
+    u32 all_channels = 0;
+    u32 param;
+    u32 value = 0;
+    int needs_value;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (token_eq_ci(p, "all")) {
+        all_channels = 1u;
+        while (*p != '\0' && *p != ' ' && *p != '\t')
+            p++;
+    } else if (!parse_u32_arg(&p, &channel) || channel > 3u) {
+        send_str("ERR NEUR expects channel 0..3 or all\r\n");
+        return;
+    }
+
+    if (!parse_neuron_param(&p, &param, &needs_value)) {
+        send_str("ERR NEUR expects param a,b,c,d,i,dt,iconst,offset,reset,default\r\n");
+        return;
+    }
+
+    if (needs_value && !parse_u32_arg(&p, &value)) {
+        send_str("ERR NEUR param expects raw Q16.16 value\r\n");
+        return;
+    }
+
+    pulse_neuron_config(channel, all_channels, param, value);
+    send_str("OK NEUR ");
+    send_str(all_channels ? "all" : "ch");
+    if (!all_channels) {
+        send_uint(channel);
+    }
+    send_str(" param=");
+    send_uint(param);
+    send_str(" value=");
+    send_hex(value);
+    send_str("\r\n");
+}
+
 static void cmd_adct(void)
 {
     char *p = &cmd[4];
@@ -785,6 +990,9 @@ static void cmd_help(void)
     send_str("  LOOP             dump DAC TX / ADC1 RX loopback diagnostics\r\n");
     send_str("  RXSW             sweep ADC1 RX ILAS/order/polarity diagnostics\r\n");
     send_str("  ADCT mode        ADS54J60 test mode: off,d21,k28,ila,rpat,transport\r\n");
+    send_str("  NSRC [ch|all] mode DAC source: auto,dds,bram,izh\r\n");
+    send_str("  NEUR ch param value  program IZH Q16.16 param on ch=0..3 or all\r\n");
+    send_str("                 params: a,b,c,d,i/current,dt,iconst/bias,offset,source,reset,default\r\n");
     send_str("  RDRO n           read RO register 0..3\r\n");
     send_str("  RDRW n           read RW register 0..3\r\n");
     send_str("  WRTE n value     write RW register 0..3; use 0x prefix for hex masks\r\n");
@@ -825,6 +1033,8 @@ static void cmd_help(void)
     send_str("                  [29:28] capture format: 0=LiteJESD converters, 1=post-link lanes\r\n");
     send_str("                         2=Sundance normal, 3=Sundance reversed-byte\r\n");
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
+    send_str("    [5:4] DAC source: 0=auto legacy, 1=DDS, 2=BRAM, 3=IZH neuron\r\n");
+    send_str("    NEUR uses RW3[7] pulse, [11:8] param, [13:12] channel, [14] all\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("    [3] ADC BRAM capture/DAC program restart pulse\r\n");
     send_str("    [6] DAC program BRAM mode enable; PCAP sets this, CAPT clears it\r\n");
@@ -876,6 +1086,8 @@ static void cmd_status(void)
     send_uint((rw2 & RW2_DAC_TX_LANE_MASK) >> RW2_DAC_TX_LANE_SHIFT);
     send_str(" conv_sel=");
     send_uint((rw2 & RW2_DAC_CONV_MASK) >> RW2_DAC_CONV_SHIFT);
+    send_str(" last_src=");
+    send_uint((Xil_In32(RW_REG3) & RW3_DAC_SOURCE_MASK) >> RW3_DAC_SOURCE_SHIFT);
     send_str("\r\n");
     send_str("adc_diag: capture_format=");
     send_uint((rw2 & RW2_ADC1_CAPTURE_FORMAT_MASK) >> RW2_ADC1_CAPTURE_FORMAT_SHIFT);
@@ -907,6 +1119,10 @@ static void process_cmd(void)
         cmd_rxsw();
     } else if (strncmp(cmd, "ADCT", 4) == 0) {
         cmd_adct();
+    } else if (strncmp(cmd, "NSRC", 4) == 0) {
+        cmd_nsrc();
+    } else if (strncmp(cmd, "NEUR", 4) == 0) {
+        cmd_neur();
     } else if (strncmp(cmd, "RDRO", 4) == 0) {
         char *p = &cmd[5];
         u32 idx;

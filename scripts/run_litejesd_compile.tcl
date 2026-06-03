@@ -1,10 +1,16 @@
 set script_dir [file dirname [file normalize [info script]]]
 set root_dir   [file normalize [file join $script_dir ..]]
+set izh_neuron_file [file normalize [file join $root_dir .. .. IZH_neuron izh_neuron.v]]
 
 cd $root_dir
 
+if {![file exists $izh_neuron_file]} {
+    error "IZH neuron source not found: $izh_neuron_file"
+}
+
 set common_sources [list \
     ../launch_stubs.v \
+    $izh_neuron_file \
     ../../src/cdc_vector_sync.v \
     ../../src/clock_activity_monitor.v \
     ../../src/signal_activity_monitor.v \
@@ -14,6 +20,8 @@ set common_sources [list \
     ../../src/dataplane_bram_ip.v \
     ../../src/dac_bram_player.v \
     ../../src/adc_bram_capture.v \
+    ../../src/izh_dac_channel.v \
+    ../../src/izh_dac_bank.sv \
     ../../src/jesd/dac39j84_sample_remap.v \
     ../../src/jesd/litejesd_dac_tx.v \
     ../../src/jesd/daq_litejesd_dac_tx_path.v \
