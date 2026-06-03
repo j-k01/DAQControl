@@ -77,7 +77,9 @@
 #define RW2_DAC_PHYSICAL_ORDER_MASK  (3u << RW2_DAC_PHYSICAL_ORDER_SHIFT)
 #define RW2_DAC_PHYSICAL_ORDER_USER_GUIDE (1u << RW2_DAC_PHYSICAL_ORDER_SHIFT)
 #define RW2_LAUNCH_DEFAULT     (RW2_ADC1_ILAS_BYPASS | \
-                                (3u << RW2_DAC_TX_LANE_SHIFT))
+                                (3u << RW2_DAC_SAMPLE_MAP_SHIFT) | \
+                                (3u << RW2_DAC_TX_LANE_SHIFT) | \
+                                (7u << RW2_DAC_CONV_SHIFT))
 
 #define RO0_DAC_DONE           (1u << 31)
 #define RO0_DAC_BUSY           (1u << 30)
@@ -1029,13 +1031,13 @@ static void cmd_help(void)
     send_str("                 with RW3[6]=1 and RW2[31]=1, selector 7 returns DAC program word\r\n");
     send_str("                 word select is RW2[30:28]: 0/1=ch0 lo/hi ... 6/7=ch3 lo/hi\r\n");
 #endif
-    send_str("RW2 DAC TX diag: [2:1] sample_map 0=native 1=general_preimage 2=old_remap 3=physical\r\n");
+    send_str("RW2 DAC TX diag: [2:1] sample_map 0=native 1=general_preimage 2=old_remap 3=Sundance physical\r\n");
     send_str("                 [4:3] tx_lane 0=identity 1=board_map 2=inverse_check 3=dac_xbar\r\n");
     send_str("                 [7:5] DAC source select 0/5..7=all, 1..4=outputs0..3 in physical mode\r\n");
     send_str("                 physical mode [9:8]=source order: 0=Sundance internal, 1=OUT_A..D\r\n");
     send_str("                         2=swap first pair, 3=swap second pair; [11:10]=3 byte-flip diag\r\n");
     send_str("RW2 ADC1 JESD RX: [24] bypass ILAS check, [25] STPL check, [26] DP order\r\n");
-    send_str("                  firmware default is RW2=0x01000018 for ADC1/DAC bring-up\r\n");
+    send_str("                  firmware default is RW2=0x010000FE for ADC1/DAC bring-up\r\n");
     send_str("                  [29:28] capture format: 0=LiteJESD converters, 1=post-link lanes\r\n");
     send_str("                         2=Sundance normal, 3=Sundance reversed-byte\r\n");
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
@@ -1092,6 +1094,8 @@ static void cmd_status(void)
     send_uint((rw2 & RW2_DAC_TX_LANE_MASK) >> RW2_DAC_TX_LANE_SHIFT);
     send_str(" conv_sel=");
     send_uint((rw2 & RW2_DAC_CONV_MASK) >> RW2_DAC_CONV_SHIFT);
+    send_str(" phys_map=");
+    send_uint((rw2 & RW2_DAC_PHYSICAL_ORDER_MASK) >> RW2_DAC_PHYSICAL_ORDER_SHIFT);
     send_str(" last_src=");
     send_uint((Xil_In32(RW_REG3) & RW3_DAC_SOURCE_MASK) >> RW3_DAC_SOURCE_SHIFT);
     send_str("\r\n");

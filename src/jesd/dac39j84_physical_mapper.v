@@ -24,14 +24,22 @@ module dac39j84_physical_mapper (
             reg [15:0] sd_dac2_ch1;
             reg [15:0] sd_dac1_ch2;
             reg [15:0] sd_dac1_ch1;
-            reg [7:0] lane0;
-            reg [7:0] lane1;
-            reg [7:0] lane2;
-            reg [7:0] lane3;
-            reg [7:0] lane4;
-            reg [7:0] lane5;
-            reg [7:0] lane6;
-            reg [7:0] lane7;
+            reg [7:0] p0;
+            reg [7:0] p1;
+            reg [7:0] p2;
+            reg [7:0] p3;
+            reg [7:0] p4;
+            reg [7:0] p5;
+            reg [7:0] p6;
+            reg [7:0] p7;
+            reg [7:0] l0;
+            reg [7:0] l1;
+            reg [7:0] l2;
+            reg [7:0] l3;
+            reg [7:0] l4;
+            reg [7:0] l5;
+            reg [7:0] l6;
+            reg [7:0] l7;
 
             always @(*) begin
                 case (map_mode[1:0])
@@ -71,39 +79,89 @@ module dac39j84_physical_mapper (
                 end
                 endcase
 
-                lane0 = sd_dac2_ch2[7:0];
-                lane1 = sd_dac2_ch1[7:0];
-                lane2 = sd_dac2_ch1[15:8];
-                lane3 = sd_dac2_ch2[15:8];
+                // Sundance's adapter builds physical lane bytes first:
+                //   p0..p3 are DAC1_DATA_o lanes 0..3 (DP4..DP7)
+                //   p4..p7 are DAC2_DATA_o lanes 0..3 (DP0..DP3)
+                //
+                // These are not LiteJESD converter buses. The generated
+                // LiteJESD core converts converterN[15:0] into logical lane
+                // bytes as {L(2N), L(2N+1)}.
+                p0 = sd_dac2_ch2[7:0];
+                p1 = sd_dac2_ch1[7:0];
+                p2 = sd_dac2_ch1[15:8];
+                p3 = sd_dac2_ch2[15:8];
 
                 case (map_mode[3:2])
                 2'd3: begin
                     // Byte-orientation diagnostic: keep source ownership but
                     // invert the high/low byte placement on all DAC outputs.
-                    lane0 = sd_dac2_ch2[15:8];
-                    lane1 = sd_dac2_ch1[15:8];
-                    lane2 = sd_dac2_ch1[7:0];
-                    lane3 = sd_dac2_ch2[7:0];
-                    lane4 = sd_dac1_ch1[15:8];
-                    lane5 = sd_dac1_ch1[7:0];
-                    lane6 = sd_dac1_ch2[15:8];
-                    lane7 = sd_dac1_ch2[7:0];
+                    p0 = sd_dac2_ch2[15:8];
+                    p1 = sd_dac2_ch1[15:8];
+                    p2 = sd_dac2_ch1[7:0];
+                    p3 = sd_dac2_ch2[7:0];
+                    p4 = sd_dac1_ch1[15:8];
+                    p5 = sd_dac1_ch1[7:0];
+                    p6 = sd_dac1_ch2[15:8];
+                    p7 = sd_dac1_ch2[7:0];
                 end
                 default: begin
                     // Exact Sundance byte-lane placement.
-                    lane4 = sd_dac1_ch1[7:0];
-                    lane5 = sd_dac1_ch1[15:8];
-                    lane6 = sd_dac1_ch2[7:0];
-                    lane7 = sd_dac1_ch2[15:8];
+                    p4 = sd_dac1_ch1[7:0];
+                    p5 = sd_dac1_ch1[15:8];
+                    p6 = sd_dac1_ch2[7:0];
+                    p7 = sd_dac1_ch2[15:8];
+                end
+                endcase
+
+                case (map_mode[3:2])
+                2'd1: begin
+                    // Physical-lane diagnostic. Use with tx_lane_mode=0 to
+                    // reproduce Sundance's physical GTH lane byte placement.
+                    l0 = p0;
+                    l1 = p1;
+                    l2 = p2;
+                    l3 = p3;
+                    l4 = p4;
+                    l5 = p5;
+                    l6 = p6;
+                    l7 = p7;
+                end
+                2'd2: begin
+                    // Old upper-half reverse diagnostic retained for A/B.
+                    // This corresponds to tx_lane_mode=2's upper-lane order.
+                    l0 = p1;
+                    l1 = p3;
+                    l2 = p2;
+                    l3 = p0;
+                    l4 = p7;
+                    l5 = p6;
+                    l6 = p5;
+                    l7 = p4;
+                end
+                default: begin
+                    // Normal path for the current DAC39J84 config95/config96
+                    // value 0x3021/0x7654 and tx_lane_mode=3.  The top-level
+                    // lane mux sends physical lanes 0..7 <= logical lanes
+                    // [3,0,2,1,4,5,6,7], so put each Sundance physical byte
+                    // into the logical lane that will reach that physical lane.
+                    l0 = p1;
+                    l1 = p3;
+                    l2 = p2;
+                    l3 = p0;
+                    l4 = p4;
+                    l5 = p5;
+                    l6 = p6;
+                    l7 = p7;
                 end
                 endcase
             end
 
-            // LiteJESD converter0 emits lane0=high byte and lane1=low byte.
-            assign converter0[(16*i) +: 16] = {lane0, lane1};
-            assign converter1[(16*i) +: 16] = {lane2, lane3};
-            assign converter2[(16*i) +: 16] = {lane4, lane5};
-            assign converter3[(16*i) +: 16] = {lane6, lane7};
+            // LiteJESD converter0 emits logical lane0=high byte and
+            // logical lane1=low byte; converter1 emits lanes 2/3, etc.
+            assign converter0[(16*i) +: 16] = {l0, l1};
+            assign converter1[(16*i) +: 16] = {l2, l3};
+            assign converter2[(16*i) +: 16] = {l4, l5};
+            assign converter3[(16*i) +: 16] = {l6, l7};
         end
     endgenerate
 
