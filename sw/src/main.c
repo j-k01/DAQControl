@@ -79,7 +79,7 @@
 #define RW2_DAC_PHYSICAL_COORD_SHIFT 10
 #define RW2_DAC_PHYSICAL_COORD_MASK  (3u << RW2_DAC_PHYSICAL_COORD_SHIFT)
 #define RW2_LAUNCH_DEFAULT     (RW2_ADC1_ILAS_BYPASS | \
-                                (3u << RW2_DAC_SAMPLE_MAP_SHIFT) | \
+                                (0u << RW2_DAC_SAMPLE_MAP_SHIFT) | \
                                 (3u << RW2_DAC_TX_LANE_SHIFT) | \
                                 (7u << RW2_DAC_CONV_SHIFT))
 
@@ -1033,7 +1033,7 @@ static void cmd_help(void)
     send_str("                 with RW3[6]=1 and RW2[31]=1, selector 7 returns DAC program word\r\n");
     send_str("                 word select is RW2[30:28]: 0/1=ch0 lo/hi ... 6/7=ch3 lo/hi\r\n");
 #endif
-    send_str("RW2 DAC TX diag: [2:1] sample_map 0=native_lmf841 1=general_preimage 2=old_remap 3=sundance_preimage\r\n");
+    send_str("RW2 DAC TX diag: [2:1] sample_map 0=native_lmf841_odd_bswap 1=general_preimage 2=old_remap 3=sundance_preimage\r\n");
     send_str("                 [4:3] tx_lane 0=identity 1=board_map 2=inverse_check 3=dac_xbar\r\n");
     send_str("                 [7:5] DAC source select 0/5..7=all, 1..4=outputs0..3 in physical mode\r\n");
     send_str("                 sundance_preimage [9:8]=source order: 0=Sundance internal, 1=OUT_A..D\r\n");

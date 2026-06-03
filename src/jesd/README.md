@@ -49,7 +49,11 @@ It instantiates `litejesd_dac_tx` and builds four 64-bit source words. There
 are two primary DAC mapping hypotheses exposed at runtime:
 
 - `sample_map=0`: native LMF841, where LiteJESD logical lanes are adjacent
-  high/low byte pairs for converters A/B/C/D.
+  high/low byte pairs for converters A/B/C/D. Scope testing with BRAM tones
+  showed DAC0 and DAC2 are correct in this native order, while DAC1 and DAC3
+  require a per-16-bit-sample byte swap before LiteJESD. The normal path now
+  applies that odd-converter byte swap in HDL so DDS, BRAM, and IZH sources use
+  the same working orientation.
 - `sample_map=3`: Sundance core-lane preimage, where
   `dac39j84_physical_mapper` reproduces Sundance's `dac1_data_o` /
   `dac2_data_o` byte placement and then preimages that placement into
@@ -77,12 +81,14 @@ TX lane mode 3. `map_mode[3:2]=1` emits Sundance core-lane bytes directly for
 identity-lane diagnostics, `2` keeps the old upper-lane reverse check, and `3`
 flips byte orientation as a last-resort diagnostic.
 
-For the current DAC39J84 initialization, the firmware default uses TX lane mode
-3, the inverse map implied by Sundance's `init8411_dac_remapped`
+For the current DAC39J84 initialization, the firmware default uses
+`sample_map=0`, TX lane mode 3, and `conv_sel=7`. TX lane mode 3 is the inverse
+map implied by Sundance's `init8411_dac_remapped`
 `config95/config96 = 0x3021/0x7654` setting. In this mode, the FPGA emits
-native logical LiteJESD converter streams and the top-level mux routes logical
-lanes to physical GTH lanes as `[3,0,2,1,4,5,6,7]`. This keeps physical-lane
-correction after LiteJESD, at the same abstraction level as the GTH lanes.
+native logical LiteJESD converter streams, byte-swapping the odd converter
+streams as described above, and the top-level mux routes logical lanes to
+physical GTH lanes as `[3,0,2,1,4,5,6,7]`. This keeps physical-lane correction
+after LiteJESD, at the same abstraction level as the GTH lanes.
 Connect `gth_txcharisk` in the same lane order as `gth_txdata` to the 8B/10B
 `TXCTRL2` path, with `TXCTRL0` and `TXCTRL1` tied low unless the generated
 wrapper requires those ports for another control function. Keep `TX8B10BEN`

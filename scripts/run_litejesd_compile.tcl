@@ -35,6 +35,7 @@ set common_sources [list \
     ../../src/dataplane_bram_ip.v \
     ../../src/dac_bram_player.v \
     ../../src/adc_bram_capture.v \
+    ../../src/izh_spike_trapezoid.v \
     ../../src/izh_dac_channel.v \
     ../../src/izh_dac_bank.sv \
     ../../src/jesd/dac39j84_sample_remap.v \

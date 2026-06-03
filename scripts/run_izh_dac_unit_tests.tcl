@@ -28,6 +28,7 @@ cd sim/work_izh_dac
 
 exec xvlog.bat -sv \
     $izh_neuron_file \
+    ../../src/izh_spike_trapezoid.v \
     ../../src/izh_dac_channel.v \
     ../../src/izh_dac_bank.sv \
     ../izh_dac_integration_tb.sv

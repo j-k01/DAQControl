@@ -140,24 +140,32 @@ module izh_dac_integration_tb;
         repeat (2) tick();
 
         force u_channel.neuron_spike = 1'b0;
-        force u_channel.neuron_v = 32'shFFB0_0000; // -80 mV clamp low
-        #1;
-        check16("low clamp sample", ch_dac_sample, 16'h8000);
-        check64("low clamp word", ch_dac_word, 64'h8000_8000_8000_8000);
-
-        force u_channel.neuron_v = 32'sh001E_0000; // +30 mV clamp high
-        #1;
-        check16("high clamp sample", ch_dac_sample, 16'h7FFF);
-        check64("high clamp word", ch_dac_word, 64'h7FFF_7FFF_7FFF_7FFF);
-
-        force u_channel.neuron_v = 32'shFFBF_0000; // -65 mV normal reset
-        #1;
-        check16("default reset voltage sample", ch_dac_sample, 16'hA2E8);
-
         force u_channel.neuron_v = 32'shFFB0_0000;
-        force u_channel.neuron_spike = 1'b1;
         #1;
-        check16("spike forces high sample", ch_dac_sample, 16'h7FFF);
+        check16("idle spike sample", ch_dac_sample, 16'h0000);
+        check64("idle spike word", ch_dac_word, 64'h0000_0000_0000_0000);
+
+        force u_channel.neuron_spike = 1'b1;
+        tick();
+        check16("spike trapezoid first sample", ch_dac_sample, 16'h1800);
+        check64("spike trapezoid first beat", ch_dac_word, 64'h6000_6000_3000_1800);
+
+        force u_channel.neuron_spike = 1'b0;
+        tick();
+        check64("spike trapezoid second beat", ch_dac_word, 64'h0000_1800_3000_6000);
+
+        tick();
+        check64("spike trapezoid ends", ch_dac_word, 64'h0000_0000_0000_0000);
+
+        force u_channel.neuron_spike = 1'b1;
+        tick();
+        check64("spike trapezoid restart first beat", ch_dac_word, 64'h6000_6000_3000_1800);
+
+        force u_channel.neuron_spike = 1'b0;
+        tick();
+        force u_channel.neuron_spike = 1'b1;
+        tick();
+        check64("mid-pulse spike restarts trapezoid", ch_dac_word, 64'h6000_6000_3000_1800);
 
         release u_channel.neuron_v;
         release u_channel.neuron_spike;

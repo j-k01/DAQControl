@@ -361,8 +361,16 @@ module daq_litejesd_dac_tx_path #(
         .converter3 (physical_converter3)
     );
 
+    wire [63:0] native_converter0 = src_converter0;
+    wire [63:0] native_converter1 = swap_sample_bytes64(src_converter1);
+    wire [63:0] native_converter2 = src_converter2;
+    wire [63:0] native_converter3 = swap_sample_bytes64(src_converter3);
+
     // sample_map_mode:
-    //   0 = native LMF841 / LiteJESD converter buses
+    //   0 = native LMF841 / LiteJESD converter buses, with the odd DAC
+    //       converter streams byte-swapped. This matches the BRAM test where
+    //       DAC0/DAC2 were clean normally and DAC1/DAC3 cleaned up only after
+    //       per-sample byte swapping.
     //   1 = four-channel preimage + legacy DAC39J84 sample remap
     //   2 = direct source buses through legacy DAC39J84 sample remap
     //   3 = Sundance core-lane preimage hypothesis
@@ -392,13 +400,13 @@ module daq_litejesd_dac_tx_path #(
     );
 
     wire [63:0] jesd_converter0 = use_physical_map ? physical_converter0 :
-                                   use_any_remap ? remap_out0 : src_converter0;
+                                   use_any_remap ? remap_out0 : native_converter0;
     wire [63:0] jesd_converter1 = use_physical_map ? physical_converter1 :
-                                   use_any_remap ? remap_out1 : src_converter1;
+                                   use_any_remap ? remap_out1 : native_converter1;
     wire [63:0] jesd_converter2 = use_physical_map ? physical_converter2 :
-                                   use_any_remap ? remap_out2 : src_converter2;
+                                   use_any_remap ? remap_out2 : native_converter2;
     wire [63:0] jesd_converter3 = use_physical_map ? physical_converter3 :
-                                   use_any_remap ? remap_out3 : src_converter3;
+                                   use_any_remap ? remap_out3 : native_converter3;
 
     wire [31:0] tx_data0;
     wire [31:0] tx_data1;
