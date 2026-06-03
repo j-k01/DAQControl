@@ -54,7 +54,7 @@ module izh_dac_integration_tb;
     reg signed [31:0] ch_b = 32'sh0000_3333;
     reg signed [31:0] ch_c = 32'shFFBF_0000;
     reg signed [31:0] ch_d = 32'sh0008_0000;
-    reg signed [31:0] ch_i = 32'sh000F_FF00;
+    reg signed [31:0] ch_i = 32'sh0000_0000;
     reg signed [31:0] ch_dt = 32'sh0000_1000;
     reg signed [31:0] ch_iconst = 32'sh000A_0000;
     reg signed [31:0] ch_offset = 32'sh0000_0000;
@@ -179,7 +179,7 @@ module izh_dac_integration_tb;
         pulse_cfg(2'd0, 1'b1, 4'hE, 32'd0);
         check32("defaults clear source modes", {24'd0, bank_source_modes}, 32'h0000_0000);
         check32("defaults restore a", u_bank.a_param[0], 32'h0000_051F);
-        check32("defaults restore current", u_bank.i_param[0], 32'h000F_FF00);
+        check32("defaults restore zero external current", u_bank.i_param[0], 32'h0000_0000);
         check32("defaults restore iconst", u_bank.i_constant[0], 32'h000A_0000);
 
         debug_channel = 3'd1;

@@ -19,13 +19,15 @@ module izh_dac_bank (
     output wire [3:0]  spike_flags
 );
 
+    // Izhikevich regular-spiking defaults:
+    //   a=0.02, b=0.20, c=-65, d=8, I_input=0, I_constant=10.
     localparam signed [31:0] DEFAULT_A      = 32'sh0000_051F; // 0.02
     localparam signed [31:0] DEFAULT_B      = 32'sh0000_3333; // 0.20
     localparam signed [31:0] DEFAULT_C      = 32'shFFBF_0000; // -65 mV
     localparam signed [31:0] DEFAULT_D      = 32'sh0008_0000; // 8
-    localparam signed [31:0] DEFAULT_I      = 32'sh000F_FF00; // testbench stimulus
+    localparam signed [31:0] DEFAULT_I      = 32'sh0000_0000; // external I input held at 0
     localparam signed [31:0] DEFAULT_DT     = 32'sh0000_1000; // 0.0625
-    localparam signed [31:0] DEFAULT_ICONST = 32'sh000A_0000; // 10
+    localparam signed [31:0] DEFAULT_ICONST = 32'sh000A_0000; // constant drive 10
     localparam signed [31:0] DEFAULT_OFFSET = 32'sh0000_0000;
 
     reg signed [31:0] a_param [0:3];
