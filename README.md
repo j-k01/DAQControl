@@ -484,6 +484,11 @@ DAC outputs 0/1 and `RW2[11:10]` selects the mapping for outputs 2/3:
 
 With `sample_map=3`, sweep the cabled output-0/output-1 pair using:
 `RW2=0x01000006`, `0x01000106`, `0x01000206`, and `0x01000306`.
+The automated cabled-pair sweep is:
+
+```powershell
+python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010021
+```
 
 To force a small ADS54J60 JESD test pattern over SPI without rebuilding HDL,
 use:
