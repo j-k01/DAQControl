@@ -472,6 +472,19 @@ mapper splits their bytes across the LiteJESD converter buses. Clear bit 24
 only when deliberately re-enabling ADC ILAS checking while debugging the
 expected ILAS fields.
 
+For the physical mapper, `RW2[9:8]` selects the byte-lane mapping for physical
+DAC outputs 0/1 and `RW2[11:10]` selects the mapping for outputs 2/3:
+
+| Pair map | Meaning |
+| --- | --- |
+| `0` | Sundance adapter placement |
+| `1` | Swap the two physical outputs within the pair |
+| `2` | Native LiteJESD converter pair |
+| `3` | Sundance placement with byte orientation flipped |
+
+With `sample_map=3`, sweep the cabled output-0/output-1 pair using:
+`RW2=0x01000006`, `0x01000106`, `0x01000206`, and `0x01000306`.
+
 To force a small ADS54J60 JESD test pattern over SPI without rebuilding HDL,
 use:
 

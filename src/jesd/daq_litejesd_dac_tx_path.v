@@ -17,6 +17,7 @@ module daq_litejesd_dac_tx_path #(
 
     input  wire [2:0]    active_converter,
     input  wire [1:0]    sample_map_mode,
+    input  wire [3:0]    physical_map_mode,
     input  wire [15:0]   triangle_step,
     input  wire [23:0]   sine_phase_inc,
     input  wire [7:0]    source_modes,
@@ -353,6 +354,7 @@ module daq_litejesd_dac_tx_path #(
         .dac_out1   (src_converter1),
         .dac_out2   (src_converter2),
         .dac_out3   (src_converter3),
+        .map_mode   (physical_map_mode),
         .converter0 (physical_converter0),
         .converter1 (physical_converter1),
         .converter2 (physical_converter2),

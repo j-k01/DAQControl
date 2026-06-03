@@ -810,19 +810,20 @@ module top #(
         .dest     (dac_sine_phase_inc_tx)
     );
 
-    wire [6:0] dac_tx_control_tx;
+    wire [10:0] dac_tx_control_tx;
     cdc_vector_sync #(
-        .WIDTH (7)
+        .WIDTH (11)
     ) u_dac_tx_control_sync (
         .dest_clk (gth_tx_usrclk2),
         .dest_rst (litejesd_reset),
-        .src      (rw_reg2[7:1]),
+        .src      (rw_reg2[11:1]),
         .dest     (dac_tx_control_tx)
     );
 
     wire [1:0] dac_sample_map_mode_tx = dac_tx_control_tx[1:0];
     wire [1:0] dac_tx_lane_mode_tx = dac_tx_control_tx[3:2];
     wire [2:0] dac_active_converter_tx = dac_tx_control_tx[6:4];
+    wire [3:0] dac_physical_map_mode_tx = dac_tx_control_tx[10:7];
 
     wire [43:0] izh_cfg_bus_tx;
     cdc_vector_sync #(
@@ -998,6 +999,7 @@ module top #(
         .sync_n           (litejesd_sync_pipe[2]),
         .active_converter (dac_active_converter_tx),
         .sample_map_mode  (dac_sample_map_mode_tx),
+        .physical_map_mode(dac_physical_map_mode_tx),
         .triangle_step    (16'd256),
         .sine_phase_inc   (dac_sine_phase_inc_tx),
         .source_modes     (dac_source_modes_tx),
@@ -1722,7 +1724,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0020;
+    wire [31:0] build_id = 32'hDA01_0021;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]

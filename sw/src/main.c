@@ -1028,6 +1028,8 @@ static void cmd_help(void)
     send_str("RW2 DAC TX diag: [2:1] sample_map 0=native 1=general_preimage 2=old_remap 3=physical\r\n");
     send_str("                 [4:3] tx_lane 0=identity 1=board_map 2=inverse_check\r\n");
     send_str("                 [7:5] DAC source select 0/5..7=all, 1..4=outputs0..3 in physical mode\r\n");
+    send_str("                 physical mode [9:8]=outputs0/1 map, [11:10]=outputs2/3 map\r\n");
+    send_str("                 pair maps: 0=Sundance, 1=swap outputs, 2=native, 3=byte-flip\r\n");
     send_str("RW2 ADC1 JESD RX: [24] bypass ILAS check, [25] STPL check, [26] DP order\r\n");
     send_str("                  firmware default is RW2=0x01000006 for ADC1/DAC bring-up\r\n");
     send_str("                  [29:28] capture format: 0=LiteJESD converters, 1=post-link lanes\r\n");

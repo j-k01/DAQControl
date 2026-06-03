@@ -57,6 +57,12 @@ gth_txdata[255:0]    // {lane7, ..., lane0}, 32 bits per lane
 gth_txcharisk[31:0]  // {lane7, ..., lane0}, 4 bits per lane
 ```
 
+`dac39j84_physical_mapper` has a runtime pair-map selector so the cabled DAC
+outputs can disambiguate physical channel order without another implementation
+run. Pair map `0` is the Sundance adapter placement, `1` swaps output labels
+within the pair, `2` uses native LiteJESD converter-pair ordering, and `3`
+keeps the Sundance lane placement but flips byte orientation.
+
 For the current DAC39J84 initialization, connect `gth_txdata` to the wizard TX
 user data input without an FPGA-side lane permutation. The DAC startup sequence
 uses Sundance's `init8411_dac_remapped` path and programs DAC39J84
