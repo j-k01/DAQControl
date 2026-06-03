@@ -66,17 +66,19 @@ Source orders `2` and `3` swap one Sundance pair at a time for diagnostics.
 Setting `map_mode[3:2]=3` keeps the selected ownership order but flips byte
 orientation as a last-resort diagnostic.
 
-For the current DAC39J84 initialization, connect `gth_txdata` to the wizard TX
-user data input without an FPGA-side lane permutation. The DAC startup sequence
-uses Sundance's `init8411_dac_remapped` path and programs DAC39J84
-`config95/config96` to `0x3021/0x7654`, so the physical FMC/HPC0 lane mapping
-is corrected inside the DAC SerDes-to-JESD crossbar. Applying an additional
-FPGA-side TX lane remap double-corrects the mapping and corrupts the DAC sample
-stream while the JESD link can still appear up. Connect `gth_txcharisk` in the
-same identity lane order to the 8B/10B `TXCTRL2` path, with `TXCTRL0` and
-`TXCTRL1` tied low unless the generated wrapper requires those ports for
-another control function. Keep `TX8B10BEN` asserted and `TX8B10BBYPASS`
-deasserted.
+For the current DAC39J84 initialization, the firmware default still connects
+`gth_txdata` to the wizard TX user data input without an FPGA-side lane
+permutation. The DAC startup sequence uses Sundance's `init8411_dac_remapped`
+path and programs DAC39J84 `config95/config96` to `0x3021/0x7654`, so the
+physical FMC/HPC0 lane mapping should be corrected inside the DAC
+SerDes-to-JESD crossbar if that crossbar is interpreted in the same direction
+as the TI register table. `RW2[4:3]=3` is a diagnostic mode for the inverse map
+implied by that exact `0x3021/0x7654` register setting; use it to distinguish a
+DAC-side crossbar interpretation error from the physical-byte mapper itself.
+Connect `gth_txcharisk` in the same lane order as `gth_txdata` to the 8B/10B
+`TXCTRL2` path, with `TXCTRL0` and `TXCTRL1` tied low unless the generated
+wrapper requires those ports for another control function. Keep `TX8B10BEN`
+asserted and `TX8B10BBYPASS` deasserted.
 
 `dac39j84_init.v` configures the DAC automatically after the HMC7044 clock
 startup is complete. It uses the Sundance `init8411_dac_remapped` register

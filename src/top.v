@@ -1049,6 +1049,23 @@ module top #(
                 default: tx_src_lane = 3'd4;
                 endcase
             end
+            2'd3: begin
+                // DAC39J84 config95/config96 diagnostic for the current
+                // 0x3021/0x7654 DAC-side octetpath crossbar. If
+                // octetpath_sel(n) selects the SerDes RX lane feeding JESD
+                // lane n, this is the inverse map needed for the ZCU/FMC
+                // physical order without reversing the upper four lanes.
+                case (phys)
+                3'd0: tx_src_lane = 3'd3;
+                3'd1: tx_src_lane = 3'd0;
+                3'd2: tx_src_lane = 3'd2;
+                3'd3: tx_src_lane = 3'd1;
+                3'd4: tx_src_lane = 3'd4;
+                3'd5: tx_src_lane = 3'd5;
+                3'd6: tx_src_lane = 3'd6;
+                default: tx_src_lane = 3'd7;
+                endcase
+            end
             default: begin
                 tx_src_lane = phys;
             end
@@ -1724,7 +1741,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0022;
+    wire [31:0] build_id = 32'hDA01_0023;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]

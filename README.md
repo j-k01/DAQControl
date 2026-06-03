@@ -164,8 +164,8 @@ These bits are only used by the `--with-staged-gt` build.
 | Bits | Function |
 | --- | --- |
 | 0 | Assert GTH reset-all while high |
-| 2:1 | DAC sample-map diagnostic mode: `0` native LiteJESD, `1` general four-channel preimage + remap, `2` old direct remap |
-| 4:3 | DAC TX lane diagnostic mode: `0` identity, `1` FPGA board map, `2` inverse/check map |
+| 2:1 | DAC sample-map diagnostic mode: `0` native LiteJESD, `1` general four-channel preimage + remap, `2` old direct remap, `3` physical DAC mapper |
+| 4:3 | DAC TX lane diagnostic mode: `0` identity, `1` FPGA board map, `2` inverse/check map, `3` DAC-crossbar inverse diagnostic |
 | 7:5 | DAC converter select: `0`/`5..7` broadcast, `1..4` drive only converter 0..3 |
 | 15:8 | Per-lane TX polarity invert |
 | 23:16 | Per-lane RX polarity invert |
@@ -470,7 +470,10 @@ mapper, and the DAC TX lane mux uses identity order. In this path, BRAM/DDS
 sources 0..3 are treated as the four desired physical DAC outputs before the
 mapper splits their bytes across the LiteJESD converter buses. Clear bit 24
 only when deliberately re-enabling ADC ILAS checking while debugging the
-expected ILAS fields.
+expected ILAS fields. If the DAC39J84 `0x3021/0x7654` octetpath crossbar is
+interpreted as "selected SerDes lane feeds JESD lane N", `RW2[4:3]=3` tests
+the corresponding FPGA-side inverse lane map without changing the DAC SPI
+sequence.
 
 For the physical mapper, `RW2[9:8]` selects how source words are assigned to
 the DAC39J84 internal channel names before the Sundance byte-lane placement:
@@ -483,12 +486,13 @@ the DAC39J84 internal channel names before the Sundance byte-lane placement:
 | `3` | Swap the second Sundance pair for diagnostics |
 
 Set `RW2[11:10]=3` only for the byte-orientation diagnostic; normal builds keep
-those bits clear. With `sample_map=3`, sweep source ownership using:
+those bits clear. With `sample_map=3`, sweep source ownership and TX lane mode
+using the helper below. To hand-test identity-lane source ownership, use:
 `RW2=0x01000006`, `0x01000106`, `0x01000206`, and `0x01000306`.
 The automated cabled-pair sweep is:
 
 ```powershell
-python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010022
+python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010023
 ```
 
 To force a small ADS54J60 JESD test pattern over SPI without rebuilding HDL,

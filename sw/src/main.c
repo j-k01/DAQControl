@@ -1031,7 +1031,7 @@ static void cmd_help(void)
     send_str("                 word select is RW2[30:28]: 0/1=ch0 lo/hi ... 6/7=ch3 lo/hi\r\n");
 #endif
     send_str("RW2 DAC TX diag: [2:1] sample_map 0=native 1=general_preimage 2=old_remap 3=physical\r\n");
-    send_str("                 [4:3] tx_lane 0=identity 1=board_map 2=inverse_check\r\n");
+    send_str("                 [4:3] tx_lane 0=identity 1=board_map 2=inverse_check 3=dac_xbar\r\n");
     send_str("                 [7:5] DAC source select 0/5..7=all, 1..4=outputs0..3 in physical mode\r\n");
     send_str("                 physical mode [9:8]=source order: 0=Sundance internal, 1=OUT_A..D\r\n");
     send_str("                         2=swap first pair, 3=swap second pair; [11:10]=3 byte-flip diag\r\n");

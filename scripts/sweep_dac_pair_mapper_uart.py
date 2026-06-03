@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Sweep DAC physical source-order modes and score ADC loopback captures.
+"""Sweep DAC physical source-order and TX lane modes.
 
 This is a focused bring-up helper for the current wiring:
   DAC physical output 0 -> ADC1 channel A
   DAC physical output 1 -> ADC1 channel B
 
 It uploads different deterministic programs to DAC output sources 0 and 1,
-zeros sources 2 and 3, sweeps RW2[9:8] physical source-order modes, captures
-ADC sources 0..3, and scores the reconstructed ADC converter streams against
-the expected waveforms.
+zeros sources 2 and 3, sweeps RW2[9:8] physical source-order modes and
+RW2[4:3] TX lane modes, captures ADC sources 0..3, and scores the
+reconstructed ADC converter streams against the expected waveforms.
 """
 
 from __future__ import annotations
@@ -100,8 +100,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="COM10")
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--expect-build-id", type=lambda x: int(x, 0), default=0xDA010022)
+    parser.add_argument("--expect-build-id", type=lambda x: int(x, 0), default=0xDA010023)
     parser.add_argument("--rw2-base", type=lambda x: int(x, 0), default=0x01000106)
+    parser.add_argument(
+        "--source-order-modes",
+        default="0,1,2,3",
+        help="Comma-separated physical source-order modes for RW2[9:8].",
+    )
+    parser.add_argument(
+        "--tx-lane-modes",
+        default="0,1,2,3",
+        help="Comma-separated TX lane modes for RW2[4:3].",
+    )
     parser.add_argument("--words", type=int, default=4096)
     parser.add_argument("--program-words", type=int, default=8192)
     parser.add_argument("--sample-rate-mhz", type=float, default=1000.0)
@@ -168,27 +178,41 @@ def main():
             args.offset,
         )
 
+        source_order_modes = [
+            int(item, 0) for item in args.source_order_modes.split(",") if item.strip()
+        ]
+        tx_lane_modes = [
+            int(item, 0) for item in args.tx_lane_modes.split(",") if item.strip()
+        ]
+
         rows = []
-        for source_order in range(4):
-            rw2 = (args.rw2_base & ~(3 << 8)) | (source_order << 8)
-            cap.set_rw2(port, rw2)
-            case_prefix = f"{args.prefix}_source_order_{source_order}"
-            print(f"Capturing source_order={source_order} RW2=0x{rw2:08X}...")
-            _presync, captures, streams = capture_once(port, args.words)
-            write_outputs(outdir, case_prefix, captures, streams, args.plot_words, args.max_points)
+        for tx_lane in tx_lane_modes:
+            for source_order in source_order_modes:
+                rw2 = (
+                    args.rw2_base
+                    & ~((3 << 8) | (3 << 3))
+                ) | (source_order << 8) | (tx_lane << 3)
+                cap.set_rw2(port, rw2)
+                case_prefix = f"{args.prefix}_txlane_{tx_lane}_source_order_{source_order}"
+                print(
+                    f"Capturing tx_lane={tx_lane} source_order={source_order} "
+                    f"RW2=0x{rw2:08X}..."
+                )
+                _presync, captures, streams = capture_once(port, args.words)
+                write_outputs(outdir, case_prefix, captures, streams, args.plot_words, args.max_points)
 
-            conv0 = streams.get("adc1_converter0", [])
-            conv1 = streams.get("adc1_converter1", [])
-            c0_to_ch0 = best_match(conv0, expected0, args.skip, args.max_shift)
-            c0_to_ch1 = best_match(conv0, expected1, args.skip, args.max_shift)
-            c1_to_ch0 = best_match(conv1, expected0, args.skip, args.max_shift)
-            c1_to_ch1 = best_match(conv1, expected1, args.skip, args.max_shift)
-            rows.append((source_order, rw2, c0_to_ch0, c0_to_ch1, c1_to_ch0, c1_to_ch1))
+                conv0 = streams.get("adc1_converter0", [])
+                conv1 = streams.get("adc1_converter1", [])
+                c0_to_ch0 = best_match(conv0, expected0, args.skip, args.max_shift)
+                c0_to_ch1 = best_match(conv0, expected1, args.skip, args.max_shift)
+                c1_to_ch0 = best_match(conv1, expected0, args.skip, args.max_shift)
+                c1_to_ch1 = best_match(conv1, expected1, args.skip, args.max_shift)
+                rows.append((tx_lane, source_order, rw2, c0_to_ch0, c0_to_ch1, c1_to_ch0, c1_to_ch1))
 
-        print("\nSource-order scores: correlation, shift, inverted")
-        for source_order, rw2, c0_ch0, c0_ch1, c1_ch0, c1_ch1 in rows:
+        print("\nTX-lane/source-order scores: correlation, shift, inverted")
+        for tx_lane, source_order, rw2, c0_ch0, c0_ch1, c1_ch0, c1_ch1 in rows:
             print(
-                f"source_order={source_order} RW2=0x{rw2:08X} "
+                f"tx_lane={tx_lane} source_order={source_order} RW2=0x{rw2:08X} "
                 f"ADC_A<-DAC0 {c0_ch0[0]:+.3f}/{c0_ch0[1]}/{int(c0_ch0[2])} "
                 f"ADC_A<-DAC1 {c0_ch1[0]:+.3f}/{c0_ch1[1]}/{int(c0_ch1[2])} "
                 f"ADC_B<-DAC0 {c1_ch0[0]:+.3f}/{c1_ch0[1]}/{int(c1_ch0[2])} "
