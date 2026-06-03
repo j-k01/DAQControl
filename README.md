@@ -245,6 +245,16 @@ vivado -mode batch -source scripts/run_litejesd_compile.tcl
 This uses behavioral stubs for the GTH Wizard and checks the optional
 `DAQ_WITH_GTH` plus `DAQ_WITH_LITEJESD` wiring. It does not run implementation.
 
+Run the focused IZH DAC wrapper test:
+
+```tcl
+vivado -mode batch -source scripts/run_izh_dac_unit_tests.tcl
+```
+
+This instantiates the original external IZH neuron, checks the DAQ clamp/scale
+wrapper, verifies spike-to-full-scale behavior, and verifies per-channel source
+and parameter config writes.
+
 Run the focused DAC/ADC BRAM dataplane primitive test:
 
 ```tcl
