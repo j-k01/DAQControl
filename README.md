@@ -374,15 +374,15 @@ bitstream:
 python scripts/capture_plot_adc_uart.py --port COM10 --program-mode triangle --sample-format twos --triangle-frequency-mhz 50 --chunk-order 3,2,1,0 --program-channel all --sources 0,1 --prefix tri50_chunk_3210
 ```
 
-For the DAC ordering diagnostic, start with the physical DAC output mapper and
-identity TX lane mapping, then upload a slow frame-aligned trapezoid:
+For the DAC ordering diagnostic, start with native LiteJESD converter streams
+and the DAC-crossbar TX lane mapping, then upload a frame-aligned trapezoid:
 
 ```text
-WRTE 2 0x01000106
+WRTE 2 0x01000018
 ```
 
 ```powershell
-python scripts/capture_plot_adc_uart.py --port COM10 --rw2 0x01000106 --program-mode trapezoid --sample-format twos --trapezoid-frequency-mhz 5 --program-words 8192 --program-channel all --sources 0,1 --prefix trap5_physical
+python scripts/capture_plot_adc_uart.py --port COM10 --rw2 0x01000018 --program-mode trapezoid --sample-format twos --trapezoid-frequency-mhz 5 --program-words 8192 --program-channel all --sources 0,1 --prefix trap5_native_xbar
 ```
 
 The helper sets `RW3[31:8]` to the uploaded 64-bit frame count before `PCAP`,
@@ -464,16 +464,14 @@ reconstruction, or Sundance-style reversed-byte reconstruction. `RW2[24]=1`
 bypasses ILAS checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL
 checker, and `RW2[26]=1` switches ADC1 from Sundance signal order to physical
 DP0-DP3 order.
-The MicroBlaze firmware defaults `RW2` to `0x01000106`: ADS54J60 ILAS checking
-is bypassed for bring-up, the DAC sample adapter uses the physical DAC output
-mapper, and the DAC TX lane mux uses identity order. In this path, BRAM/DDS
-sources 0..3 are treated as the four desired physical DAC outputs before the
-mapper splits their bytes across the LiteJESD converter buses. Clear bit 24
-only when deliberately re-enabling ADC ILAS checking while debugging the
-expected ILAS fields. If the DAC39J84 `0x3021/0x7654` octetpath crossbar is
-interpreted as "selected SerDes lane feeds JESD lane N", `RW2[4:3]=3` tests
-the corresponding FPGA-side inverse lane map without changing the DAC SPI
-sequence.
+The MicroBlaze firmware defaults `RW2` to `0x01000018`: ADS54J60 ILAS checking
+is bypassed for bring-up, the DAC sample path uses native LiteJESD converter
+streams, and the DAC TX lane mux uses the `0x3021/0x7654` DAC-crossbar inverse
+map. In this path, BRAM/DDS sources 0..3 are treated as the four desired
+physical DAC outputs and are passed as whole 64-bit converter streams; the old
+byte-splitting mappers are diagnostics only. Clear bit 24 only when
+deliberately re-enabling ADC ILAS checking while debugging the expected ILAS
+fields.
 
 For the physical mapper, `RW2[9:8]` selects how source words are assigned to
 the DAC39J84 internal channel names before the Sundance byte-lane placement:
@@ -486,13 +484,13 @@ the DAC39J84 internal channel names before the Sundance byte-lane placement:
 | `3` | Swap the second Sundance pair for diagnostics |
 
 Set `RW2[11:10]=3` only for the byte-orientation diagnostic; normal builds keep
-those bits clear. With `sample_map=3`, sweep source ownership and TX lane mode
-using the helper below. To hand-test identity-lane source ownership, use:
+those bits clear. With legacy `sample_map=3`, sweep source ownership and TX
+lane mode using the helper below. To hand-test identity-lane source ownership, use:
 `RW2=0x01000006`, `0x01000106`, `0x01000206`, and `0x01000306`.
 The automated cabled-pair sweep is:
 
 ```powershell
-python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010023
+python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010024
 ```
 
 To force a small ADS54J60 JESD test pattern over SPI without rebuilding HDL,

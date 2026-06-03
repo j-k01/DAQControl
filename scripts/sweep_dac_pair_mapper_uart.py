@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Sweep DAC physical source-order and TX lane modes.
+"""Sweep DAC TX lane modes and optional legacy source-order modes.
 
 This is a focused bring-up helper for the current wiring:
   DAC physical output 0 -> ADC1 channel A
   DAC physical output 1 -> ADC1 channel B
 
 It uploads different deterministic programs to DAC output sources 0 and 1,
-zeros sources 2 and 3, sweeps RW2[9:8] physical source-order modes and
-RW2[4:3] TX lane modes, captures ADC sources 0..3, and scores the
-reconstructed ADC converter streams against the expected waveforms.
+zeros sources 2 and 3, sweeps RW2[4:3] TX lane modes, captures ADC sources
+0..3, and scores the reconstructed ADC converter streams against the expected
+waveforms. RW2[9:8] source-order modes only affect the legacy physical byte
+mapper when sample_map=3.
 """
 
 from __future__ import annotations
@@ -100,12 +101,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="COM10")
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--expect-build-id", type=lambda x: int(x, 0), default=0xDA010023)
-    parser.add_argument("--rw2-base", type=lambda x: int(x, 0), default=0x01000106)
+    parser.add_argument("--expect-build-id", type=lambda x: int(x, 0), default=0xDA010024)
+    parser.add_argument("--rw2-base", type=lambda x: int(x, 0), default=0x01000018)
     parser.add_argument(
         "--source-order-modes",
-        default="0,1,2,3",
-        help="Comma-separated physical source-order modes for RW2[9:8].",
+        default="0",
+        help="Comma-separated legacy physical source-order modes for RW2[9:8].",
     )
     parser.add_argument(
         "--tx-lane-modes",

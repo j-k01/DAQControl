@@ -362,10 +362,10 @@ module daq_litejesd_dac_tx_path #(
     );
 
     // sample_map_mode:
-    //   0 = native LiteJESD converter buses, diagnostic only
+    //   0 = native LiteJESD converter buses, normal four-channel path
     //   1 = four-channel preimage + legacy DAC39J84 sample remap
     //   2 = direct source buses through legacy DAC39J84 sample remap
-    //   3 = physical DAC output mapper, normal four-channel path
+    //   3 = legacy physical DAC byte mapper, diagnostic only
     wire use_preimage_remap = (sample_map_mode == 2'd1);
     wire use_any_remap = use_preimage_remap ||
                          (sample_map_mode == 2'd2);

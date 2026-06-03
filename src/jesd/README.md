@@ -45,11 +45,12 @@ TX control/charisk path per lane. At 10 Gbps with 8B/10B and 32-bit user
 data, the TX user clock is 250 MHz.
 
 `daq_litejesd_dac_tx_path.v` is the hardware-facing shell for the launch test.
-It instantiates `litejesd_dac_tx`, builds four 64-bit source words, and can
-route those source words through `dac39j84_physical_mapper`. In that normal
-mode, the source words are physical DAC outputs 0..3, not raw LiteJESD
-converter buses. The mapper then splits the sample bytes across LiteJESD
-converter inputs to match the Sundance/DAC39J84 byte-lane adapter. The shell
+It instantiates `litejesd_dac_tx` and builds four 64-bit source words. In the
+normal path, those source words are passed directly as native LiteJESD
+converter buses: source 0 to converter 0, source 1 to converter 1, and so on.
+The legacy `dac39j84_physical_mapper` and `dac39j84_sample_remap` paths remain
+available only as diagnostics because they split sample bytes before the
+LiteJESD transport layer. The shell
 exports:
 
 ```verilog
@@ -66,15 +67,12 @@ Source orders `2` and `3` swap one Sundance pair at a time for diagnostics.
 Setting `map_mode[3:2]=3` keeps the selected ownership order but flips byte
 orientation as a last-resort diagnostic.
 
-For the current DAC39J84 initialization, the firmware default still connects
-`gth_txdata` to the wizard TX user data input without an FPGA-side lane
-permutation. The DAC startup sequence uses Sundance's `init8411_dac_remapped`
-path and programs DAC39J84 `config95/config96` to `0x3021/0x7654`, so the
-physical FMC/HPC0 lane mapping should be corrected inside the DAC
-SerDes-to-JESD crossbar if that crossbar is interpreted in the same direction
-as the TI register table. `RW2[4:3]=3` is a diagnostic mode for the inverse map
-implied by that exact `0x3021/0x7654` register setting; use it to distinguish a
-DAC-side crossbar interpretation error from the physical-byte mapper itself.
+For the current DAC39J84 initialization, the firmware default uses TX lane mode
+3, the inverse map implied by Sundance's `init8411_dac_remapped`
+`config95/config96 = 0x3021/0x7654` setting. In this mode, the FPGA emits
+native logical LiteJESD converter streams and the top-level mux routes logical
+lanes to physical GTH lanes as `[3,0,2,1,4,5,6,7]`. This keeps physical-lane
+correction after LiteJESD, at the same abstraction level as the GTH lanes.
 Connect `gth_txcharisk` in the same lane order as `gth_txdata` to the 8B/10B
 `TXCTRL2` path, with `TXCTRL0` and `TXCTRL1` tied low unless the generated
 wrapper requires those ports for another control function. Keep `TX8B10BEN`
