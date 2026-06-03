@@ -169,6 +169,10 @@ These bits are only used by the `--with-staged-gt` build.
 | 7:5 | DAC converter select: `0`/`5..7` broadcast, `1..4` drive only converter 0..3 |
 | 15:8 | Per-lane TX polarity invert |
 | 23:16 | Per-lane RX polarity invert |
+| 24 | Bypass ADC1 LiteJESD ILAS checking |
+| 25 | Enable ADC1 LiteJESD STPL checker |
+| 26 | ADC1 lane order: `0` Sundance signal order, `1` physical DP0-DP3 order |
+| 29:28 | ADC capture format: `0` current LiteJESD converter64 outputs, `1` post-link lane words, `2` Sundance halfbeat normal byte order, `3` Sundance halfbeat reversed-byte order |
 
 ## RW3 Runtime Control Bits
 
@@ -400,10 +404,14 @@ RDRO 3
 ```
 
 Selector `25` is the ADC1 RX summary, `26` is per-lane alignment/error
-status, `27` is event counters, `28..30` are captured converter sample words,
-and `31` is raw lane data selected by `RW2[29:28]`. `RW2[24]=1` bypasses ILAS
-checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL checker, and
-`RW2[26]=1` switches ADC1 from Sundance signal order to physical DP0-DP3 order.
+status, `27` is event counters, `28..30` are captured ADC sample/debug words,
+and `31` is raw lane data or ADC capture status depending on `RW2[31]`.
+`RW2[29:28]` selects what is written into the ADC capture BRAM: current
+LiteJESD converter outputs, post-link lane words, Sundance-style normal-byte
+reconstruction, or Sundance-style reversed-byte reconstruction. `RW2[24]=1`
+bypasses ILAS checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL
+checker, and `RW2[26]=1` switches ADC1 from Sundance signal order to physical
+DP0-DP3 order.
 The MicroBlaze firmware defaults `RW2` to `0x01000010`: ADS54J60 ILAS checking
 is bypassed for bring-up, the DAC sample adapter uses native LiteJESD converter
 mapping, and the DAC TX lane mux uses the inverse-check order that produced the

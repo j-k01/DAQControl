@@ -21,6 +21,10 @@
 module litejesd_adc1_rx (
     output wire   [63:0] converter0,
     output wire   [63:0] converter1,
+    output wire   [31:0] debug_transport_lane0,
+    output wire   [31:0] debug_transport_lane1,
+    output wire   [31:0] debug_transport_lane2,
+    output wire   [31:0] debug_transport_lane3,
     input  wire          enable,
     input  wire          ilas_check_enable,
     input  wire          jesd_clk,
@@ -797,6 +801,7 @@ assign core_link_litejesd204blinkrx0_sink_sink_ctrl = core_litejesd204brxcdc0_so
 assign core_litejesd204brxcdc0_source_ready = 1'd1;
 assign core_skew_fifo_syncfifo0_syncfifo0_din = core_link_litejesd204blinkrx0_source_source_data;
 assign core_transport_sink_lane0 = core_skew_fifo_syncfifo0_syncfifo0_dout;
+assign debug_transport_lane0 = core_transport_sink_lane0;
 assign core_link_reset1 = (~core_enable);
 assign core_link_litejesd204blinkrx1_ilas_check = core_ilas_check;
 assign core_link_litejesd204blinkrx1_datapath_descrambler_enable = 1'd1;
@@ -817,6 +822,7 @@ assign core_link_litejesd204blinkrx1_sink_sink_ctrl = core_litejesd204brxcdc1_so
 assign core_litejesd204brxcdc1_source_ready = 1'd1;
 assign core_skew_fifo_syncfifo1_syncfifo1_din = core_link_litejesd204blinkrx1_source_source_data;
 assign core_transport_sink_lane1 = core_skew_fifo_syncfifo1_syncfifo1_dout;
+assign debug_transport_lane1 = core_transport_sink_lane1;
 assign core_link_reset2 = (~core_enable);
 assign core_link_litejesd204blinkrx2_ilas_check = core_ilas_check;
 assign core_link_litejesd204blinkrx2_datapath_descrambler_enable = 1'd1;
@@ -837,6 +843,7 @@ assign core_link_litejesd204blinkrx2_sink_sink_ctrl = core_litejesd204brxcdc2_so
 assign core_litejesd204brxcdc2_source_ready = 1'd1;
 assign core_skew_fifo_syncfifo2_syncfifo2_din = core_link_litejesd204blinkrx2_source_source_data;
 assign core_transport_sink_lane2 = core_skew_fifo_syncfifo2_syncfifo2_dout;
+assign debug_transport_lane2 = core_transport_sink_lane2;
 assign core_link_reset3 = (~core_enable);
 assign core_link_litejesd204blinkrx3_ilas_check = core_ilas_check;
 assign core_link_litejesd204blinkrx3_datapath_descrambler_enable = 1'd1;
@@ -857,6 +864,7 @@ assign core_link_litejesd204blinkrx3_sink_sink_ctrl = core_litejesd204brxcdc3_so
 assign core_litejesd204brxcdc3_source_ready = 1'd1;
 assign core_skew_fifo_syncfifo3_syncfifo3_din = core_link_litejesd204blinkrx3_source_source_data;
 assign core_transport_sink_lane3 = core_skew_fifo_syncfifo3_syncfifo3_dout;
+assign debug_transport_lane3 = core_transport_sink_lane3;
 assign litejesd204bcorerx_jsync = core_jsync;
 assign sync_n = litejesd204bcorerx_jsync;
 assign core_jref0 = sysref;

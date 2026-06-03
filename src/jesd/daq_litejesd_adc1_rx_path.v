@@ -8,6 +8,7 @@ module daq_litejesd_adc1_rx_path (
     input  wire        ilas_check_enable,
     input  wire        stpl_enable,
     input  wire [1:0]  raw_lane_select,
+    input  wire [1:0]  capture_format,
 
     input  wire [31:0] rx_data0,
     input  wire [31:0] rx_data1,
@@ -47,6 +48,10 @@ module daq_litejesd_adc1_rx_path (
     wire [3:0] rx_align;
     wire [63:0] converter0;
     wire [63:0] converter1;
+    wire [31:0] debug_transport_lane0;
+    wire [31:0] debug_transport_lane1;
+    wire [31:0] debug_transport_lane2;
+    wire [31:0] debug_transport_lane3;
 
     litejesd_adc1_rx u_litejesd_adc1_rx (
         .jesd_clk            (jesd_clk),
@@ -68,6 +73,10 @@ module daq_litejesd_adc1_rx_path (
         .link_ready          (link_ready),
         .link_sync           (link_sync),
         .rx_align            (rx_align),
+        .debug_transport_lane0 (debug_transport_lane0),
+        .debug_transport_lane1 (debug_transport_lane1),
+        .debug_transport_lane2 (debug_transport_lane2),
+        .debug_transport_lane3 (debug_transport_lane3),
         .rx_data0            (rx_data0),
         .rx_data1            (rx_data1),
         .rx_data2            (rx_data2),
@@ -110,6 +119,10 @@ module daq_litejesd_adc1_rx_path (
     reg       sysref_d = 1'b0;
     reg [63:0] sample_a = 64'd0;
     reg [63:0] sample_b = 64'd0;
+    reg [31:0] transport_lane0 = 32'd0;
+    reg [31:0] transport_lane1 = 32'd0;
+    reg [31:0] transport_lane2 = 32'd0;
+    reg [31:0] transport_lane3 = 32'd0;
     reg [31:0] raw0 = 32'd0;
     reg [31:0] raw1 = 32'd0;
     reg [31:0] raw2 = 32'd0;
@@ -157,6 +170,10 @@ module daq_litejesd_adc1_rx_path (
             sysref_d <= 1'b0;
             sample_a <= 64'd0;
             sample_b <= 64'd0;
+            transport_lane0 <= 32'd0;
+            transport_lane1 <= 32'd0;
+            transport_lane2 <= 32'd0;
+            transport_lane3 <= 32'd0;
             raw0 <= 32'd0;
             raw1 <= 32'd0;
             raw2 <= 32'd0;
@@ -175,6 +192,10 @@ module daq_litejesd_adc1_rx_path (
                 ready_count <= sat_inc8(ready_count);
                 sample_a <= converter0;
                 sample_b <= converter1;
+                transport_lane0 <= debug_transport_lane0;
+                transport_lane1 <= debug_transport_lane1;
+                transport_lane2 <= debug_transport_lane2;
+                transport_lane3 <= debug_transport_lane3;
             end
             if (adc_sync_n) begin
                 sync_high_count <= sat_inc8(sync_high_count);
@@ -222,10 +243,73 @@ module daq_litejesd_adc1_rx_path (
         error_event_count
     };
 
-    assign sample_a_low = sample_a[31:0];
-    assign sample_a_high = sample_a[63:32];
-    assign sample_b_low = sample_b[31:0];
-    assign sample_b_high = sample_b[63:32];
+    wire [63:0] sun_ch1_normal;
+    wire [63:0] sun_ch2_normal;
+    wire [63:0] sun_ch1_revbyte;
+    wire [63:0] sun_ch2_revbyte;
+
+    adc1_sundance_halfbeat #(
+        .REVERSE_BYTES (0),
+        .SWAP_SAMPLE_BYTES (0)
+    ) u_adc1_sundance_normal (
+        .lane0    (transport_lane0),
+        .lane1    (transport_lane1),
+        .lane2    (transport_lane2),
+        .lane3    (transport_lane3),
+        .adc1_ch1 (sun_ch1_normal),
+        .adc1_ch2 (sun_ch2_normal)
+    );
+
+    adc1_sundance_halfbeat #(
+        .REVERSE_BYTES (1),
+        .SWAP_SAMPLE_BYTES (0)
+    ) u_adc1_sundance_revbyte (
+        .lane0    (transport_lane0),
+        .lane1    (transport_lane1),
+        .lane2    (transport_lane2),
+        .lane3    (transport_lane3),
+        .adc1_ch1 (sun_ch1_revbyte),
+        .adc1_ch2 (sun_ch2_revbyte)
+    );
+
+    reg [31:0] cap_a_low;
+    reg [31:0] cap_a_high;
+    reg [31:0] cap_b_low;
+    reg [31:0] cap_b_high;
+
+    always @(*) begin
+        case (capture_format)
+        2'd1: begin
+            cap_a_low = transport_lane0;
+            cap_a_high = transport_lane1;
+            cap_b_low = transport_lane2;
+            cap_b_high = transport_lane3;
+        end
+        2'd2: begin
+            cap_a_low = sun_ch1_normal[31:0];
+            cap_a_high = sun_ch1_normal[63:32];
+            cap_b_low = sun_ch2_normal[31:0];
+            cap_b_high = sun_ch2_normal[63:32];
+        end
+        2'd3: begin
+            cap_a_low = sun_ch1_revbyte[31:0];
+            cap_a_high = sun_ch1_revbyte[63:32];
+            cap_b_low = sun_ch2_revbyte[31:0];
+            cap_b_high = sun_ch2_revbyte[63:32];
+        end
+        default: begin
+            cap_a_low = sample_a[31:0];
+            cap_a_high = sample_a[63:32];
+            cap_b_low = sample_b[31:0];
+            cap_b_high = sample_b[63:32];
+        end
+        endcase
+    end
+
+    assign sample_a_low = cap_a_low;
+    assign sample_a_high = cap_a_high;
+    assign sample_b_low = cap_b_low;
+    assign sample_b_high = cap_b_high;
     assign raw_lane_data = (raw_lane_select == 2'd0) ? raw0 :
                            (raw_lane_select == 2'd1) ? raw1 :
                            (raw_lane_select == 2'd2) ? raw2 : raw3;

@@ -63,6 +63,8 @@
 #define RW2_ADC1_RX_POL_MASK   (0xFFu << RW2_ADC1_RX_POL_SHIFT)
 #define RW2_ADC1_RAW_SHIFT     28
 #define RW2_ADC1_RAW_MASK      (3u << RW2_ADC1_RAW_SHIFT)
+#define RW2_ADC1_CAPTURE_FORMAT_SHIFT 28
+#define RW2_ADC1_CAPTURE_FORMAT_MASK  (3u << RW2_ADC1_CAPTURE_FORMAT_SHIFT)
 #define RW2_GTH_RESET          (1u << 0)
 #define RW2_DAC_SAMPLE_MAP_SHIFT 1
 #define RW2_DAC_SAMPLE_MAP_MASK  (3u << RW2_DAC_SAMPLE_MAP_SHIFT)
@@ -820,7 +822,8 @@ static void cmd_help(void)
     send_str("                 [7:5] DAC select 0/5..7=all, 1..4=converter0..3\r\n");
     send_str("RW2 ADC1 JESD RX: [24] bypass ILAS check, [25] STPL check, [26] DP order\r\n");
     send_str("                  firmware default is RW2=0x01000010 for ADC1/DAC bring-up\r\n");
-    send_str("                  [29:28] raw RX lane shown in selector 31/0x1F\r\n");
+    send_str("                  [29:28] capture format: 0=LiteJESD converters, 1=post-link lanes\r\n");
+    send_str("                         2=Sundance normal, 3=Sundance reversed-byte\r\n");
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("    [3] ADC BRAM capture/DAC program restart pulse\r\n");
@@ -873,6 +876,10 @@ static void cmd_status(void)
     send_uint((rw2 & RW2_DAC_TX_LANE_MASK) >> RW2_DAC_TX_LANE_SHIFT);
     send_str(" conv_sel=");
     send_uint((rw2 & RW2_DAC_CONV_MASK) >> RW2_DAC_CONV_SHIFT);
+    send_str("\r\n");
+    send_str("adc_diag: capture_format=");
+    send_uint((rw2 & RW2_ADC1_CAPTURE_FORMAT_MASK) >> RW2_ADC1_CAPTURE_FORMAT_SHIFT);
+    send_str((rw2 & RW2_ADC1_DP_ORDER) ? " physical_dp_order" : " sundance_dp_order");
     send_str("\r\n");
     print_uart_config();
 }

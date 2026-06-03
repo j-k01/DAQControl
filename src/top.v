@@ -1281,6 +1281,7 @@ module top #(
         .ilas_check_enable  (~rw_reg2[24]),
         .stpl_enable        (rw_reg2[25]),
         .raw_lane_select    (rw_reg2[29:28]),
+        .capture_format     (rw_reg2[29:28]),
         .rx_data0           (adc1_rx_data0),
         .rx_data1           (adc1_rx_data1),
         .rx_data2           (adc1_rx_data2),
@@ -1656,7 +1657,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_001A;
+    wire [31:0] build_id = 32'hDA01_001B;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]

@@ -17,6 +17,7 @@ set common_sources [list \
     ../../src/jesd/dac39j84_sample_remap.v \
     ../../src/jesd/litejesd_dac_tx.v \
     ../../src/jesd/daq_litejesd_dac_tx_path.v \
+    ../../src/jesd/adc1_sundance_halfbeat.v \
     ../../src/jesd/litejesd_adc1_rx.v \
     ../../src/jesd/daq_litejesd_adc1_rx_path.v \
     ../../src/top.v \
