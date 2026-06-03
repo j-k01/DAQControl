@@ -15,6 +15,7 @@ set include_staged_gt 0
 set include_litejesd 0
 set include_gth_tx_ila 0
 set include_bram_dataplane 0
+set izh_neuron_file_override ""
 
 for {set i 0} {$i < [llength $::argv]} {incr i} {
     set arg [lindex $::argv $i]
@@ -31,8 +32,15 @@ for {set i 0} {$i < [llength $::argv]} {incr i} {
         "--with-bram-dataplane" {
             set include_bram_dataplane 1
         }
+        "--izh-neuron-file" {
+            incr i
+            if {$i >= [llength $::argv]} {
+                error "--izh-neuron-file requires a path argument."
+            }
+            set izh_neuron_file_override [lindex $::argv $i]
+        }
         default {
-            error "Unknown create_project.tcl argument '$arg'. Supported arguments: --with-staged-gt, --with-litejesd, --with-gth-tx-ila, --with-bram-dataplane."
+            error "Unknown create_project.tcl argument '$arg'. Supported arguments: --with-staged-gt, --with-litejesd, --with-gth-tx-ila, --with-bram-dataplane, --izh-neuron-file <path>."
         }
     }
 }
@@ -467,10 +475,8 @@ foreach ext {*.v *.sv *.vhd} {
     }
 }
 
-set izh_neuron_file [file normalize [file join $script_dir .. .. IZH_neuron izh_neuron.v]]
-if {![file exists $izh_neuron_file]} {
-    error "IZH neuron source not found: $izh_neuron_file"
-}
+source [file join $script_dir scripts resolve_izh_neuron.tcl]
+set izh_neuron_file [resolve_izh_neuron_file $script_dir $izh_neuron_file_override]
 add_files -fileset sources_1 -norecurse $izh_neuron_file
 
 if {$include_litejesd} {

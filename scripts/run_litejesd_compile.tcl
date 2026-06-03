@@ -1,12 +1,27 @@
 set script_dir [file dirname [file normalize [info script]]]
 set root_dir   [file normalize [file join $script_dir ..]]
-set izh_neuron_file [file normalize [file join $root_dir .. .. IZH_neuron izh_neuron.v]]
+set izh_neuron_file_override ""
+
+for {set i 0} {$i < [llength $::argv]} {incr i} {
+    set arg [lindex $::argv $i]
+    switch -- $arg {
+        "--izh-neuron-file" {
+            incr i
+            if {$i >= [llength $::argv]} {
+                error "--izh-neuron-file requires a path argument."
+            }
+            set izh_neuron_file_override [lindex $::argv $i]
+        }
+        default {
+            error "Unknown run_litejesd_compile.tcl argument '$arg'. Supported arguments: --izh-neuron-file <path>."
+        }
+    }
+}
 
 cd $root_dir
 
-if {![file exists $izh_neuron_file]} {
-    error "IZH neuron source not found: $izh_neuron_file"
-}
+source [file join $script_dir resolve_izh_neuron.tcl]
+set izh_neuron_file [resolve_izh_neuron_file $root_dir $izh_neuron_file_override]
 
 set common_sources [list \
     ../launch_stubs.v \

@@ -190,8 +190,10 @@ These bits are only used by the `--with-staged-gt` build.
 
 ## IZH Neuron DAC Source
 
-The design instantiates the original neuron from
-`D:\DAVIS\Research\IZH_neuron\izh_neuron.v`. Do not edit that file for DAQ
+The design instantiates the original IZH neuron RTL. Project scripts resolve it
+in this order: `--izh-neuron-file <path>`, `IZH_NEURON_FILE`, `IZH_NEURON_DIR`,
+the tracked fallback `vendor/izh_neuron.v`, then nearby sibling
+`IZH_neuron/izh_neuron.v` folders. Do not edit the neuron module for DAQ
 integration behavior; the DAQ-specific clamp, scale, source select, and config
 logic is in `src/izh_dac_channel.v` and `src/izh_dac_bank.sv`.
 
@@ -283,6 +285,13 @@ before synthesis/implementation:
 
 ```powershell
 vivado.bat -mode batch -source rebuild.tcl -tclargs --with-staged-gt --jobs 8
+```
+
+If you want to force a specific external neuron source instead of the tracked
+fallback, pass it through the rebuild wrapper:
+
+```powershell
+vivado.bat -mode batch -source rebuild.tcl -tclargs --with-staged-gt --izh-neuron-file D:/DAVIS/Research/IZH_neuron/izh_neuron.v --jobs 8
 ```
 
 The BRAM ADC capture dataplane is intentionally not part of that baseline
