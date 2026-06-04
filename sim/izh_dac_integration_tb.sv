@@ -196,6 +196,15 @@ module izh_dac_integration_tb;
             $display("FAIL debug marker actual=0x%08x", bank_debug_word);
             $fatal;
         end
+        debug_channel = 3'd5;
+        #1;
+        check32("dt debug word", bank_debug_word, 32'h1D00_1000);
+        debug_channel = 3'd6;
+        #1;
+        if (bank_debug_word[31:24] !== 8'h1E) begin
+            $display("FAIL interval debug marker actual=0x%08x", bank_debug_word);
+            $fatal;
+        end
 
         $display("IZH DAC integration tests passed.");
         $finish;

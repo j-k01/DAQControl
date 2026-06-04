@@ -674,9 +674,11 @@ static void pulse_neuron_config(u32 channel, u32 all_channels, u32 param, u32 va
     }
 
     Xil_Out32(RW_REG1, value);
+    short_delay();
     Xil_Out32(RW_REG3, cfg_rw3);
     short_delay();
     Xil_Out32(RW_REG3, restore_rw3);
+    short_delay();
     Xil_Out32(RW_REG1, old_rw1);
 }
 
@@ -1047,6 +1049,7 @@ static void cmd_help(void)
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
     send_str("    [5:4] DAC source: 0=auto legacy, 1=DDS, 2=BRAM, 3=IZH neuron\r\n");
     send_str("    NEUR uses RW3[7] pulse, [11:8] param, [13:12] channel, [14] all\r\n");
+    send_str("    IZH debug via RW1=7: conv_sel 5=ch0 dt, 6=ch0 last spike interval\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("    [3] ADC BRAM capture/DAC program restart pulse\r\n");
     send_str("    [6] DAC program BRAM mode enable; PCAP sets this, CAPT clears it\r\n");

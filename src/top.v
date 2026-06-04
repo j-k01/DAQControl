@@ -835,22 +835,43 @@ module top #(
         .dest     (izh_cfg_bus_tx)
     );
 
-    wire [31:0] izh_cfg_value_tx = izh_cfg_bus_tx[43:12];
-    wire [11:0] izh_cfg_ctrl_tx = izh_cfg_bus_tx[11:0];
-    wire       izh_cfg_strobe_level_tx = izh_cfg_ctrl_tx[3];
+    wire       izh_cfg_strobe_level_tx = izh_cfg_bus_tx[3];
+    reg [43:0] izh_cfg_bus_latched_tx = 44'd0;
+    reg [2:0]  izh_cfg_strobe_count_tx = 3'd0;
+    reg        izh_cfg_strobe_seen_tx = 1'b0;
+    reg        izh_cfg_strobe_tx_r = 1'b0;
+
+    always @(posedge gth_tx_usrclk2) begin
+        if (litejesd_reset) begin
+            izh_cfg_bus_latched_tx <= 44'd0;
+            izh_cfg_strobe_count_tx <= 3'd0;
+            izh_cfg_strobe_seen_tx <= 1'b0;
+            izh_cfg_strobe_tx_r <= 1'b0;
+        end else if (!izh_cfg_strobe_level_tx) begin
+            izh_cfg_strobe_count_tx <= 3'd0;
+            izh_cfg_strobe_seen_tx <= 1'b0;
+            izh_cfg_strobe_tx_r <= 1'b0;
+        end else begin
+            izh_cfg_bus_latched_tx <= izh_cfg_bus_tx;
+            izh_cfg_strobe_tx_r <= 1'b0;
+
+            if (!izh_cfg_strobe_seen_tx) begin
+                if (izh_cfg_strobe_count_tx == 3'd4) begin
+                    izh_cfg_strobe_tx_r <= 1'b1;
+                    izh_cfg_strobe_seen_tx <= 1'b1;
+                end else begin
+                    izh_cfg_strobe_count_tx <= izh_cfg_strobe_count_tx + 1'b1;
+                end
+            end
+        end
+    end
+
+    wire [31:0] izh_cfg_value_tx = izh_cfg_bus_latched_tx[43:12];
+    wire [11:0] izh_cfg_ctrl_tx = izh_cfg_bus_latched_tx[11:0];
     wire [3:0] izh_cfg_param_tx = izh_cfg_ctrl_tx[7:4];
     wire [1:0] izh_cfg_channel_tx = izh_cfg_ctrl_tx[9:8];
     wire       izh_cfg_all_tx = izh_cfg_ctrl_tx[10];
-
-    reg izh_cfg_strobe_d_tx = 1'b0;
-    always @(posedge gth_tx_usrclk2) begin
-        if (litejesd_reset) begin
-            izh_cfg_strobe_d_tx <= 1'b0;
-        end else begin
-            izh_cfg_strobe_d_tx <= izh_cfg_strobe_level_tx;
-        end
-    end
-    wire izh_cfg_strobe_tx = izh_cfg_strobe_level_tx & ~izh_cfg_strobe_d_tx;
+    wire       izh_cfg_strobe_tx = izh_cfg_strobe_tx_r;
 
     izh_dac_bank u_izh_dac_bank (
         .clk           (gth_tx_usrclk2),
@@ -1741,7 +1762,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0028;
+    wire [31:0] build_id = 32'hDA01_0029;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]

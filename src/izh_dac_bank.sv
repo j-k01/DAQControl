@@ -40,6 +40,8 @@ module izh_dac_bank (
     reg signed [31:0] v_offset [0:3];
     reg [1:0] source_mode [0:3];
     reg [3:0] neuron_reset = 4'hF;
+    reg [23:0] spike_counter [0:3];
+    reg [23:0] last_spike_interval [0:3];
 
     wire signed [31:0] v_out [0:3];
     wire signed [31:0] u_out [0:3];
@@ -88,9 +90,20 @@ module izh_dac_bank (
         if (reset) begin
             for (cfg_i = 0; cfg_i < 4; cfg_i = cfg_i + 1) begin
                 set_defaults(cfg_i);
+                spike_counter[cfg_i] <= 24'd0;
+                last_spike_interval[cfg_i] <= 24'd0;
             end
             neuron_reset <= 4'hF;
         end else begin
+            for (cfg_i = 0; cfg_i < 4; cfg_i = cfg_i + 1) begin
+                if (spike[cfg_i]) begin
+                    last_spike_interval[cfg_i] <= spike_counter[cfg_i];
+                    spike_counter[cfg_i] <= 24'd0;
+                end else if (spike_counter[cfg_i] != 24'hFF_FFFF) begin
+                    spike_counter[cfg_i] <= spike_counter[cfg_i] + 1'b1;
+                end
+            end
+
             neuron_reset <= 4'h0;
 
             if (cfg_strobe) begin
@@ -98,27 +111,41 @@ module izh_dac_bank (
                     if (cfg_all) begin
                         for (cfg_i = 0; cfg_i < 4; cfg_i = cfg_i + 1) begin
                             set_defaults(cfg_i);
+                            spike_counter[cfg_i] <= 24'd0;
+                            last_spike_interval[cfg_i] <= 24'd0;
                         end
                         neuron_reset <= 4'hF;
                     end else begin
                         set_defaults(cfg_channel);
+                        spike_counter[cfg_channel] <= 24'd0;
+                        last_spike_interval[cfg_channel] <= 24'd0;
                         neuron_reset[cfg_channel] <= 1'b1;
                     end
                 end else if (cfg_param == 4'hF) begin
                     if (cfg_all) begin
                         neuron_reset <= 4'hF;
+                        for (cfg_i = 0; cfg_i < 4; cfg_i = cfg_i + 1) begin
+                            spike_counter[cfg_i] <= 24'd0;
+                            last_spike_interval[cfg_i] <= 24'd0;
+                        end
                     end else begin
                         neuron_reset[cfg_channel] <= 1'b1;
+                        spike_counter[cfg_channel] <= 24'd0;
+                        last_spike_interval[cfg_channel] <= 24'd0;
                     end
                 end else begin
                     if (cfg_all) begin
                         for (cfg_i = 0; cfg_i < 4; cfg_i = cfg_i + 1) begin
                             write_param(cfg_i, cfg_param, cfg_value);
+                            spike_counter[cfg_i] <= 24'd0;
+                            last_spike_interval[cfg_i] <= 24'd0;
                         end
                         neuron_reset <= 4'hF;
                     end else begin
                         write_param(cfg_channel, cfg_param, cfg_value);
                         neuron_reset[cfg_channel] <= 1'b1;
+                        spike_counter[cfg_channel] <= 24'd0;
+                        last_spike_interval[cfg_channel] <= 24'd0;
                     end
                 end
             end
@@ -162,14 +189,31 @@ module izh_dac_bank (
     wire [1:0] dbg_idx = (debug_channel >= 3'd1 && debug_channel <= 3'd4) ?
                          (debug_channel[1:0] - 2'd1) : 2'd0;
 
-    assign debug_word = {
-        8'h1A,
-        source_mode[dbg_idx],
-        spike[dbg_idx],
-        dbg_idx,
-        dac_sample[dbg_idx],
-        v_out[dbg_idx][2:0]
-    };
+    reg [31:0] debug_word_r;
+    always @(*) begin
+        case (debug_channel)
+        3'd5: begin
+            debug_word_r = {8'h1D, timestep_param[0][23:0]};
+        end
+        3'd6: begin
+            debug_word_r = {8'h1E, last_spike_interval[0]};
+        end
+        3'd7: begin
+            debug_word_r = {8'h1F, 16'd0, source_modes};
+        end
+        default: begin
+            debug_word_r = {
+                8'h1A,
+                source_mode[dbg_idx],
+                spike[dbg_idx],
+                dbg_idx,
+                last_spike_interval[dbg_idx][18:0]
+            };
+        end
+        endcase
+    end
+
+    assign debug_word = debug_word_r;
     assign spike_flags = spike;
 
 endmodule
