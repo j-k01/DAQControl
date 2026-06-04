@@ -29,6 +29,7 @@ module izh_dac_bank (
     localparam signed [31:0] DEFAULT_DT     = 32'sh0000_1000; // 0.0625
     localparam signed [31:0] DEFAULT_ICONST = 32'sh000A_0000; // constant drive 10
     localparam signed [31:0] DEFAULT_OFFSET = 32'sh0000_0000;
+    localparam [23:0] DEFAULT_UPDATE_PERIOD = 24'd1024;
 
     reg signed [31:0] a_param [0:3];
     reg signed [31:0] b_param [0:3];
@@ -38,6 +39,7 @@ module izh_dac_bank (
     reg signed [31:0] timestep_param [0:3];
     reg signed [31:0] i_constant [0:3];
     reg signed [31:0] v_offset [0:3];
+    reg [23:0] update_period [0:3];
     reg [1:0] source_mode [0:3];
     reg [3:0] neuron_reset = 4'hF;
     reg [23:0] spike_counter [0:3];
@@ -62,6 +64,7 @@ module izh_dac_bank (
             timestep_param[idx] <= DEFAULT_DT;
             i_constant[idx]     <= DEFAULT_ICONST;
             v_offset[idx]       <= DEFAULT_OFFSET;
+            update_period[idx]  <= DEFAULT_UPDATE_PERIOD;
             source_mode[idx]    <= 2'd0;
         end
     endtask
@@ -81,6 +84,7 @@ module izh_dac_bank (
             4'd6: i_constant[idx]     <= value;
             4'd7: v_offset[idx]       <= value;
             4'd8: source_mode[idx]    <= value[1:0];
+            4'd9: update_period[idx]  <= value[23:0];
             default: begin end
             endcase
         end
@@ -166,6 +170,7 @@ module izh_dac_bank (
                 .v_timestep (timestep_param[neuron_idx]),
                 .i_constant (i_constant[neuron_idx]),
                 .v_offset   (v_offset[neuron_idx]),
+                .update_period(update_period[neuron_idx]),
                 .spike      (spike[neuron_idx]),
                 .v_out      (v_out[neuron_idx]),
                 .u_out      (u_out[neuron_idx]),
@@ -199,7 +204,7 @@ module izh_dac_bank (
             debug_word_r = {8'h1E, last_spike_interval[0]};
         end
         3'd7: begin
-            debug_word_r = {8'h1F, 16'd0, source_modes};
+            debug_word_r = {8'h1F, update_period[0]};
         end
         default: begin
             debug_word_r = {

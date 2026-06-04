@@ -11,6 +11,7 @@ module izh_dac_channel (
     input  wire signed [31:0] v_timestep,
     input  wire signed [31:0] i_constant,
     input  wire signed [31:0] v_offset,
+    input  wire [23:0]        update_period,
 
     output wire               spike,
     output wire signed [31:0] v_out,
@@ -24,6 +25,23 @@ module izh_dac_channel (
     wire               neuron_spike;
     wire [15:0]        spike_dac_sample;
     wire [63:0]        spike_dac_word;
+    reg [23:0]         update_counter = 24'd0;
+
+    wire [23:0] update_reload = (update_period <= 24'd1) ? 24'd0 :
+                                 (update_period - 1'b1);
+    wire step_enable = (update_counter == 24'd0);
+
+    always @(posedge clk) begin
+        if (reset) begin
+            update_counter <= 24'd0;
+        end else if (update_reload == 24'd0) begin
+            update_counter <= 24'd0;
+        end else if (update_counter == update_reload) begin
+            update_counter <= 24'd0;
+        end else begin
+            update_counter <= update_counter + 1'b1;
+        end
+    end
 
     izh_neuron u_izh_neuron (
         .clk        (clk),
@@ -35,6 +53,7 @@ module izh_dac_channel (
         .I          (i_param),
         .v_timestep (v_timestep),
         .I_constant (i_constant),
+        .step_enable(step_enable),
         .SPIKE      (neuron_spike),
         .v_out      (neuron_v),
         .u_out      (neuron_u)

@@ -642,6 +642,9 @@ static int parse_neuron_param(char **cursor, u32 *param, int *needs_value)
         *param = 7u;
     } else if (token_eq_ci(p, "source") || token_eq_ci(p, "src")) {
         *param = 8u;
+    } else if (token_eq_ci(p, "period") || token_eq_ci(p, "rate") ||
+               token_eq_ci(p, "divider") || token_eq_ci(p, "update")) {
+        *param = 9u;
     } else if (token_eq_ci(p, "default") || token_eq_ci(p, "defaults")) {
         *param = 14u;
         *needs_value = 0;
@@ -704,7 +707,7 @@ static void cmd_neur(void)
     }
 
     if (!parse_neuron_param(&p, &param, &needs_value)) {
-        send_str("ERR NEUR expects param a,b,c,d,i,dt,iconst,offset,reset,default\r\n");
+        send_str("ERR NEUR expects param a,b,c,d,i,dt,iconst,offset,period,reset,default\r\n");
         return;
     }
 
@@ -1002,7 +1005,7 @@ static void cmd_help(void)
     send_str("  ADCT mode        ADS54J60 test mode: off,d21,k28,ila,rpat,transport\r\n");
     send_str("  NSRC [ch|all] mode DAC source: auto,dds,bram,izh\r\n");
     send_str("  NEUR ch param value  program IZH Q16.16 param on ch=0..3 or all\r\n");
-    send_str("                 params: a,b,c,d,i/current,dt,iconst/bias,offset,source,reset,default\r\n");
+    send_str("                 params: a,b,c,d,i/current,dt,iconst/bias,offset,period,source,reset,default\r\n");
     send_str("  RDRO n           read RO register 0..3\r\n");
     send_str("  RDRW n           read RW register 0..3\r\n");
     send_str("  WRTE n value     write RW register 0..3; use 0x prefix for hex masks\r\n");
@@ -1049,7 +1052,7 @@ static void cmd_help(void)
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
     send_str("    [5:4] DAC source: 0=auto legacy, 1=DDS, 2=BRAM, 3=IZH neuron\r\n");
     send_str("    NEUR uses RW3[7] pulse, [11:8] param, [13:12] channel, [14] all\r\n");
-    send_str("    IZH debug via RW1=7: conv_sel 5=ch0 dt, 6=ch0 last spike interval\r\n");
+    send_str("    IZH debug via RW1=7: conv_sel 5=ch0 dt, 6=ch0 last spike interval, 7=ch0 update period\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("    [3] ADC BRAM capture/DAC program restart pulse\r\n");
     send_str("    [6] DAC program BRAM mode enable; PCAP sets this, CAPT clears it\r\n");

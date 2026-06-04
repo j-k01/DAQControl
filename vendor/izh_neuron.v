@@ -31,6 +31,7 @@ module izh_neuron(
     input wire signed [31:0] I,
     input wire signed [31:0] v_timestep,
     input wire signed [31:0] I_constant,
+    input wire step_enable,
     output reg SPIKE,
     output wire signed [31:0] v_out,
     output wire signed [31:0] u_out
@@ -97,6 +98,8 @@ end
 always @(posedge clk) begin
     if (reset) begin
         v <= c_param;
+    end else if (!step_enable) begin
+        v <= v;
     end else if (v >= Z_CONST) begin
         v <= c_param;
     end else begin
@@ -130,6 +133,8 @@ end
 always @(posedge clk) begin
     if (reset) begin
         u <= U_INIT;
+    end else if (!step_enable) begin
+        u <= u;
     end else if (v >= Z_CONST) begin
         u <= u + d_param;
     end else begin
@@ -139,7 +144,7 @@ end
 
 always @(posedge clk) begin
     SPIKE <= 1'b0;
-    if (v >= Z_CONST) begin
+    if (step_enable && v >= Z_CONST) begin
         SPIKE <= 1'b1;
     end
 end

@@ -58,6 +58,7 @@ module izh_dac_integration_tb;
     reg signed [31:0] ch_dt = 32'sh0000_1000;
     reg signed [31:0] ch_iconst = 32'sh000A_0000;
     reg signed [31:0] ch_offset = 32'sh0000_0000;
+    reg [23:0] ch_update_period = 24'd1;
     reg ch_reset = 1'b1;
     wire ch_spike;
     wire signed [31:0] ch_v;
@@ -76,6 +77,7 @@ module izh_dac_integration_tb;
         .v_timestep (ch_dt),
         .i_constant (ch_iconst),
         .v_offset   (ch_offset),
+        .update_period(ch_update_period),
         .spike      (ch_spike),
         .v_out      (ch_v),
         .u_out      (ch_u),
@@ -181,6 +183,9 @@ module izh_dac_integration_tb;
         pulse_cfg(2'd3, 1'b0, 4'd7, 32'h0001_0000);
         check32("ch3 offset", u_bank.v_offset[3], 32'h0001_0000);
 
+        pulse_cfg(2'd0, 1'b0, 4'd9, 32'd64);
+        check32("ch0 update period", {8'd0, u_bank.update_period[0]}, 32'h0000_0040);
+
         pulse_cfg(2'd0, 1'b1, 4'd8, 32'd1);
         check32("all source mode dds", {24'd0, bank_source_modes}, 32'h0000_0055);
 
@@ -189,6 +194,7 @@ module izh_dac_integration_tb;
         check32("defaults restore a", u_bank.a_param[0], 32'h0000_051F);
         check32("defaults restore zero external current", u_bank.i_param[0], 32'h0000_0000);
         check32("defaults restore iconst", u_bank.i_constant[0], 32'h000A_0000);
+        check32("defaults restore update period", {8'd0, u_bank.update_period[0]}, 32'h0000_0400);
 
         debug_channel = 3'd1;
         #1;
@@ -205,6 +211,9 @@ module izh_dac_integration_tb;
             $display("FAIL interval debug marker actual=0x%08x", bank_debug_word);
             $fatal;
         end
+        debug_channel = 3'd7;
+        #1;
+        check32("period debug word", bank_debug_word, 32'h1F00_0400);
 
         $display("IZH DAC integration tests passed.");
         $finish;
