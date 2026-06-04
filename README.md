@@ -181,7 +181,7 @@ These bits are only used by the `--with-staged-gt` build.
 | 0 | Pulse HMC7044 auto-init/readback restart |
 | 1 | Pulse DAC39J84 auto-init restart |
 | 2 | Pulse ADS54J60 auto-init/readback restart |
-| 5:4 | Last DAC source requested by `NSRC`: `0` legacy auto (`RW3[6]` selects DDS/BRAM), `1` DDS, `2` DAC BRAM, `3` IZH neuron |
+| 5:4 | Last DAC source requested by `NSRC`: `0` legacy auto (`RW3[6]` selects DDS/BRAM), `1` DDS, `2` DAC BRAM, `3` IZH neuron/spike or direct vout |
 | 7 | IZH neuron config strobe, pulsed by firmware command `NEUR` |
 | 11:8 | IZH/source parameter select during firmware config pulses: `0=a`, `1=b`, `2=c`, `3=d`, `4=I`, `5=dt`, `6=I_constant`, `7=v_offset`, `8=DAC source`, `E=defaults`, `F=reset` |
 | 13:12 | IZH channel select during `NEUR` |
@@ -208,16 +208,22 @@ UART controls:
 ```text
 NSRC dds        # force existing DDS source on all DACs
 NSRC bram       # force DAC BRAM source on all DACs; also enables BRAM playback
-NSRC izh        # force IZH neuron source on all DACs
-NSRC 0 izh      # force only DAC converter 0 to IZH source
+NSRC izh        # force IZH spike-pulse source on all DACs
+NSRC 0 izh      # force only DAC converter 0 to IZH spike-pulse source
+NSRC 0 vout     # force only DAC converter 0 to direct IZH v_out source
 NEUR all reset  # reset all four neurons
 NEUR 0 i 0x00100000
 NEUR 0 offset 0x00000000
+NEUR 0 output 0 # IZH source emits spike-triggered 7 ns pulse
+NEUR 0 output 1 # IZH source emits direct clamped v_out
 ```
 
 `NEUR` values are raw Q16.16, matching the original IZH testbench. Defaults are
 regular-spiking testbench values: `a=0.02`, `b=0.20`, `c=-65`, `d=8`,
 `I=0x000FFF00`, `dt=0.0625`, and `I_constant=10`.
+The direct `vout` path clamps `v_out + offset` to `-80 mV .. +30 mV` and maps
+that biological voltage range over the DAC's signed 16-bit range. The `izh`
+path keeps the spike-triggered trapezoid pulse generator.
 
 ## Build
 

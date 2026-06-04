@@ -547,6 +547,9 @@ static int parse_dac_source_mode(char **cursor, u32 *mode)
         *mode = 2u;
     } else if (token_eq_ci(p, "izh") || token_eq_ci(p, "neuron")) {
         *mode = 3u;
+    } else if (token_eq_ci(p, "vout") || token_eq_ci(p, "voltage") ||
+               token_eq_ci(p, "direct")) {
+        *mode = 4u;
     } else if (!parse_u32_arg(&p, mode)) {
         return 0;
     }
@@ -580,21 +583,30 @@ static void cmd_nsrc(void)
         }
     }
 
-    if (!parse_dac_source_mode(&p, &mode) || mode > 3u) {
-        send_str("ERR NSRC expects [all|0..3] auto, dds, bram, izh, or 0..3\r\n");
+    if (!parse_dac_source_mode(&p, &mode) || mode > 4u) {
+        send_str("ERR NSRC expects [all|0..3] auto, dds, bram, izh, vout, or 0..4\r\n");
         return;
     }
 
-    pulse_neuron_config(channel, all_channels, 8u, mode);
+    if (mode == 4u) {
+        pulse_neuron_config(channel, all_channels, 10u, 1u);
+        pulse_neuron_config(channel, all_channels, 8u, 3u);
+    } else {
+        if (mode == 3u) {
+            pulse_neuron_config(channel, all_channels, 10u, 0u);
+        }
+        pulse_neuron_config(channel, all_channels, 8u, mode);
+    }
 
     {
         u32 rw3 = Xil_In32(RW_REG3);
+        u32 rw3_source_mode = (mode == 4u) ? 3u : mode;
         rw3 &= ~(RW3_DAC_SOURCE_MASK
 #if HAS_BRAM_DATAPLANE
                  | (all_channels ? RW3_DAC_PROGRAM_EN : 0u)
 #endif
                  | RW3_IZH_CFG_STROBE);
-        rw3 |= (mode << RW3_DAC_SOURCE_SHIFT);
+        rw3 |= (rw3_source_mode << RW3_DAC_SOURCE_SHIFT);
 #if HAS_BRAM_DATAPLANE
         if (mode == 2u) {
             rw3 |= RW3_DAC_PROGRAM_EN;
@@ -645,6 +657,9 @@ static int parse_neuron_param(char **cursor, u32 *param, int *needs_value)
     } else if (token_eq_ci(p, "period") || token_eq_ci(p, "rate") ||
                token_eq_ci(p, "divider") || token_eq_ci(p, "update")) {
         *param = 9u;
+    } else if (token_eq_ci(p, "output") || token_eq_ci(p, "out") ||
+               token_eq_ci(p, "vout_mode")) {
+        *param = 10u;
     } else if (token_eq_ci(p, "default") || token_eq_ci(p, "defaults")) {
         *param = 14u;
         *needs_value = 0;
@@ -707,7 +722,7 @@ static void cmd_neur(void)
     }
 
     if (!parse_neuron_param(&p, &param, &needs_value)) {
-        send_str("ERR NEUR expects param a,b,c,d,i,dt,iconst,offset,period,reset,default\r\n");
+        send_str("ERR NEUR expects param a,b,c,d,i,dt,iconst,offset,period,source,output,reset,default\r\n");
         return;
     }
 
@@ -1003,9 +1018,9 @@ static void cmd_help(void)
     send_str("  LOOP             dump DAC TX / ADC1 RX loopback diagnostics\r\n");
     send_str("  RXSW             sweep ADC1 RX ILAS/order/polarity diagnostics\r\n");
     send_str("  ADCT mode        ADS54J60 test mode: off,d21,k28,ila,rpat,transport\r\n");
-    send_str("  NSRC [ch|all] mode DAC source: auto,dds,bram,izh\r\n");
+    send_str("  NSRC [ch|all] mode DAC source: auto,dds,bram,izh,vout\r\n");
     send_str("  NEUR ch param value  program IZH Q16.16 param on ch=0..3 or all\r\n");
-    send_str("                 params: a,b,c,d,i/current,dt,iconst/bias,offset,period,source,reset,default\r\n");
+    send_str("                 params: a,b,c,d,i/current,dt,iconst/bias,offset,period,source,output,reset,default\r\n");
     send_str("  RDRO n           read RO register 0..3\r\n");
     send_str("  RDRW n           read RW register 0..3\r\n");
     send_str("  WRTE n value     write RW register 0..3; use 0x prefix for hex masks\r\n");
@@ -1050,7 +1065,7 @@ static void cmd_help(void)
     send_str("                  [29:28] capture format: 0=LiteJESD converters, 1=post-link lanes\r\n");
     send_str("                         2=Sundance normal, 3=Sundance reversed-byte\r\n");
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
-    send_str("    [5:4] DAC source: 0=auto legacy, 1=DDS, 2=BRAM, 3=IZH neuron\r\n");
+    send_str("    [5:4] DAC source: 0=auto legacy, 1=DDS, 2=BRAM, 3=IZH neuron/vout\r\n");
     send_str("    NEUR uses RW3[7] pulse, [11:8] param, [13:12] channel, [14] all\r\n");
     send_str("    IZH debug via RW1=7: conv_sel 5=ch0 dt, 6=ch0 last spike interval, 7=ch0 update period\r\n");
 #if HAS_BRAM_DATAPLANE

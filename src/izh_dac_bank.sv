@@ -40,6 +40,7 @@ module izh_dac_bank (
     reg signed [31:0] i_constant [0:3];
     reg signed [31:0] v_offset [0:3];
     reg [23:0] update_period [0:3];
+    reg direct_vout_mode [0:3];
     reg [1:0] source_mode [0:3];
     reg [3:0] neuron_reset = 4'hF;
     reg [23:0] spike_counter [0:3];
@@ -65,6 +66,7 @@ module izh_dac_bank (
             i_constant[idx]     <= DEFAULT_ICONST;
             v_offset[idx]       <= DEFAULT_OFFSET;
             update_period[idx]  <= DEFAULT_UPDATE_PERIOD;
+            direct_vout_mode[idx] <= 1'b0;
             source_mode[idx]    <= 2'd0;
         end
     endtask
@@ -85,6 +87,7 @@ module izh_dac_bank (
             4'd7: v_offset[idx]       <= value;
             4'd8: source_mode[idx]    <= value[1:0];
             4'd9: update_period[idx]  <= value[23:0];
+            4'd10: direct_vout_mode[idx] <= value[0];
             default: begin end
             endcase
         end
@@ -171,6 +174,7 @@ module izh_dac_bank (
                 .i_constant (i_constant[neuron_idx]),
                 .v_offset   (v_offset[neuron_idx]),
                 .update_period(update_period[neuron_idx]),
+                .direct_vout_enable(direct_vout_mode[neuron_idx]),
                 .spike      (spike[neuron_idx]),
                 .v_out      (v_out[neuron_idx]),
                 .u_out      (u_out[neuron_idx]),
@@ -209,10 +213,11 @@ module izh_dac_bank (
         default: begin
             debug_word_r = {
                 8'h1A,
+                direct_vout_mode[dbg_idx],
                 source_mode[dbg_idx],
                 spike[dbg_idx],
                 dbg_idx,
-                last_spike_interval[dbg_idx][18:0]
+                last_spike_interval[dbg_idx][17:0]
             };
         end
         endcase
