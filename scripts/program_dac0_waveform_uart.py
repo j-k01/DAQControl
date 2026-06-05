@@ -65,6 +65,25 @@ def waveform_sample(
     elif shape == "pulse":
         period_samples = max(1, int(round(sample_rate_hz / frequency_hz)))
         value = offset + amplitude if (index % period_samples) < pulse_width_samples else offset
+    elif shape == "trapulse":
+        period_samples = max(1, int(round(sample_rate_hz / frequency_hz)))
+        pulse_phase = index % period_samples
+        if pulse_phase >= pulse_width_samples:
+            value = offset
+        elif pulse_width_samples == 7:
+            # Match the hardware IZH spike pulse shape exactly for the bring-up
+            # case: 7 samples total at 1 GSPS.
+            profile = (0.25, 0.5, 1.0, 1.0, 1.0, 0.5, 0.25)
+            value = offset + amplitude * profile[pulse_phase]
+        else:
+            midpoint = max(1, pulse_width_samples - 1)
+            normalized = pulse_phase / midpoint
+            if normalized < 0.25:
+                value = offset + amplitude * (normalized / 0.25)
+            elif normalized < 0.75:
+                value = offset + amplitude
+            else:
+                value = offset + amplitude * ((1.0 - normalized) / 0.25)
     elif shape == "squarewave":
         value = offset + amplitude if phase < 0.5 else offset - amplitude
     else:
@@ -173,7 +192,17 @@ def main() -> None:
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument(
         "--shape",
-        choices=["sine", "triangle", "trapezoid", "pulse", "squarewave", "squareweave", "square"],
+        choices=[
+            "sine",
+            "triangle",
+            "trapezoid",
+            "trapulse",
+            "trapezoid-pulse",
+            "pulse",
+            "squarewave",
+            "squareweave",
+            "square",
+        ],
         default="sine",
     )
     parser.add_argument("--frequency-mhz", type=float, default=100.0)
@@ -189,6 +218,8 @@ def main() -> None:
 
     if args.shape in ("square", "squareweave"):
         args.shape = "squarewave"
+    if args.shape == "trapezoid-pulse":
+        args.shape = "trapulse"
 
     program = make_program(args)
     frame_count = len(program) // 2
