@@ -674,3 +674,49 @@ Re-run implementation with the firmware baked into the bitstream:
 ```powershell
 vivado.bat -mode batch -source build.tcl -tclargs --bake
 ```
+
+### QSPI boot without JTAG
+
+The PL bitstream and MicroBlaze BRAM contents are volatile. To have the board
+come up after power-on without JTAG or SD boot, build a ZynqMP QSPI boot image
+that contains a bitstream with the MicroBlaze firmware already baked in.
+
+Build the firmware and then rebuild the bitstream with the ELF scoped into the
+MicroBlaze BRAM:
+
+```powershell
+xsct.bat build_sw.tcl
+vivado.bat -mode batch -source build.tcl -tclargs --bake
+```
+
+Create `boot/qspi/BOOT.BIN`:
+
+```powershell
+xsct.bat make_qspi_boot.tcl
+```
+
+`make_qspi_boot.tcl` tries to generate the ZynqMP FSBL and PMU firmware from
+`hw/DAQ_LAUNCH.xsa`. If the active XSA does not include a PS hardware platform,
+pass known-good ZCU102 boot firmware explicitly:
+
+```powershell
+xsct.bat make_qspi_boot.tcl --fsbl path\to\fsbl.elf --pmufw path\to\pmufw.elf
+```
+
+Program the resulting boot image into QSPI flash over JTAG:
+
+```powershell
+xsct.bat program_qspi_boot.tcl
+```
+
+The default flash type is `qspi-x8-dual_parallel`, which is the usual ZCU102
+QSPI geometry. Override it if Hardware Manager or board documentation reports a
+different flash layout:
+
+```powershell
+xsct.bat program_qspi_boot.tcl --flash-type qspi-x4-single
+```
+
+After flashing, set the ZCU102 boot mode switches to QSPI boot and power-cycle
+the board. The ZynqMP boot ROM/FSBL loads the PL bitstream from QSPI, and the
+baked MicroBlaze firmware starts from BRAM after PL configuration.

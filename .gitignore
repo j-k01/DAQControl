@@ -23,6 +23,7 @@ vivado_pid*.zip
 
 # Vitis/XSDK generated workspace
 sw/workspace/
+boot/
 
 # OS/editor noise
 .DS_Store
