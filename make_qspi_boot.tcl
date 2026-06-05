@@ -9,7 +9,9 @@ proc usage {} {
     puts "  vivado.bat -mode batch -source build.tcl -tclargs --bake"
     puts ""
     puts "Options:"
-    puts "  --xsa <path>       Hardware XSA. Default: hw/DAQ_LAUNCH.xsa"
+    puts "  --xsa <path>       ZynqMP PS hardware XSA."
+    puts "                     Default: boot/zcu102_ps/zcu102_ps_boot.xsa if present,"
+    puts "                     otherwise hw/DAQ_LAUNCH.xsa"
     puts "  --bit <path>       Baked PL bitstream. Default: project/DAQ_LAUNCH.runs/impl_1/top.bit"
     puts "  --out <dir>        Output directory. Default: boot/qspi"
     puts "  --ws <dir>         Temporary Vitis workspace. Default: boot/workspace"
@@ -58,7 +60,12 @@ proc build_boot_firmware {xsa ws} {
     return [list $fsbl $pmufw]
 }
 
-set xsa_file [file join $script_dir hw DAQ_LAUNCH.xsa]
+set ps_boot_xsa [file join $script_dir boot zcu102_ps zcu102_ps_boot.xsa]
+if {[file exists $ps_boot_xsa]} {
+    set xsa_file $ps_boot_xsa
+} else {
+    set xsa_file [file join $script_dir hw DAQ_LAUNCH.xsa]
+}
 set bit_file [file join $script_dir project DAQ_LAUNCH.runs impl_1 top.bit]
 set out_dir [file join $script_dir boot qspi]
 set ws_dir [file join $script_dir boot workspace]
@@ -114,7 +121,9 @@ while {$i < [llength $argv]} {
 }
 
 require_file "XSA" $xsa_file
-require_file "Bitstream" $bit_file
+if {![file exists $bit_file]} {
+    error "Bitstream not found: $bit_file\nBuild a baked bitstream first:\n  xsct.bat build_sw.tcl\n  vivado.bat -mode batch -source build.tcl -tclargs --bake\nor pass the bitstream explicitly:\n  xsct.bat make_qspi_boot.tcl --bit path/to/top.bit"
+}
 
 if {$fsbl_file eq "" || $pmufw_file eq ""} {
     if {!$build_fw} {
@@ -126,7 +135,11 @@ if {$fsbl_file eq "" || $pmufw_file eq ""} {
         puts stderr ""
         puts stderr "Failed to generate FSBL/PMUFW from the XSA."
         puts stderr "This PL/MicroBlaze design may not contain a ZynqMP PS hardware platform."
-        puts stderr "If so, create or reuse a ZCU102 FSBL/PMUFW and pass them explicitly:"
+        puts stderr "Generate a small ZCU102 PS-only boot XSA, then rerun this script:"
+        puts stderr "  vivado.bat -mode batch -source create_zcu102_ps_boot_xsa.tcl"
+        puts stderr "  xsct.bat make_qspi_boot.tcl --xsa boot/zcu102_ps/zcu102_ps_boot.xsa"
+        puts stderr ""
+        puts stderr "Or reuse a known-good ZCU102 FSBL/PMUFW and pass them explicitly:"
         puts stderr "  xsct.bat make_qspi_boot.tcl --fsbl path/to/fsbl.elf --pmufw path/to/pmufw.elf"
         return -options $options $generated
     }

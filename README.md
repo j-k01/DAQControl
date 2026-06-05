@@ -692,12 +692,18 @@ vivado.bat -mode batch -source build.tcl -tclargs --bake
 Create `boot/qspi/BOOT.BIN`:
 
 ```powershell
+vivado.bat -mode batch -source create_zcu102_ps_boot_xsa.tcl
 xsct.bat make_qspi_boot.tcl
 ```
 
-`make_qspi_boot.tcl` tries to generate the ZynqMP FSBL and PMU firmware from
-`hw/DAQ_LAUNCH.xsa`. If the active XSA does not include a PS hardware platform,
-pass known-good ZCU102 boot firmware explicitly:
+`create_zcu102_ps_boot_xsa.tcl` creates a small ZCU102 PS-only XSA at
+`boot/zcu102_ps/zcu102_ps_boot.xsa`. That XSA is only for generating the
+ZynqMP FSBL and PMU firmware. The actual DAQ PL image still comes from the
+baked `project/DAQ_LAUNCH.runs/impl_1/top.bit`.
+
+`make_qspi_boot.tcl` uses `boot/zcu102_ps/zcu102_ps_boot.xsa` when present. If
+you already have known-good ZCU102 boot firmware, you can skip PS XSA generation
+and pass the ELFs explicitly:
 
 ```powershell
 xsct.bat make_qspi_boot.tcl --fsbl path\to\fsbl.elf --pmufw path\to\pmufw.elf
