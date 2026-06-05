@@ -22,6 +22,27 @@ proc require_file {label path} {
     }
 }
 
+proc require_boot_bin {path} {
+    if {[file exists $path]} {
+        return
+    }
+
+    puts stderr "BOOT.BIN not found: $path"
+    puts stderr ""
+    puts stderr "Create the boot image before programming QSPI:"
+    puts stderr "  xsct.bat build_sw.tcl"
+    puts stderr "  vivado.bat -mode batch -source build.tcl -tclargs --bake"
+    puts stderr "  vivado.bat -mode batch -source create_zcu102_ps_boot_xsa.tcl"
+    puts stderr "  xsct.bat make_qspi_boot.tcl"
+    puts stderr ""
+    puts stderr "If the baked bitstream was built somewhere else, pass it explicitly:"
+    puts stderr "  xsct.bat make_qspi_boot.tcl --bit path/to/top.bit"
+    puts stderr ""
+    puts stderr "If BOOT.BIN already exists at another path, pass it explicitly:"
+    puts stderr "  xsct.bat program_qspi_boot.tcl --boot-bin path/to/BOOT.BIN"
+    error "BOOT.BIN not found"
+}
+
 set boot_bin [file join $script_dir boot qspi BOOT.BIN]
 set fsbl_file [file join $script_dir boot workspace fsbl Debug fsbl.elf]
 set flash_type "qspi-x8-dual_parallel"
@@ -71,7 +92,7 @@ while {$i < [llength $argv]} {
     incr i
 }
 
-require_file "BOOT.BIN" $boot_bin
+require_boot_bin $boot_bin
 require_file "FSBL ELF" $fsbl_file
 
 puts "Programming QSPI boot image."

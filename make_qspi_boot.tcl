@@ -31,12 +31,24 @@ proc bif_path {path} {
     return [string map {\\ /} [file normalize $path]]
 }
 
-proc build_boot_firmware {xsa ws} {
-    if {[file exists $ws]} {
-        file delete -force $ws
-    }
-    file mkdir $ws
+proc build_boot_firmware_direct {xsa ws} {
+    setws $ws
 
+    app create -name fsbl -hw $xsa -proc psu_cortexa53_0 -os standalone -template {Zynq MP FSBL}
+    app create -name pmufw -hw $xsa -proc psu_pmu_0 -os standalone -template {ZynqMP PMU Firmware}
+
+    app build -name fsbl
+    app build -name pmufw
+
+    set fsbl [file join $ws fsbl Debug fsbl.elf]
+    set pmufw [file join $ws pmufw Debug pmufw.elf]
+    require_file "Generated FSBL ELF" $fsbl
+    require_file "Generated PMUFW ELF" $pmufw
+
+    return [list $fsbl $pmufw]
+}
+
+proc build_boot_firmware_platform {xsa ws} {
     setws $ws
     platform create -name boot_platform -hw $xsa -out $ws
 
@@ -58,6 +70,32 @@ proc build_boot_firmware {xsa ws} {
     require_file "Generated PMUFW ELF" $pmufw
 
     return [list $fsbl $pmufw]
+}
+
+proc reset_workspace {ws} {
+    if {[file exists $ws]} {
+        file delete -force $ws
+    }
+    file mkdir $ws
+}
+
+proc build_boot_firmware {xsa ws} {
+    reset_workspace $ws
+
+    puts "Trying direct XSCT app flow..."
+    if {![catch {build_boot_firmware_direct $xsa $ws} generated]} {
+        return $generated
+    }
+    set direct_error $generated
+
+    puts "Direct app flow failed; trying custom platform/domain flow..."
+    reset_workspace $ws
+    if {![catch {build_boot_firmware_platform $xsa $ws} generated]} {
+        return $generated
+    }
+    set platform_error $generated
+
+    error "Direct app flow failed:\n  $direct_error\n\nPlatform/domain flow failed:\n  $platform_error"
 }
 
 set ps_boot_xsa [file join $script_dir boot zcu102_ps zcu102_ps_boot.xsa]
@@ -134,7 +172,11 @@ if {$fsbl_file eq "" || $pmufw_file eq ""} {
     if {[catch {build_boot_firmware $xsa_file $ws_dir} generated options]} {
         puts stderr ""
         puts stderr "Failed to generate FSBL/PMUFW from the XSA."
-        puts stderr "This PL/MicroBlaze design may not contain a ZynqMP PS hardware platform."
+        puts stderr "Raw XSCT/Vitis error:"
+        puts stderr "  $generated"
+        puts stderr ""
+        puts stderr "If the raw error says the platform has no ZynqMP PS, make sure the XSA is"
+        puts stderr "the PS-only boot XSA, not hw/DAQ_LAUNCH.xsa."
         puts stderr "Generate a small ZCU102 PS-only boot XSA, then rerun this script:"
         puts stderr "  vivado.bat -mode batch -source create_zcu102_ps_boot_xsa.tcl"
         puts stderr "  xsct.bat make_qspi_boot.tcl --xsa boot/zcu102_ps/zcu102_ps_boot.xsa"
