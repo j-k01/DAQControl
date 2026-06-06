@@ -519,8 +519,8 @@ fields.
 For the optional `--with-gth-tx-ila` diagnostic build, set `RW2[12]` to force
 all DAC sources to fixed 16-bit tag words before the DAC mapping logic. For
 example, `WRTE 2 0x010010E2` keeps the normal DAC diagnostic mode but replaces
-the live/BRAM/neuron samples with recognizable chunks such as `CAFE`, `C0DE`,
-`FACE`, and `D00D`. The TX ILA then exposes the BRAM output, selected source,
+the live/BRAM/neuron samples with a systematic tag pattern from `1111` through
+`FFFF`, plus `0F0F` as the final unique marker. The TX ILA then exposes the BRAM output, selected source,
 native byte-swap path, preimage path, table-driven physical mapper path, legacy
 remap input/output, final LiteJESD converter inputs, raw LiteJESD lane data, and
 post-TX-lane-mux GTH user data.

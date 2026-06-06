@@ -1191,7 +1191,7 @@ static void cmd_help(void)
     send_str("                         2=swap first pair, 3=swap second pair\r\n");
     send_str("                 [11:10]=pair orient: 0=expected, 1=flip upper, 2=flip lower,\r\n");
     send_str("                         3=flip all byte pairs\r\n");
-    send_str("                 [12] force fixed ILA tag source: CAFE/C0DE/FACE/D00D etc.\r\n");
+    send_str("                 [12] force fixed ILA tag source: 1111/2222/.../FFFF/0F0F\r\n");
     send_str("RW2 ADC1 JESD RX: [24] bypass ILAS check, [25] STPL check, [26] DP order\r\n");
     send_str("                  firmware diagnostic default is RW2=0x010000E2\r\n");
     send_str("                  [29:28] capture format: 0=LiteJESD converters, 1=post-link lanes\r\n");

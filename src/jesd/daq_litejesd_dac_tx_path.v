@@ -219,10 +219,10 @@ module daq_litejesd_dac_tx_path #(
         sine_sample0
     };
     wire [63:0] dac_zero64 = 64'd0;
-    wire [63:0] dac_tag_word0 = {16'hD00D, 16'hFACE, 16'hC0DE, 16'hCAFE};
-    wire [63:0] dac_tag_word1 = {16'hBABE, 16'hDEAD, 16'hF00D, 16'hFEED};
-    wire [63:0] dac_tag_word2 = {16'hDEED, 16'hFADE, 16'hACED, 16'hBEAD};
-    wire [63:0] dac_tag_word3 = {16'hC0ED, 16'hDEAF, 16'hCEDE, 16'hDADA};
+    wire [63:0] dac_tag_word0 = {16'h4444, 16'h3333, 16'h2222, 16'h1111};
+    wire [63:0] dac_tag_word1 = {16'h8888, 16'h7777, 16'h6666, 16'h5555};
+    wire [63:0] dac_tag_word2 = {16'hCCCC, 16'hBBBB, 16'hAAAA, 16'h9999};
+    wire [63:0] dac_tag_word3 = {16'h0F0F, 16'hFFFF, 16'hEEEE, 16'hDDDD};
 
     // Converter select is diagnostic-only:
     //   0     broadcast the same scalar waveform to all four converters
