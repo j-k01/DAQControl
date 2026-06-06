@@ -255,33 +255,26 @@ module daq_litejesd_adc1_rx_path (
         end
     endfunction
 
-    wire [15:0] sample_a0 = sample_a[15:0];
-    wire [15:0] sample_a1 = sample_a[31:16];
-    wire [15:0] sample_a2 = sample_a[47:32];
-    wire [15:0] sample_a3 = sample_a[63:48];
     wire [15:0] sample_b0 = sample_b[15:0];
     wire [15:0] sample_b1 = sample_b[31:16];
     wire [15:0] sample_b2 = sample_b[47:32];
     wire [15:0] sample_b3 = sample_b[63:48];
 
-    // ADS54J60 LMFS=4211 on the FMC-ADC500-CD does not arrive in the
-    // generated LiteJESD converter-word order.  Sundance's reference design
-    // rebuilds ADC1 samples from non-adjacent lane-byte regions; board tests
-    // with distinct DAC0/DAC1 tones recovered the same required ordering.
+    // ADS54J60 LMFS=4211 on the FMC-ADC500-CD needs one last publication
+    // step after LiteJESD link/transport decoding.  Sundance's reference
+    // design rebuilds ADC samples from transport lane-byte regions; board
+    // tests with distinct DAC0/DAC1 tones show the generated LiteJESD sample
+    // order is already chronological for channel A, while channel B's 16-bit
+    // samples need byte swapping.
     //
     // Published order, four chronological samples per jesd_clk:
-    //   CH A: generated slots [2,0,3,1]
-    //   CH B: generated slots [0,3,2,1], with sample bytes swapped
-    wire [63:0] sample_a_lmfs4211 = {
-        sample_a1,
-        sample_a3,
-        sample_a0,
-        sample_a2
-    };
+    //   CH A: generated slots [0,1,2,3]
+    //   CH B: generated slots [0,1,2,3], with sample bytes swapped
+    wire [63:0] sample_a_lmfs4211 = sample_a;
     wire [63:0] sample_b_lmfs4211 = {
-        swap_sample_bytes16(sample_b1),
-        swap_sample_bytes16(sample_b2),
         swap_sample_bytes16(sample_b3),
+        swap_sample_bytes16(sample_b2),
+        swap_sample_bytes16(sample_b1),
         swap_sample_bytes16(sample_b0)
     };
 
