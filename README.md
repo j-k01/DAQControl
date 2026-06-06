@@ -506,34 +506,48 @@ reconstruction, or Sundance-style reversed-byte reconstruction. `RW2[24]=1`
 bypasses ILAS checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL
 checker, and `RW2[26]=1` switches ADC1 from Sundance signal order to physical
 DP0-DP3 order.
-The MicroBlaze firmware defaults `RW2` to `0x01000018`: ADS54J60 ILAS checking
-is bypassed for bring-up, the DAC sample path uses native LiteJESD converter
-streams, and the DAC TX lane mux uses the `0x3021/0x7654` DAC-crossbar inverse
-map. In this path, BRAM/DDS sources 0..3 are treated as the four desired
-physical DAC outputs and are passed as whole 64-bit converter streams; the old
-byte-splitting mappers are diagnostics only. Clear bit 24 only when
-deliberately re-enabling ADC ILAS checking while debugging the expected ILAS
-fields.
+The MicroBlaze firmware defaults `RW2` to `0x010000FE`: ADS54J60 ILAS checking
+is bypassed for bring-up, all four DAC sources are enabled, the DAC sample path
+uses the table-driven byte-lane preimage, and the DAC TX lane mux uses the
+`0x3021/0x7654` DAC-crossbar inverse map. The preimage does not hard-code a
+specific front-panel label. It maps four independent source streams into
+candidate byte-lane pairs; connector labels still need byte-sensitive scope/ADC
+validation. Clear bit 24 only when deliberately re-enabling ADC ILAS checking
+while debugging the expected ILAS fields.
 
 For the physical mapper, `RW2[9:8]` selects how source words are assigned to
-the DAC39J84 internal channel names before the Sundance byte-lane placement:
+candidate byte-lane outputs before the preimage is packed into LiteJESD
+converter buses:
 
 | Source order | Meaning |
 | --- | --- |
-| `0` | Sundance internal order: `dac2_ch2`, `dac2_ch1`, `dac1_ch2`, `dac1_ch1` |
-| `1` | User-guide physical order: `OUT_A`, `OUT_B`, `OUT_C`, `OUT_D` |
-| `2` | Swap the first Sundance pair for diagnostics |
-| `3` | Swap the second Sundance pair for diagnostics |
+| `0` | Direct candidate order: source0, source1, source2, source3 |
+| `1` | Reverse candidate order for connector-label discovery |
+| `2` | Swap the first candidate pair for diagnostics |
+| `3` | Swap the upper candidate pair for diagnostics |
 
-Set `RW2[11:10]=3` only for the byte-orientation diagnostic; normal builds keep
-those bits clear. With legacy `sample_map=3`, sweep source ownership and TX
-lane mode using the helper below. To hand-test identity-lane source ownership, use:
+Set `RW2[11:10]=1` to invert only the upper candidate-pair byte orientation,
+`2` to invert only the lower candidate pair, and `3` to invert all candidate
+byte pairs. Normal builds keep those bits clear. With `sample_map=3`, sweep
+source ownership and TX lane mode using the helper below. To hand-test
+identity-lane source ownership, use:
 `RW2=0x01000006`, `0x01000106`, `0x01000206`, and `0x01000306`.
 The automated cabled-pair sweep is:
 
 ```powershell
-python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010024
+python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010030
 ```
+
+Before accepting the mapper, use a byte-asymmetric BRAM pattern rather than
+only sine waves:
+
+```powershell
+python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010030 --rw2 0x010000FE --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
+```
+
+The generated raw 16-bit sample stream starts `0x1201, 0x2302, 0x3403,
+0x4504, ...`, making high/low-byte inversions visible instead of merely
+checking that a sine lands near the right FFT bin.
 
 To force a small ADS54J60 JESD test pattern over SPI without rebuilding HDL,
 use:

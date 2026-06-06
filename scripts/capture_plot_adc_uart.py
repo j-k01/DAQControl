@@ -46,6 +46,10 @@ def pack_pair(sample0, sample1, sample_format):
     )
 
 
+def pack_raw_pair(sample0, sample1):
+    return ((sample1 & 0xFFFF) << 16) | (sample0 & 0xFFFF)
+
+
 def parse_chunk_order(text):
     tokens = [token for token in re.split(r"[\s,]+", text.strip()) if token]
     order = [int(token, 0) for token in tokens]
@@ -236,6 +240,19 @@ def make_trapezoid_program(words, frequency_hz, sample_rate_hz, amplitude, offse
     return out
 
 
+def make_byte_pattern_program(words, high_start, high_step, low_start, low_step):
+    out = []
+    for index in range(words):
+        sample_index0 = 2 * index
+        sample_index1 = sample_index0 + 1
+        high0 = (high_start + high_step * sample_index0) & 0xFF
+        low0 = (low_start + low_step * sample_index0) & 0xFF
+        high1 = (high_start + high_step * sample_index1) & 0xFF
+        low1 = (low_start + low_step * sample_index1) & 0xFF
+        out.append(pack_raw_pair((high0 << 8) | low0, (high1 << 8) | low1))
+    return out
+
+
 def make_program(args):
     if args.program:
         program = load_program(args.program)
@@ -279,6 +296,14 @@ def make_program(args):
             args.amplitude,
             args.offset,
             args.sample_format,
+        )
+    elif args.program_mode == "byte-pattern":
+        program = make_byte_pattern_program(
+            args.program_words,
+            args.byte_high_start,
+            args.byte_high_step,
+            args.byte_low_start,
+            args.byte_low_step,
         )
     else:
         program = []
@@ -713,7 +738,7 @@ def main():
     parser.add_argument("--command", choices=["CAPT", "PCAP"], default="CAPT")
     parser.add_argument(
         "--program-mode",
-        choices=["none", "sine", "triangle", "square-sine", "trapezoid"],
+        choices=["none", "sine", "triangle", "square-sine", "trapezoid", "byte-pattern"],
         default="none",
         help="Generate and upload a DAC BRAM program before capture.",
     )
@@ -750,6 +775,10 @@ def main():
     parser.add_argument("--sine-cycles", type=float, default=128.0)
     parser.add_argument("--square-period-words", type=int, default=1024)
     parser.add_argument("--trapezoid-frequency-mhz", type=float, default=5.0)
+    parser.add_argument("--byte-high-start", type=lambda x: int(x, 0), default=0x12)
+    parser.add_argument("--byte-high-step", type=lambda x: int(x, 0), default=0x11)
+    parser.add_argument("--byte-low-start", type=lambda x: int(x, 0), default=0x01)
+    parser.add_argument("--byte-low-step", type=lambda x: int(x, 0), default=0x01)
     parser.add_argument("--triangle-step", type=lambda x: int(x, 0), default=0x0100)
     parser.add_argument(
         "--chunk-order",

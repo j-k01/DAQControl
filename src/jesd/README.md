@@ -46,23 +46,21 @@ data, the TX user clock is 250 MHz.
 
 `daq_litejesd_dac_tx_path.v` is the hardware-facing shell for the launch test.
 It instantiates `litejesd_dac_tx` and builds four 64-bit source words. There
-are two primary DAC mapping hypotheses exposed at runtime:
+are two primary DAC mapping paths exposed at runtime:
 
-- `sample_map=0`: native LMF841, where LiteJESD logical lanes are adjacent
-  high/low byte pairs for converters A/B/C/D. Scope testing with BRAM tones
-  showed DAC0 and DAC2 are correct in this native order, while DAC1 and DAC3
-  require a per-16-bit-sample byte swap before LiteJESD. The normal path now
-  applies that odd-converter byte swap in HDL so DDS, BRAM, and IZH sources use
-  the same working orientation.
-- `sample_map=3`: Sundance core-lane preimage, where
-  `dac39j84_physical_mapper` reproduces Sundance's `dac1_data_o` /
-  `dac2_data_o` byte placement and then preimages that placement into
-  LiteJESD logical lanes for the active DAC-side `0x3021/0x7654` crossbar plus
-  TX lane mode 3.
+- `sample_map=0`: native LMF841 diagnostic, where LiteJESD logical lanes are
+  adjacent high/low byte pairs for converters A/B/C/D, with the previously
+  observed odd-converter byte swap still available for A/B testing.
+- `sample_map=3`: table-driven byte-lane preimage. Four independent source
+  streams are assigned to internal candidates A-D, then each candidate's high
+  and low bytes are placed into explicit LiteJESD logical byte lanes before the
+  generated core repacks them into `converter0..3`.
 
-The Sundance preimage is a diagnostic hypothesis to verify on the scope, not a
-claim that the DAC39J84 itself requires non-adjacent logical byte pairs. The
-legacy remap paths remain available only as diagnostics. The shell
+The preimage is not a claim that the DAC39J84 itself requires non-adjacent
+logical byte pairs. It is a way to reproduce the Sundance-like internal
+core-lane placement while still keeping the hardware contract clean:
+`src0[63:0]..src3[63:0]` are four chronological 16-bit samples per independent
+DAC source. The legacy remap paths remain available only as diagnostics. The shell
 exports:
 
 ```verilog
@@ -71,24 +69,50 @@ gth_txcharisk[31:0]  // {lane7, ..., lane0}, 4 bits per lane
 ```
 
 `dac39j84_physical_mapper` has a runtime source-order selector so the cabled
-DAC outputs can disambiguate physical channel labels without another
-implementation run. Source order `0` uses Sundance's internal
-`dac2_ch2/dac2_ch1/dac1_ch2/dac1_ch1` order. Source order `1` uses the user
-guide's physical `OUT_A/OUT_B/OUT_C/OUT_D` order. Source orders `2` and `3`
-swap one Sundance pair at a time for diagnostics. `map_mode[3:2]=0` is the
-Sundance-core-lane preimage after the DAC-side `0x3021/0x7654` crossbar and
-TX lane mode 3. `map_mode[3:2]=1` emits Sundance core-lane bytes directly for
-identity-lane diagnostics, `2` keeps the old upper-lane reverse check, and `3`
-flips byte orientation as a last-resort diagnostic.
+DAC outputs can disambiguate front-panel labels without another implementation
+run. Source order `0` maps `src0..src3` directly to candidate outputs A-D,
+source order `1` reverses them, and source orders `2`/`3` swap one candidate
+pair at a time. `map_mode[3:2]=0` uses the expected lane-pair preimage:
+
+```text
+candidate A: high J3, low J0
+candidate B: high J2, low J1
+candidate C: high J7, low J6
+candidate D: high J5, low J4
+```
+
+`map_mode[3:2]=1` flips only the upper candidate-pair orientation, `2` flips
+only the lower candidate-pair orientation, and `3` flips all candidate byte
+pairs. Those modes are for byte-orientation verification with asymmetric test
+patterns, not for source-number cargo culting.
 
 For the current DAC39J84 initialization, the firmware default uses
-`sample_map=0`, TX lane mode 3, and `conv_sel=7`. TX lane mode 3 is the inverse
-map implied by Sundance's `init8411_dac_remapped`
-`config95/config96 = 0x3021/0x7654` setting. In this mode, the FPGA emits
-native logical LiteJESD converter streams, byte-swapping the odd converter
-streams as described above, and the top-level mux routes logical lanes to
-physical GTH lanes as `[3,0,2,1,4,5,6,7]`. This keeps physical-lane correction
-after LiteJESD, at the same abstraction level as the GTH lanes.
+`sample_map=3`, TX lane mode 3, `conv_sel=7`, and source order 0
+(`RW2=0x010000FE`). TX lane mode 3 is the inverse map implied by Sundance's
+`init8411_dac_remapped` `config95/config96 = 0x3021/0x7654` setting, and the
+top-level mux routes logical lanes to physical GTH lanes as
+`[3,0,2,1,4,5,6,7]`. Keep source order 0 as the prepared default until the
+front-panel connector labels are re-validated one by one.
+
+Current cabled diagnostics:
+
+| Physical output under test | Clean setting | Recovered bin | Notes |
+| --- | --- | --- | --- |
+| DAC1 | `sample_map=2`, source 3 only | 2000 | Legacy remap path, useful as a byte-pair probe only. |
+| DAC2 | `sample_map=1`, source 3 only | 2800 | General preimage path, useful as a byte-pair probe only. |
+| DAC3 | `sample_map=3`, source 2 only | 2400 | Strong evidence that a byte-lane preimage is needed. |
+| DAC3 | `sample_map=0`, source 3 only | 2800 | Coherent but weaker than the byte-lane preimage route. |
+
+Do not turn the probe-source numbers in this table directly into a final
+four-channel byte table: different `sample_map` modes place the same source
+bytes on different lane pairs. The next acceptance test should use an
+asymmetric pattern such as `0x1201, 0x2302, 0x3403, 0x4504, ...`, because a
+sine can land at the correct FFT bin while byte orientation is still wrong.
+
+```powershell
+python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010030 --rw2 0x010000FE --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
+```
+
 Connect `gth_txcharisk` in the same lane order as `gth_txdata` to the 8B/10B
 `TXCTRL2` path, with `TXCTRL0` and `TXCTRL1` tied low unless the generated
 wrapper requires those ports for another control function. Keep `TX8B10BEN`

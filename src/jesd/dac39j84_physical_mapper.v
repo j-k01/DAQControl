@@ -15,157 +15,120 @@ module dac39j84_physical_mapper (
     genvar i;
     generate
         for (i = 0; i < 4; i = i + 1) begin : gen_sample
-            wire [15:0] out0 = dac_out0[(16*i) +: 16];
-            wire [15:0] out1 = dac_out1[(16*i) +: 16];
-            wire [15:0] out2 = dac_out2[(16*i) +: 16];
-            wire [15:0] out3 = dac_out3[(16*i) +: 16];
+            wire [15:0] src0 = dac_out0[(16*i) +: 16];
+            wire [15:0] src1 = dac_out1[(16*i) +: 16];
+            wire [15:0] src2 = dac_out2[(16*i) +: 16];
+            wire [15:0] src3 = dac_out3[(16*i) +: 16];
 
-            reg [15:0] sd_dac2_ch2;
-            reg [15:0] sd_dac2_ch1;
-            reg [15:0] sd_dac1_ch2;
-            reg [15:0] sd_dac1_ch1;
-            reg [7:0] p0;
-            reg [7:0] p1;
-            reg [7:0] p2;
-            reg [7:0] p3;
-            reg [7:0] p4;
-            reg [7:0] p5;
-            reg [7:0] p6;
-            reg [7:0] p7;
-            reg [7:0] l0;
-            reg [7:0] l1;
-            reg [7:0] l2;
-            reg [7:0] l3;
-            reg [7:0] l4;
-            reg [7:0] l5;
-            reg [7:0] l6;
-            reg [7:0] l7;
+            reg [15:0] cand_a;
+            reg [15:0] cand_b;
+            reg [15:0] cand_c;
+            reg [15:0] cand_d;
+            reg [7:0]  j0;
+            reg [7:0]  j1;
+            reg [7:0]  j2;
+            reg [7:0]  j3;
+            reg [7:0]  j4;
+            reg [7:0]  j5;
+            reg [7:0]  j6;
+            reg [7:0]  j7;
 
             always @(*) begin
                 case (map_mode[1:0])
                 2'd1: begin
-                    // User-guide OUT_A/OUT_B/OUT_C/OUT_D order:
-                    // OUT_A=Channel 1=dac1_ch1, OUT_B=dac1_ch2,
-                    // OUT_C=dac2_ch1, OUT_D=dac2_ch2.
-                    sd_dac1_ch1 = out0;
-                    sd_dac1_ch2 = out1;
-                    sd_dac2_ch1 = out2;
-                    sd_dac2_ch2 = out3;
+                    // Reverse candidate order. This is only for connector-label
+                    // discovery; do not use it as a byte-order fix.
+                    cand_a = src3;
+                    cand_b = src2;
+                    cand_c = src1;
+                    cand_d = src0;
                 end
                 2'd2: begin
-                    // Swap the first Sundance pair. This directly tests the
-                    // observed case where physical OUT1 appeared to be driven
-                    // by the source intended for OUT0.
-                    sd_dac2_ch2 = out1;
-                    sd_dac2_ch1 = out0;
-                    sd_dac1_ch2 = out2;
-                    sd_dac1_ch1 = out3;
+                    // Swap the first candidate pair for diagnostics.
+                    cand_a = src1;
+                    cand_b = src0;
+                    cand_c = src2;
+                    cand_d = src3;
                 end
                 2'd3: begin
-                    // Swap the second Sundance pair.
-                    sd_dac2_ch2 = out0;
-                    sd_dac2_ch1 = out1;
-                    sd_dac1_ch2 = out3;
-                    sd_dac1_ch1 = out2;
+                    // Swap the upper candidate pair for diagnostics.
+                    cand_a = src0;
+                    cand_b = src1;
+                    cand_c = src3;
+                    cand_d = src2;
                 end
                 default: begin
-                    // Exact Sundance adapter source order. Sundance's
-                    // dac_ena[0..3] feed dac2_ch2, dac2_ch1, dac1_ch2,
-                    // dac1_ch1 respectively.
-                    sd_dac2_ch2 = out0;
-                    sd_dac2_ch1 = out1;
-                    sd_dac1_ch2 = out2;
-                    sd_dac1_ch1 = out3;
+                    // Default general mapping: sourceN feeds candidate N.
+                    // Candidate names are internal byte-lane candidates, not
+                    // front-panel connector labels.
+                    cand_a = src0;
+                    cand_b = src1;
+                    cand_c = src2;
+                    cand_d = src3;
                 end
                 endcase
 
-                // Hypothesis B: Sundance's adapter builds core-lane bytes
-                // first:
-                //   p0..p3 are DAC1_DATA_o lanes 0..3 (DP4..DP7)
-                //   p4..p7 are DAC2_DATA_o lanes 0..3 (DP0..DP3)
+                // Default lane-pair preimage into LiteJESD logical byte lanes:
+                //   candidate A: high J3, low J0
+                //   candidate B: high J2, low J1
+                //   candidate C: high J7, low J6
+                //   candidate D: high J5, low J4
                 //
-                // These lane bytes are a Sundance-core-lane preimage to test,
-                // not a statement that the DAC39J84 itself requires
-                // non-adjacent logical byte pairs. The generated LiteJESD core
-                // converts converterN[15:0] into logical lane bytes as
-                // {L(2N), L(2N+1)}.
-                p0 = sd_dac2_ch2[7:0];
-                p1 = sd_dac2_ch1[7:0];
-                p2 = sd_dac2_ch1[15:8];
-                p3 = sd_dac2_ch2[15:8];
-
-                case (map_mode[3:2])
-                2'd3: begin
-                    // Byte-orientation diagnostic: keep source ownership but
-                    // invert the high/low byte placement on all DAC outputs.
-                    p0 = sd_dac2_ch2[15:8];
-                    p1 = sd_dac2_ch1[15:8];
-                    p2 = sd_dac2_ch1[7:0];
-                    p3 = sd_dac2_ch2[7:0];
-                    p4 = sd_dac1_ch1[15:8];
-                    p5 = sd_dac1_ch1[7:0];
-                    p6 = sd_dac1_ch2[15:8];
-                    p7 = sd_dac1_ch2[7:0];
-                end
-                default: begin
-                    // Exact Sundance byte-lane placement.
-                    p4 = sd_dac1_ch1[7:0];
-                    p5 = sd_dac1_ch1[15:8];
-                    p6 = sd_dac1_ch2[7:0];
-                    p7 = sd_dac1_ch2[15:8];
-                end
-                endcase
+                // J0..J7 are the logical JESD byte lanes generated by
+                // litejesd_dac_tx after it splits converter0..3 into adjacent
+                // high/low byte lanes. The assignments below build the
+                // converter-bus preimage for that generated lane splitter.
+                j0 = cand_a[7:0];
+                j1 = cand_b[7:0];
+                j2 = cand_b[15:8];
+                j3 = cand_a[15:8];
+                j4 = cand_d[7:0];
+                j5 = cand_d[15:8];
+                j6 = cand_c[7:0];
+                j7 = cand_c[15:8];
 
                 case (map_mode[3:2])
                 2'd1: begin
-                    // Physical-lane diagnostic. Use with tx_lane_mode=0 to
-                    // reproduce Sundance's physical GTH lane byte placement.
-                    l0 = p0;
-                    l1 = p1;
-                    l2 = p2;
-                    l3 = p3;
-                    l4 = p4;
-                    l5 = p5;
-                    l6 = p6;
-                    l7 = p7;
+                    // Verify the upper-pair orientation:
+                    //   candidate C: high J6, low J7
+                    //   candidate D: high J4, low J5
+                    j4 = cand_d[15:8];
+                    j5 = cand_d[7:0];
+                    j6 = cand_c[15:8];
+                    j7 = cand_c[7:0];
                 end
                 2'd2: begin
-                    // Old upper-half reverse diagnostic retained for A/B.
-                    // This corresponds to tx_lane_mode=2's upper-lane order.
-                    l0 = p1;
-                    l1 = p3;
-                    l2 = p2;
-                    l3 = p0;
-                    l4 = p7;
-                    l5 = p6;
-                    l6 = p5;
-                    l7 = p4;
+                    // Verify the lower-pair orientation:
+                    //   candidate A: high J0, low J3
+                    //   candidate B: high J1, low J2
+                    j0 = cand_a[15:8];
+                    j1 = cand_b[15:8];
+                    j2 = cand_b[7:0];
+                    j3 = cand_a[7:0];
+                end
+                2'd3: begin
+                    // Full byte-orientation diagnostic.
+                    j0 = cand_a[15:8];
+                    j1 = cand_b[15:8];
+                    j2 = cand_b[7:0];
+                    j3 = cand_a[7:0];
+                    j4 = cand_d[15:8];
+                    j5 = cand_d[7:0];
+                    j6 = cand_c[15:8];
+                    j7 = cand_c[7:0];
                 end
                 default: begin
-                    // Sundance-core-lane preimage after the current DAC39J84
-                    // config95/config96 value 0x3021/0x7654 and tx_lane_mode=3.
-                    // The top-level lane mux sends physical lanes 0..7 <=
-                    // logical lanes [3,0,2,1,4,5,6,7], so put each Sundance
-                    // core-lane byte into the logical lane that will reach that
-                    // physical/core lane.
-                    l0 = p1;
-                    l1 = p3;
-                    l2 = p2;
-                    l3 = p0;
-                    l4 = p4;
-                    l5 = p5;
-                    l6 = p6;
-                    l7 = p7;
+                    // Keep the default expected lane-pair preimage.
                 end
                 endcase
             end
 
             // LiteJESD converter0 emits logical lane0=high byte and
             // logical lane1=low byte; converter1 emits lanes 2/3, etc.
-            assign converter0[(16*i) +: 16] = {l0, l1};
-            assign converter1[(16*i) +: 16] = {l2, l3};
-            assign converter2[(16*i) +: 16] = {l4, l5};
-            assign converter3[(16*i) +: 16] = {l6, l7};
+            assign converter0[(16*i) +: 16] = {j0, j1};
+            assign converter1[(16*i) +: 16] = {j2, j3};
+            assign converter2[(16*i) +: 16] = {j4, j5};
+            assign converter3[(16*i) +: 16] = {j6, j7};
         end
     endgenerate
 

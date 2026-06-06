@@ -367,13 +367,12 @@ module daq_litejesd_dac_tx_path #(
     wire [63:0] native_converter3 = swap_sample_bytes64(src_converter3);
 
     // sample_map_mode:
-    //   0 = native LMF841 / LiteJESD converter buses, with the odd DAC
-    //       converter streams byte-swapped. This matches the BRAM test where
-    //       DAC0/DAC2 were clean normally and DAC1/DAC3 cleaned up only after
-    //       per-sample byte swapping.
+    //   0 = native LMF841 / LiteJESD converter-bus diagnostic, with the odd
+    //       source streams byte-swapped for A/B testing.
     //   1 = four-channel preimage + legacy DAC39J84 sample remap
     //   2 = direct source buses through legacy DAC39J84 sample remap
-    //   3 = Sundance core-lane preimage hypothesis
+    //   3 = general table-driven byte-lane preimage; firmware default as of
+    //       build 0xDA010030.
     wire use_preimage_remap = (sample_map_mode == 2'd1);
     wire use_any_remap = use_preimage_remap ||
                          (sample_map_mode == 2'd2);

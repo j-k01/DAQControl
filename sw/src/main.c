@@ -79,13 +79,12 @@
 #define RW2_DAC_CONV_SHIFT       5
 #define RW2_DAC_CONV_MASK        (7u << RW2_DAC_CONV_SHIFT)
 #define RW2_CAPTURE_STATUS_SEL (1u << 31)
-#define RW2_DAC_PHYSICAL_ORDER_SHIFT 8
-#define RW2_DAC_PHYSICAL_ORDER_MASK  (3u << RW2_DAC_PHYSICAL_ORDER_SHIFT)
-#define RW2_DAC_PHYSICAL_ORDER_USER_GUIDE (1u << RW2_DAC_PHYSICAL_ORDER_SHIFT)
-#define RW2_DAC_PHYSICAL_COORD_SHIFT 10
-#define RW2_DAC_PHYSICAL_COORD_MASK  (3u << RW2_DAC_PHYSICAL_COORD_SHIFT)
+#define RW2_DAC_CANDIDATE_ORDER_SHIFT 8
+#define RW2_DAC_CANDIDATE_ORDER_MASK  (3u << RW2_DAC_CANDIDATE_ORDER_SHIFT)
+#define RW2_DAC_PAIR_ORIENT_SHIFT 10
+#define RW2_DAC_PAIR_ORIENT_MASK  (3u << RW2_DAC_PAIR_ORIENT_SHIFT)
 #define RW2_LAUNCH_DEFAULT     (RW2_ADC1_ILAS_BYPASS | \
-                                (0u << RW2_DAC_SAMPLE_MAP_SHIFT) | \
+                                (3u << RW2_DAC_SAMPLE_MAP_SHIFT) | \
                                 (3u << RW2_DAC_TX_LANE_SHIFT) | \
                                 (7u << RW2_DAC_CONV_SHIFT))
 
@@ -1184,13 +1183,13 @@ static void cmd_help(void)
     send_str("                 with RW3[6]=1 and RW2[31]=1, selector 7 returns DAC program word\r\n");
     send_str("                 word select is RW2[30:28]: 0/1=ch0 lo/hi ... 6/7=ch3 lo/hi\r\n");
 #endif
-    send_str("RW2 DAC TX diag: [2:1] sample_map 0=native_lmf841_odd_bswap 1=general_preimage 2=old_remap 3=sundance_preimage\r\n");
+    send_str("RW2 DAC TX diag: [2:1] sample_map 0=native_lmf841_odd_bswap 1=general_preimage 2=old_remap 3=lane_pair_preimage\r\n");
     send_str("                 [4:3] tx_lane 0=identity 1=board_map 2=inverse_check 3=dac_xbar\r\n");
     send_str("                 [7:5] DAC source select 0/5..7=all, 1..4=outputs0..3 in physical mode\r\n");
-    send_str("                 sundance_preimage [9:8]=source order: 0=Sundance internal, 1=OUT_A..D\r\n");
+    send_str("                 lane_pair_preimage [9:8]=candidate order: 0=direct, 1=reverse\r\n");
     send_str("                         2=swap first pair, 3=swap second pair\r\n");
-    send_str("                 [11:10]=coord: 0=after DAC xbar/tx_lane3, 1=core lanes/tx_lane0,\r\n");
-    send_str("                         2=old upper-reverse check, 3=byte-flip diag\r\n");
+    send_str("                 [11:10]=pair orient: 0=expected, 1=flip upper, 2=flip lower,\r\n");
+    send_str("                         3=flip all byte pairs\r\n");
     send_str("RW2 ADC1 JESD RX: [24] bypass ILAS check, [25] STPL check, [26] DP order\r\n");
     send_str("                  firmware diagnostic default is RW2=0x010000FE\r\n");
     send_str("                  [29:28] capture format: 0=LiteJESD converters, 1=post-link lanes\r\n");
@@ -1251,9 +1250,9 @@ static void cmd_status(void)
     send_str(" conv_sel=");
     send_uint((rw2 & RW2_DAC_CONV_MASK) >> RW2_DAC_CONV_SHIFT);
     send_str(" src_order=");
-    send_uint((rw2 & RW2_DAC_PHYSICAL_ORDER_MASK) >> RW2_DAC_PHYSICAL_ORDER_SHIFT);
-    send_str(" coord=");
-    send_uint((rw2 & RW2_DAC_PHYSICAL_COORD_MASK) >> RW2_DAC_PHYSICAL_COORD_SHIFT);
+    send_uint((rw2 & RW2_DAC_CANDIDATE_ORDER_MASK) >> RW2_DAC_CANDIDATE_ORDER_SHIFT);
+    send_str(" pair_orient=");
+    send_uint((rw2 & RW2_DAC_PAIR_ORIENT_MASK) >> RW2_DAC_PAIR_ORIENT_SHIFT);
     send_str(" last_src=");
     send_uint((Xil_In32(RW_REG3) & RW3_DAC_SOURCE_MASK) >> RW3_DAC_SOURCE_SHIFT);
     send_str("\r\n");
