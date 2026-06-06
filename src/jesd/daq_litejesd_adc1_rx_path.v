@@ -248,6 +248,43 @@ module daq_litejesd_adc1_rx_path (
     wire [63:0] sun_ch1_revbyte;
     wire [63:0] sun_ch2_revbyte;
 
+    function [15:0] swap_sample_bytes16;
+        input [15:0] value;
+        begin
+            swap_sample_bytes16 = {value[7:0], value[15:8]};
+        end
+    endfunction
+
+    wire [15:0] sample_a0 = sample_a[15:0];
+    wire [15:0] sample_a1 = sample_a[31:16];
+    wire [15:0] sample_a2 = sample_a[47:32];
+    wire [15:0] sample_a3 = sample_a[63:48];
+    wire [15:0] sample_b0 = sample_b[15:0];
+    wire [15:0] sample_b1 = sample_b[31:16];
+    wire [15:0] sample_b2 = sample_b[47:32];
+    wire [15:0] sample_b3 = sample_b[63:48];
+
+    // ADS54J60 LMFS=4211 on the FMC-ADC500-CD does not arrive in the
+    // generated LiteJESD converter-word order.  Sundance's reference design
+    // rebuilds ADC1 samples from non-adjacent lane-byte regions; board tests
+    // with distinct DAC0/DAC1 tones recovered the same required ordering.
+    //
+    // Published order, four chronological samples per jesd_clk:
+    //   CH A: generated slots [2,0,3,1]
+    //   CH B: generated slots [0,3,2,1], with sample bytes swapped
+    wire [63:0] sample_a_lmfs4211 = {
+        sample_a1,
+        sample_a3,
+        sample_a0,
+        sample_a2
+    };
+    wire [63:0] sample_b_lmfs4211 = {
+        swap_sample_bytes16(sample_b1),
+        swap_sample_bytes16(sample_b2),
+        swap_sample_bytes16(sample_b3),
+        swap_sample_bytes16(sample_b0)
+    };
+
     adc1_sundance_halfbeat #(
         .REVERSE_BYTES (0),
         .SWAP_SAMPLE_BYTES (0)
@@ -286,10 +323,11 @@ module daq_litejesd_adc1_rx_path (
             cap_b_high = transport_lane3;
         end
         2'd2: begin
-            cap_a_low = sun_ch1_normal[31:0];
-            cap_a_high = sun_ch1_normal[63:32];
-            cap_b_low = sun_ch2_normal[31:0];
-            cap_b_high = sun_ch2_normal[63:32];
+            // Legacy generated-LiteJESD converter order, kept for diagnostics.
+            cap_a_low = sample_a[31:0];
+            cap_a_high = sample_a[63:32];
+            cap_b_low = sample_b[31:0];
+            cap_b_high = sample_b[63:32];
         end
         2'd3: begin
             cap_a_low = sun_ch1_revbyte[31:0];
@@ -298,10 +336,10 @@ module daq_litejesd_adc1_rx_path (
             cap_b_high = sun_ch2_revbyte[63:32];
         end
         default: begin
-            cap_a_low = sample_a[31:0];
-            cap_a_high = sample_a[63:32];
-            cap_b_low = sample_b[31:0];
-            cap_b_high = sample_b[63:32];
+            cap_a_low = sample_a_lmfs4211[31:0];
+            cap_a_high = sample_a_lmfs4211[63:32];
+            cap_b_low = sample_b_lmfs4211[31:0];
+            cap_b_high = sample_b_lmfs4211[63:32];
         end
         endcase
     end
