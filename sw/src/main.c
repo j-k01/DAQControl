@@ -84,8 +84,8 @@
 #define RW2_DAC_PAIR_ORIENT_SHIFT 10
 #define RW2_DAC_PAIR_ORIENT_MASK  (3u << RW2_DAC_PAIR_ORIENT_SHIFT)
 #define RW2_LAUNCH_DEFAULT     (RW2_ADC1_ILAS_BYPASS | \
-                                (3u << RW2_DAC_SAMPLE_MAP_SHIFT) | \
-                                (3u << RW2_DAC_TX_LANE_SHIFT) | \
+                                (1u << RW2_DAC_SAMPLE_MAP_SHIFT) | \
+                                (0u << RW2_DAC_TX_LANE_SHIFT) | \
                                 (7u << RW2_DAC_CONV_SHIFT))
 
 #define RO0_DAC_DONE           (1u << 31)
@@ -1191,7 +1191,7 @@ static void cmd_help(void)
     send_str("                 [11:10]=pair orient: 0=expected, 1=flip upper, 2=flip lower,\r\n");
     send_str("                         3=flip all byte pairs\r\n");
     send_str("RW2 ADC1 JESD RX: [24] bypass ILAS check, [25] STPL check, [26] DP order\r\n");
-    send_str("                  firmware diagnostic default is RW2=0x010000FE\r\n");
+    send_str("                  firmware diagnostic default is RW2=0x010000E2\r\n");
     send_str("                  [29:28] capture format: 0=LiteJESD converters, 1=post-link lanes\r\n");
     send_str("                         2=Sundance normal, 3=Sundance reversed-byte\r\n");
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");

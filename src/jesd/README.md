@@ -87,12 +87,13 @@ pairs. Those modes are for byte-orientation verification with asymmetric test
 patterns, not for source-number cargo culting.
 
 For the current DAC39J84 initialization, the firmware default uses
-`sample_map=3`, TX lane mode 3, `conv_sel=7`, and source order 0
-(`RW2=0x010000FE`). TX lane mode 3 is the inverse map implied by Sundance's
-`init8411_dac_remapped` `config95/config96 = 0x3021/0x7654` setting, and the
-top-level mux routes logical lanes to physical GTH lanes as
-`[3,0,2,1,4,5,6,7]`. Keep source order 0 as the prepared default until the
-front-panel connector labels are re-validated one by one.
+`sample_map=1`, TX lane mode 0, and `conv_sel=7` (`RW2=0x010000E2`). In that
+mode, the existing preimage feeds `dac39j84_sample_remap` so the LiteJESD
+converter buses receive the desired source streams, while the FPGA TX lane mux
+stays identity and the DAC-side `0x3021/0x7654` octetpath crossbar performs
+the physical lane correction. The table-driven `sample_map=3` mapper remains
+available for byte-lane diagnostics, but it is not the firmware default after
+the 2026-06-06 hidden-loopback test.
 
 Current cabled diagnostics:
 
@@ -102,6 +103,8 @@ Current cabled diagnostics:
 | DAC2 | `sample_map=1`, source 3 only | 2800 | General preimage path, useful as a byte-pair probe only. |
 | DAC3 | `sample_map=3`, source 2 only | 2400 | Strong evidence that a byte-lane preimage is needed. |
 | DAC3 | `sample_map=0`, source 3 only | 2800 | Coherent but weaker than the byte-lane preimage route. |
+| Hidden ADC converter0 | `sample_map=1`, TX lane 0, all sources | 1600/source0 | Clean, correlation +0.961. |
+| Hidden ADC converter1 | `sample_map=1`, TX lane 0, all sources | 2800/source3 | Clean, correlation +0.998 after inversion/phase. |
 
 Do not turn the probe-source numbers in this table directly into a final
 four-channel byte table: different `sample_map` modes place the same source
@@ -110,7 +113,7 @@ asymmetric pattern such as `0x1201, 0x2302, 0x3403, 0x4504, ...`, because a
 sine can land at the correct FFT bin while byte orientation is still wrong.
 
 ```powershell
-python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010030 --rw2 0x010000FE --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
+python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010031 --rw2 0x010000E2 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
 ```
 
 Connect `gth_txcharisk` in the same lane order as `gth_txdata` to the 8B/10B

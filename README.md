@@ -506,14 +506,15 @@ reconstruction, or Sundance-style reversed-byte reconstruction. `RW2[24]=1`
 bypasses ILAS checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL
 checker, and `RW2[26]=1` switches ADC1 from Sundance signal order to physical
 DP0-DP3 order.
-The MicroBlaze firmware defaults `RW2` to `0x010000FE`: ADS54J60 ILAS checking
+The MicroBlaze firmware defaults `RW2` to `0x010000E2`: ADS54J60 ILAS checking
 is bypassed for bring-up, all four DAC sources are enabled, the DAC sample path
-uses the table-driven byte-lane preimage, and the DAC TX lane mux uses the
-`0x3021/0x7654` DAC-crossbar inverse map. The preimage does not hard-code a
-specific front-panel label. It maps four independent source streams into
-candidate byte-lane pairs; connector labels still need byte-sensitive scope/ADC
-validation. Clear bit 24 only when deliberately re-enabling ADC ILAS checking
-while debugging the expected ILAS fields.
+uses the general preimage through the legacy DAC39J84 sample-remap block, and
+the FPGA TX lane mux is identity so the DAC-side `0x3021/0x7654` octetpath
+crossbar performs the physical lane correction. This setting was validated on
+2026-06-06 with two hidden loopbacks: ADC converter0 recovered source0/bin1600
+and ADC converter1 recovered source3/bin2800. Clear bit 24 only when
+deliberately re-enabling ADC ILAS checking while debugging the expected ILAS
+fields.
 
 For the physical mapper, `RW2[9:8]` selects how source words are assigned to
 candidate byte-lane outputs before the preimage is packed into LiteJESD
@@ -529,20 +530,20 @@ converter buses:
 Set `RW2[11:10]=1` to invert only the upper candidate-pair byte orientation,
 `2` to invert only the lower candidate pair, and `3` to invert all candidate
 byte pairs. Normal builds keep those bits clear. With `sample_map=3`, sweep
-source ownership and TX lane mode using the helper below. To hand-test
+candidate byte-lane ownership and TX lane mode using the helper below. To hand-test
 identity-lane source ownership, use:
 `RW2=0x01000006`, `0x01000106`, `0x01000206`, and `0x01000306`.
 The automated cabled-pair sweep is:
 
 ```powershell
-python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010030
+python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010031
 ```
 
 Before accepting the mapper, use a byte-asymmetric BRAM pattern rather than
 only sine waves:
 
 ```powershell
-python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010030 --rw2 0x010000FE --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
+python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010031 --rw2 0x010000E2 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
 ```
 
 The generated raw 16-bit sample stream starts `0x1201, 0x2302, 0x3403,
