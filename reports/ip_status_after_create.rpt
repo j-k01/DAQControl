@@ -1,0 +1,142 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2024 Advanced Micro Devices, Inc. All Rights Reserved.
+---------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2024.1 (lin64) Build 5076996 Wed May 22 18:36:09 MDT 2024
+| Date         : Wed Jun  3 21:50:35 2026
+| Host         : coe-ece-capitolpeak running 64-bit Ubuntu 20.04.6 LTS
+| Command      : report_ip_status
+---------------------------------------------------------------------------------------------------------------------------------------------
+
+IP Status Summary
+
+1. Project IP Status
+--------------------
+Your project uses 24 IP. Some of these IP may have undergone changes in this release of the software. Please review the recommended actions.
+
+More information on the Xilinx versioning policy is available at www.xilinx.com.
+
+Project IP Instances
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| Instance Name                           | Status     | Recommendation      | Change    | IP Name            | IP      | New Version    | New        | Original Part        |
+|                                         |            |                     | Log       |                    | Version |                | License    |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| adc_capture_bram                        | Up-to-date | No changes required |  *(1)     | Block Memory       | 8.4     | 8.4 (Rev. 8)   | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Generator          | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 8)      |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| clk_wiz_0                               | Up-to-date | No changes required |  *(2)     | Clocking Wizard    | 6.0     | 6.0 (Rev. 14)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           |                    | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 14)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| dac0_program_bram                       | Up-to-date | No changes required |  *(3)     | Block Memory       | 8.4     | 8.4 (Rev. 8)   | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Generator          | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 8)      |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| dac1_program_bram                       | Up-to-date | No changes required |  *(4)     | Block Memory       | 8.4     | 8.4 (Rev. 8)   | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Generator          | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 8)      |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| dac2_program_bram                       | Up-to-date | No changes required |  *(5)     | Block Memory       | 8.4     | 8.4 (Rev. 8)   | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Generator          | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 8)      |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| dac3_program_bram                       | Up-to-date | No changes required |  *(6)     | Block Memory       | 8.4     | 8.4 (Rev. 8)   | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Generator          | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 8)      |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| gtwizard_ultrascale_0                   | Up-to-date | No changes required |  *(7)     | UltraScale FPGAs   | 1.7     | 1.7 (Rev. 18)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Transceivers       | (Rev.   |                |            |                      |
+|                                         |            |                     |           | Wizard             | 18)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| ila_fabric_debug                        | Up-to-date | No changes required |  *(8)     | ILA (Integrated    | 6.2     | 6.2 (Rev. 15)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Logic Analyzer)    | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 15)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_AXI4_register_file_0_0    | Up-to-date | No changes required | Change    | AXI4_register_file | 1.0     | 1.0 (Rev. 6)   | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     | Log not   |                    | (Rev.   |                |            |                      |
+|                                         |            |                     | available |                    | 6)      |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_adc_capture_bram_ctrl_0   | Up-to-date | No changes required |  *(9)     | AXI BRAM           | 4.1     | 4.1 (Rev. 10)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Controller         | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 10)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_axi_uart16550_0_0         | Up-to-date | No changes required |  *(10)    | AXI UART16550      | 2.0     | 2.0 (Rev. 33)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           |                    | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 33)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_dac0_program_bram_ctrl_0  | Up-to-date | No changes required |  *(11)    | AXI BRAM           | 4.1     | 4.1 (Rev. 10)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Controller         | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 10)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_dac1_program_bram_ctrl_0  | Up-to-date | No changes required |  *(12)    | AXI BRAM           | 4.1     | 4.1 (Rev. 10)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Controller         | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 10)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_dac2_program_bram_ctrl_0  | Up-to-date | No changes required |  *(13)    | AXI BRAM           | 4.1     | 4.1 (Rev. 10)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Controller         | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 10)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_dac3_program_bram_ctrl_0  | Up-to-date | No changes required |  *(14)    | AXI BRAM           | 4.1     | 4.1 (Rev. 10)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Controller         | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 10)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_dlmb_bram_if_cntlr_0      | Up-to-date | No changes required |  *(15)    | LMB BRAM           | 4.0     | 4.0 (Rev. 24)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Controller         | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 24)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_dlmb_v10_0                | Up-to-date | No changes required |  *(16)    | Local Memory Bus   | 3.0     | 3.0 (Rev. 14)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | (LMB) 1.0          | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 14)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_ilmb_bram_if_cntlr_0      | Up-to-date | No changes required |  *(17)    | LMB BRAM           | 4.0     | 4.0 (Rev. 24)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Controller         | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 24)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_ilmb_v10_0                | Up-to-date | No changes required |  *(18)    | Local Memory Bus   | 3.0     | 3.0 (Rev. 14)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | (LMB) 1.0          | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 14)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_lmb_bram_0                | Up-to-date | No changes required |  *(19)    | Block Memory       | 8.4     | 8.4 (Rev. 8)   | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Generator          | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 8)      |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_mdm_1_0                   | Up-to-date | No changes required |  *(20)    | MicroBlaze Debug   | 3.2     | 3.2 (Rev. 26)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Module (MDM)       | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 26)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_microblaze_0_0            | Up-to-date | No changes required |  *(21)    | MicroBlaze         | 11.0    | 11.0 (Rev. 13) | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           |                    | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 13)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_microblaze_0_axi_periph_0 | Up-to-date | No changes required |  *(22)    | AXI Interconnect   | 2.1     | 2.1 (Rev. 32)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           |                    | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 32)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+| microblaze_bd_rst_Clk_200M_0            | Up-to-date | No changes required |  *(23)    | Processor System   | 5.0     | 5.0 (Rev. 15)  | Included   | xczu9eg-ffvb1156-2-e |
+|                                         |            |                     |           | Reset              | (Rev.   |                |            |                      |
+|                                         |            |                     |           |                    | 15)     |                |            |                      |
++-----------------------------------------+------------+---------------------+-----------+--------------------+---------+----------------+------------+----------------------+
+*(1) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/blk_mem_gen_v8_4/doc/blk_mem_gen_v8_4_changelog.txt
+*(2) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/clk_wiz_v6_0/doc/clk_wiz_v6_0_changelog.txt
+*(3) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/blk_mem_gen_v8_4/doc/blk_mem_gen_v8_4_changelog.txt
+*(4) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/blk_mem_gen_v8_4/doc/blk_mem_gen_v8_4_changelog.txt
+*(5) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/blk_mem_gen_v8_4/doc/blk_mem_gen_v8_4_changelog.txt
+*(6) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/blk_mem_gen_v8_4/doc/blk_mem_gen_v8_4_changelog.txt
+*(7) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/gtwizard_ultrascale_v1_7/doc/gtwizard_ultrascale_v1_7_changelog.txt
+*(8) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/ila_v6_2/doc/ila_v6_2_changelog.txt
+*(9) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/axi_bram_ctrl_v4_1/doc/axi_bram_ctrl_v4_1_changelog.txt
+*(10) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/axi_uart16550_v2_0/doc/axi_uart16550_v2_0_changelog.txt
+*(11) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/axi_bram_ctrl_v4_1/doc/axi_bram_ctrl_v4_1_changelog.txt
+*(12) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/axi_bram_ctrl_v4_1/doc/axi_bram_ctrl_v4_1_changelog.txt
+*(13) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/axi_bram_ctrl_v4_1/doc/axi_bram_ctrl_v4_1_changelog.txt
+*(14) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/axi_bram_ctrl_v4_1/doc/axi_bram_ctrl_v4_1_changelog.txt
+*(15) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/lmb_bram_if_cntlr_v4_0/doc/lmb_bram_if_cntlr_v4_0_changelog.txt
+*(16) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/lmb_v10_v3_0/doc/lmb_v10_v3_0_changelog.txt
+*(17) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/lmb_bram_if_cntlr_v4_0/doc/lmb_bram_if_cntlr_v4_0_changelog.txt
+*(18) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/lmb_v10_v3_0/doc/lmb_v10_v3_0_changelog.txt
+*(19) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/blk_mem_gen_v8_4/doc/blk_mem_gen_v8_4_changelog.txt
+*(20) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/mdm_v3_2/doc/mdm_v3_2_changelog.txt
+*(21) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/microblaze_v11_0/doc/microblaze_v11_0_changelog.txt
+*(22) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/axi_interconnect_v2_1/doc/axi_interconnect_v2_1_changelog.txt
+*(23) /home/jkincaid/Xilinx/Vivado/2024.1/data/ip/xilinx/proc_sys_reset_v5_0/doc/proc_sys_reset_v5_0_changelog.txt
+
+
