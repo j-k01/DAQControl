@@ -516,6 +516,15 @@ and ADC converter1 recovered source3/bin2800. Clear bit 24 only when
 deliberately re-enabling ADC ILAS checking while debugging the expected ILAS
 fields.
 
+For the optional `--with-gth-tx-ila` diagnostic build, set `RW2[12]` to force
+all DAC sources to fixed 16-bit tag words before the DAC mapping logic. For
+example, `WRTE 2 0x010010E2` keeps the normal DAC diagnostic mode but replaces
+the live/BRAM/neuron samples with recognizable chunks such as `CAFE`, `C0DE`,
+`FACE`, and `D00D`. The TX ILA then exposes the BRAM output, selected source,
+native byte-swap path, preimage path, table-driven physical mapper path, legacy
+remap input/output, final LiteJESD converter inputs, raw LiteJESD lane data, and
+post-TX-lane-mux GTH user data.
+
 For the physical mapper, `RW2[9:8]` selects how source words are assigned to
 candidate byte-lane outputs before the preimage is packed into LiteJESD
 converter buses:
@@ -589,7 +598,7 @@ The build also instantiates hardware debug cores:
 | ILA | Clock | Purpose |
 | --- | --- | --- |
 | `ila_fabric_debug` | `clk_200` | Always-on bring-up view: RW/RO registers, raw pins, fabric clock counters, GTH status, LiteJESD status, ADC1 RX status, UART RX/TX activity, LED-equivalent flags |
-| `ila_gth_tx_debug` | `gth_tx_usrclk2` | Optional JESD/TX-side view: lane 0/1 TX words, TX charisk/control, LiteJESD status, triangle word, sync/sysref samples |
+| `ila_gth_tx_debug` | `gth_tx_usrclk2` | Optional JESD/TX-side map trace: BRAM output, selected DAC source words, native/preimage/physical/remap stage words, final LiteJESD converter inputs, raw LiteJESD lane data, post-lane-mux GTH TX data, charisk, and lane-map/control words |
 
 Start with `ila_fabric_debug`. If LEDs remain 0/1/2 only, set `RW1=0`, trigger
 on `probe4[13]` rising (`hmc_auto_busy`) or `probe4[10]` toggling

@@ -83,6 +83,7 @@
 #define RW2_DAC_CANDIDATE_ORDER_MASK  (3u << RW2_DAC_CANDIDATE_ORDER_SHIFT)
 #define RW2_DAC_PAIR_ORIENT_SHIFT 10
 #define RW2_DAC_PAIR_ORIENT_MASK  (3u << RW2_DAC_PAIR_ORIENT_SHIFT)
+#define RW2_DAC_TAG_SOURCE        (1u << 12)
 #define RW2_LAUNCH_DEFAULT     (RW2_ADC1_ILAS_BYPASS | \
                                 (1u << RW2_DAC_SAMPLE_MAP_SHIFT) | \
                                 (0u << RW2_DAC_TX_LANE_SHIFT) | \
@@ -1190,6 +1191,7 @@ static void cmd_help(void)
     send_str("                         2=swap first pair, 3=swap second pair\r\n");
     send_str("                 [11:10]=pair orient: 0=expected, 1=flip upper, 2=flip lower,\r\n");
     send_str("                         3=flip all byte pairs\r\n");
+    send_str("                 [12] force fixed ILA tag source: CAFE/C0DE/FACE/D00D etc.\r\n");
     send_str("RW2 ADC1 JESD RX: [24] bypass ILAS check, [25] STPL check, [26] DP order\r\n");
     send_str("                  firmware diagnostic default is RW2=0x010000E2\r\n");
     send_str("                  [29:28] capture format: 0=LiteJESD converters, 1=post-link lanes\r\n");
@@ -1253,6 +1255,8 @@ static void cmd_status(void)
     send_uint((rw2 & RW2_DAC_CANDIDATE_ORDER_MASK) >> RW2_DAC_CANDIDATE_ORDER_SHIFT);
     send_str(" pair_orient=");
     send_uint((rw2 & RW2_DAC_PAIR_ORIENT_MASK) >> RW2_DAC_PAIR_ORIENT_SHIFT);
+    send_str(" tag=");
+    send_uint((rw2 & RW2_DAC_TAG_SOURCE) ? 1u : 0u);
     send_str(" last_src=");
     send_uint((Xil_In32(RW_REG3) & RW3_DAC_SOURCE_MASK) >> RW3_DAC_SOURCE_SHIFT);
     send_str("\r\n");

@@ -532,9 +532,13 @@ if {$include_gth_tx_ila} {
     create_ip -name ila -vendor xilinx.com -library ip -module_name ila_gth_tx_debug -dir $ip_dir
     set gth_tx_ila_props [list \
         CONFIG.C_DATA_DEPTH    {2048} \
-        CONFIG.C_NUM_OF_PROBES {6} \
+        CONFIG.C_NUM_OF_PROBES {16} \
     ]
-    set gth_tx_ila_widths [list 32 32 64 32 32 32]
+    set gth_tx_ila_widths [list \
+        64 \
+        256 256 256 256 256 256 256 256 256 256 \
+        32 32 32 32 32 \
+    ]
     for {set i 0} {$i < [llength $gth_tx_ila_widths]} {incr i} {
         lappend gth_tx_ila_props CONFIG.C_PROBE${i}_WIDTH [lindex $gth_tx_ila_widths $i]
     }

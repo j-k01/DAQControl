@@ -789,6 +789,14 @@ module top #(
 `ifdef DAQ_WITH_LITEJESD
     wire [255:0] litejesd_txdata;
     wire [31:0]  litejesd_txcharisk;
+    wire [255:0] dac_debug_bram_words;
+    wire [255:0] dac_debug_source_words;
+    wire [255:0] dac_debug_native_words;
+    wire [255:0] dac_debug_preimage_words;
+    wire [255:0] dac_debug_physical_words;
+    wire [255:0] dac_debug_remap_in_words;
+    wire [255:0] dac_debug_remap_out_words;
+    wire [255:0] dac_debug_jesd_converter_words;
     wire         litejesd_reset = gth_reset_all | ~gth_reset_tx_done |
                                   ~gth_tx_userclk_active;
     wire [7:0]   litejesd_phy_tx_rst = {8{litejesd_reset}};
@@ -818,13 +826,13 @@ module top #(
         .dest     (dac_sine_phase_inc_tx)
     );
 
-    wire [10:0] dac_tx_control_tx;
+    wire [11:0] dac_tx_control_tx;
     cdc_vector_sync #(
-        .WIDTH (11)
+        .WIDTH (12)
     ) u_dac_tx_control_sync (
         .dest_clk (gth_tx_usrclk2),
         .dest_rst (litejesd_reset),
-        .src      (rw_reg2[11:1]),
+        .src      (rw_reg2[12:1]),
         .dest     (dac_tx_control_tx)
     );
 
@@ -832,6 +840,7 @@ module top #(
     wire [1:0] dac_tx_lane_mode_tx = dac_tx_control_tx[3:2];
     wire [2:0] dac_active_converter_tx = dac_tx_control_tx[6:4];
     wire [3:0] dac_physical_map_mode_tx = dac_tx_control_tx[10:7];
+    wire       dac_tag_source_enable_tx = dac_tx_control_tx[11];
 
     wire [43:0] izh_cfg_bus_tx;
     cdc_vector_sync #(
@@ -1010,6 +1019,7 @@ module top #(
     };
 `else
     wire dac_program_enable = 1'b0;
+    wire dac_program_restart = 1'b0;
     assign dac_program_word0_async = 64'd0;
     assign dac_program_word1_async = 64'd0;
     assign dac_program_word2_async = 64'd0;
@@ -1032,6 +1042,7 @@ module top #(
         .triangle_step    (16'd256),
         .sine_phase_inc   (dac_sine_phase_inc_tx),
         .source_modes     (dac_source_modes_tx),
+        .tag_source_enable(dac_tag_source_enable_tx),
         .program_enable   (dac_program_enable),
         .program_word0    (dac_program_word0_async),
         .program_word1    (dac_program_word1_async),
@@ -1046,7 +1057,15 @@ module top #(
         .triangle_word    (litejesd_triangle_async),
         .sine_word        (litejesd_sine_async),
         .gth_txdata       (litejesd_txdata),
-        .gth_txcharisk    (litejesd_txcharisk)
+        .gth_txcharisk    (litejesd_txcharisk),
+        .debug_bram_words (dac_debug_bram_words),
+        .debug_source_words(dac_debug_source_words),
+        .debug_native_words(dac_debug_native_words),
+        .debug_preimage_words(dac_debug_preimage_words),
+        .debug_physical_words(dac_debug_physical_words),
+        .debug_remap_in_words(dac_debug_remap_in_words),
+        .debug_remap_out_words(dac_debug_remap_out_words),
+        .debug_jesd_converter_words(dac_debug_jesd_converter_words)
     );
 
     function [2:0] tx_src_lane;
@@ -1129,24 +1148,53 @@ module top #(
     };
 
 `ifdef DAQ_WITH_GTH_TX_ILA
+    wire [31:0] dac_tx_lane_map_debug = {
+        tx_src_lane(dac_tx_lane_mode_tx, 3'd7),
+        tx_src_lane(dac_tx_lane_mode_tx, 3'd6),
+        tx_src_lane(dac_tx_lane_mode_tx, 3'd5),
+        tx_src_lane(dac_tx_lane_mode_tx, 3'd4),
+        tx_src_lane(dac_tx_lane_mode_tx, 3'd3),
+        tx_src_lane(dac_tx_lane_mode_tx, 3'd2),
+        tx_src_lane(dac_tx_lane_mode_tx, 3'd1),
+        tx_src_lane(dac_tx_lane_mode_tx, 3'd0),
+        8'h00
+    };
+    wire [63:0] dac_tx_control_debug = {
+        4'hD,
+        2'b00,
+        dac_tag_source_enable_tx,
+        dac_program_enable,
+        dac_program_restart,
+        litejesd_sync_pipe[2],
+        litejesd_sysref_pipe[2],
+        litejesd_ready_async,
+        litejesd_active_async,
+        dac_source_modes_tx,
+        dac_physical_map_mode_tx,
+        dac_active_converter_tx,
+        dac_tx_lane_mode_tx,
+        dac_sample_map_mode_tx,
+        litejesd_status_async
+    };
+
     ila_gth_tx_debug u_ila_gth_tx_debug (
         .clk    (gth_tx_usrclk2),
-        .probe0 (gth_userdata_tx[31:0]),
-        .probe1 (gth_userdata_tx[63:32]),
-        .probe2 (gth_txctrl2),
-        .probe3 (litejesd_status_async),
-        .probe4 ({litejesd_sine_async[15:0], litejesd_triangle_async[15:0]}),
-        .probe5 ({
-            19'd0,
-            litejesd_sysref_pipe,
-            litejesd_sync_pipe,
-            litejesd_ready_async,
-            litejesd_active_async,
-            gth_qpll0lock,
-            gth_tx_userclk_active,
-            gth_reset_tx_done,
-            litejesd_reset
-        })
+        .probe0  (dac_tx_control_debug),
+        .probe1  (dac_debug_bram_words),
+        .probe2  (dac_debug_source_words),
+        .probe3  (dac_debug_native_words),
+        .probe4  (dac_debug_preimage_words),
+        .probe5  (dac_debug_physical_words),
+        .probe6  (dac_debug_remap_in_words),
+        .probe7  (dac_debug_remap_out_words),
+        .probe8  (dac_debug_jesd_converter_words),
+        .probe9  (litejesd_txdata),
+        .probe10 (litejesd_txdata_muxed),
+        .probe11 (litejesd_txcharisk),
+        .probe12 (litejesd_txcharisk_muxed),
+        .probe13 (dac_tx_lane_map_debug),
+        .probe14 (litejesd_sine_async),
+        .probe15 (litejesd_triangle_async)
     );
 `endif
 `else

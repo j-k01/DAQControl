@@ -21,6 +21,7 @@ module daq_litejesd_dac_tx_path #(
     input  wire [15:0]   triangle_step,
     input  wire [23:0]   sine_phase_inc,
     input  wire [7:0]    source_modes,
+    input  wire          tag_source_enable,
     input  wire          program_enable,
     input  wire [63:0]   program_word0,
     input  wire [63:0]   program_word1,
@@ -37,7 +38,16 @@ module daq_litejesd_dac_tx_path #(
     output wire [31:0]   sine_word,
 
     output wire [255:0]  gth_txdata,
-    output wire [31:0]   gth_txcharisk
+    output wire [31:0]   gth_txcharisk,
+
+    output wire [255:0]  debug_bram_words,
+    output wire [255:0]  debug_source_words,
+    output wire [255:0]  debug_native_words,
+    output wire [255:0]  debug_preimage_words,
+    output wire [255:0]  debug_physical_words,
+    output wire [255:0]  debug_remap_in_words,
+    output wire [255:0]  debug_remap_out_words,
+    output wire [255:0]  debug_jesd_converter_words
 );
 
     wire [15:0] step = (triangle_step == 16'd0) ? DEFAULT_STEP : triangle_step;
@@ -209,6 +219,10 @@ module daq_litejesd_dac_tx_path #(
         sine_sample0
     };
     wire [63:0] dac_zero64 = 64'd0;
+    wire [63:0] dac_tag_word0 = {16'hD00D, 16'hFACE, 16'hC0DE, 16'hCAFE};
+    wire [63:0] dac_tag_word1 = {16'hBABE, 16'hDEAD, 16'hF00D, 16'hFEED};
+    wire [63:0] dac_tag_word2 = {16'hDEED, 16'hFADE, 16'hACED, 16'hBEAD};
+    wire [63:0] dac_tag_word3 = {16'hC0ED, 16'hDEAF, 16'hCEDE, 16'hDADA};
 
     // Converter select is diagnostic-only:
     //   0     broadcast the same scalar waveform to all four converters
@@ -269,60 +283,65 @@ module daq_litejesd_dac_tx_path #(
     wire [1:0] effective_source_mode3 = (source_mode3 == 2'd0) ?
         (program_enable ? 2'd2 : 2'd1) : source_mode3;
 
-    reg [63:0] src_converter0;
-    reg [63:0] src_converter1;
-    reg [63:0] src_converter2;
-    reg [63:0] src_converter3;
+    reg [63:0] selected_src_converter0;
+    reg [63:0] selected_src_converter1;
+    reg [63:0] selected_src_converter2;
+    reg [63:0] selected_src_converter3;
 
     always @(*) begin
         case (effective_source_mode0)
         2'd2: begin
-            src_converter0 = program_converter0;
+            selected_src_converter0 = program_converter0;
         end
         2'd3: begin
-            src_converter0 = neuron_converter0;
+            selected_src_converter0 = neuron_converter0;
         end
         default: begin
-            src_converter0 = sine_converter0;
+            selected_src_converter0 = sine_converter0;
         end
         endcase
 
         case (effective_source_mode1)
         2'd2: begin
-            src_converter1 = program_converter1;
+            selected_src_converter1 = program_converter1;
         end
         2'd3: begin
-            src_converter1 = neuron_converter1;
+            selected_src_converter1 = neuron_converter1;
         end
         default: begin
-            src_converter1 = sine_converter1;
+            selected_src_converter1 = sine_converter1;
         end
         endcase
 
         case (effective_source_mode2)
         2'd2: begin
-            src_converter2 = program_converter2;
+            selected_src_converter2 = program_converter2;
         end
         2'd3: begin
-            src_converter2 = neuron_converter2;
+            selected_src_converter2 = neuron_converter2;
         end
         default: begin
-            src_converter2 = sine_converter2;
+            selected_src_converter2 = sine_converter2;
         end
         endcase
 
         case (effective_source_mode3)
         2'd2: begin
-            src_converter3 = program_converter3;
+            selected_src_converter3 = program_converter3;
         end
         2'd3: begin
-            src_converter3 = neuron_converter3;
+            selected_src_converter3 = neuron_converter3;
         end
         default: begin
-            src_converter3 = sine_converter3;
+            selected_src_converter3 = sine_converter3;
         end
         endcase
     end
+
+    wire [63:0] src_converter0 = tag_source_enable ? dac_tag_word0 : selected_src_converter0;
+    wire [63:0] src_converter1 = tag_source_enable ? dac_tag_word1 : selected_src_converter1;
+    wire [63:0] src_converter2 = tag_source_enable ? dac_tag_word2 : selected_src_converter2;
+    wire [63:0] src_converter3 = tag_source_enable ? dac_tag_word3 : selected_src_converter3;
 
     wire [63:0] preimage_converter0;
     wire [63:0] preimage_converter1;
@@ -406,6 +425,55 @@ module daq_litejesd_dac_tx_path #(
                                    use_any_remap ? remap_out2 : native_converter2;
     wire [63:0] jesd_converter3 = use_physical_map ? physical_converter3 :
                                    use_any_remap ? remap_out3 : native_converter3;
+
+    assign debug_bram_words = {
+        program_word3,
+        program_word2,
+        program_word1,
+        program_word0
+    };
+    assign debug_source_words = {
+        src_converter3,
+        src_converter2,
+        src_converter1,
+        src_converter0
+    };
+    assign debug_native_words = {
+        native_converter3,
+        native_converter2,
+        native_converter1,
+        native_converter0
+    };
+    assign debug_preimage_words = {
+        preimage_converter3,
+        preimage_converter2,
+        preimage_converter1,
+        preimage_converter0
+    };
+    assign debug_physical_words = {
+        physical_converter3,
+        physical_converter2,
+        physical_converter1,
+        physical_converter0
+    };
+    assign debug_remap_in_words = {
+        remap_in3,
+        remap_in2,
+        remap_in1,
+        remap_in0
+    };
+    assign debug_remap_out_words = {
+        remap_out3,
+        remap_out2,
+        remap_out1,
+        remap_out0
+    };
+    assign debug_jesd_converter_words = {
+        jesd_converter3,
+        jesd_converter2,
+        jesd_converter1,
+        jesd_converter0
+    };
 
     wire [31:0] tx_data0;
     wire [31:0] tx_data1;
