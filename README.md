@@ -371,6 +371,16 @@ The helper script captures the live generator by default:
 python scripts/capture_plot_adc_uart.py --port COM10 --words 4096 --sources 0,1,2,3
 ```
 
+For the current physical loopback setup, only ADC1 converter0 is meaningful:
+one DAC output is cabled into ADC IN1, and only the first ADS54J60 path is
+initialized. Use `--active-adc-converters 0` when you want the plot and
+combined CSV to focus on the recovered loopback stream and omit the unconnected
+converter1 noise:
+
+```powershell
+python scripts/capture_plot_adc_uart.py --port COM10 --words 4096 --sources 0,1,2,3 --active-adc-converters 0
+```
+
 It can also upload a generated DAC BRAM program and then capture the loopback.
 Use `--chunk-order` to test whether the four 16-bit time slots inside each
 64-bit DAC BRAM frame are ordered incorrectly; this does not require a new
@@ -397,10 +407,12 @@ whole DAC BRAM.
 
 Its plot reconstructs ADC converter streams from the same captured 128-bit
 frame by interleaving source `0+1` for ADC1 converter0 and source `2+3` for
-ADC1 converter1. The raw source CSV is still written, and a `_combined.csv`
-file contains the reconstructed signed 16-bit sample streams. Add
-`--plot-raw-sources` only when deliberately inspecting the split `lo16`/`hi16`
-capture words.
+ADC1 converter1. In the present one-cabled setup, ADC1 converter0 is the
+recovered loopback channel and ADC1 converter1 should be treated as
+unconnected noise unless another ADC input is actually wired and initialized.
+The raw source CSV is still written, and a `_combined.csv` file contains the
+selected reconstructed signed 16-bit sample streams. Add `--plot-raw-sources`
+only when deliberately inspecting the split `lo16`/`hi16` capture words.
 
 Always rerun `create_project.tcl` after pulling HDL/Tcl changes. The old flow
 used imported source copies under `project/DAQ_LAUNCH.srcs/`, so running only

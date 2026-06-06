@@ -436,6 +436,18 @@ def parse_sources(text):
     return sources
 
 
+def parse_adc_converters(text):
+    converters = []
+    for token in text.replace(",", " ").split():
+        converter = int(token, 0)
+        if converter < 0 or converter > 1:
+            raise ValueError("ADC converters must be 0, 1, or a comma list")
+        converters.append(converter)
+    if not converters:
+        raise ValueError("at least one ADC converter is required")
+    return converters
+
+
 def read_exact(port, count):
     data = bytearray()
     while len(data) < count:
@@ -506,11 +518,12 @@ def combine_converter(low_words, high_words):
     return samples
 
 
-def build_converter_streams(captures):
+def build_converter_streams(captures, active_converters=None):
+    active = {0, 1} if active_converters is None else set(active_converters)
     streams = {}
-    if 0 in captures and 1 in captures:
+    if 0 in active and 0 in captures and 1 in captures:
         streams["adc1_converter0"] = combine_converter(captures[0], captures[1])
-    if 2 in captures and 3 in captures:
+    if 1 in active and 2 in captures and 3 in captures:
         streams["adc1_converter1"] = combine_converter(captures[2], captures[3])
     return streams
 
@@ -606,7 +619,7 @@ def decimate(values, max_points):
     return list(range(0, len(values), step)), values[::step]
 
 
-def write_plot(path, captures, plot_words, max_points, show, plot_raw_sources):
+def write_plot(path, captures, plot_words, max_points, show, plot_raw_sources, active_converters=None):
     try:
         import matplotlib.pyplot as plt
     except ImportError as exc:
@@ -614,7 +627,7 @@ def write_plot(path, captures, plot_words, max_points, show, plot_raw_sources):
 
     streams = build_converter_streams({
         source: words[:plot_words] for source, words in captures.items()
-    })
+    }, active_converters)
     if streams and not plot_raw_sources:
         fig, axes = plt.subplots(
             len(streams),
@@ -688,6 +701,15 @@ def main():
         help="Number of ADC 128-bit frames to capture. Each frame has four u32 words.",
     )
     parser.add_argument("--sources", default="0,1,2,3")
+    parser.add_argument(
+        "--active-adc-converters",
+        default="0,1",
+        help=(
+            "Reconstructed ADC converter streams to write/plot. Use 0 for the "
+            "current one-cabled ADC1 CH-A loopback setup; converter1 is "
+            "unconnected noise unless another ADC channel is cabled/initialized."
+        ),
+    )
     parser.add_argument("--command", choices=["CAPT", "PCAP"], default="CAPT")
     parser.add_argument(
         "--program-mode",
@@ -782,6 +804,7 @@ def main():
         raise ValueError("--upload-only requires --program or --program-mode")
 
     sources = parse_sources(args.sources)
+    active_adc_converters = parse_adc_converters(args.active_adc_converters)
     program_channels = parse_program_channels(args.program_channel)
     program = make_program(args)
     command_name = "PCAP" if program and args.command == "CAPT" else args.command
@@ -821,7 +844,7 @@ def main():
     combined_csv_path = outdir / f"{args.prefix}_sources_{source_tag}_combined.csv"
     png_path = outdir / f"{args.prefix}_sources_{source_tag}.png"
     summary_path = outdir / f"{args.prefix}_sources_{source_tag}_summary.txt"
-    streams = build_converter_streams(captures)
+    streams = build_converter_streams(captures, active_adc_converters)
 
     write_csv(csv_path, captures)
     print(f"Wrote {csv_path}")
@@ -831,7 +854,9 @@ def main():
         summaries.append(
             "combined streams note: source 0+1 reconstruct ADC1 converter0; "
             "source 2+3 reconstruct ADC1 converter1 from the same captured "
-            "128-bit ADC frame."
+            "128-bit ADC frame. In the current physical loopback setup, only "
+            "ADC1 converter0 is cabled/initialized; converter1 should be "
+            "treated as unconnected noise unless explicitly wired."
         )
         for name, samples in streams.items():
             summaries.append(summarize_stream(name, samples))
@@ -844,6 +869,7 @@ def main():
         args.max_points,
         args.show,
         args.plot_raw_sources,
+        active_adc_converters,
     )
 
     elapsed = time.time() - started
