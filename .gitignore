@@ -1,7 +1,5 @@
 # Vivado local/generated output
 .Xil/
-project/
-hw/
 bd/
 xsim.dir/
 sim/work/
@@ -20,6 +18,17 @@ sim/work/
 *.sim/
 *.srcs/
 vivado_pid*.zip
+
+# Target-PC handoff artifacts. Keep the generated directories ignored except
+# for the programmed bitstream and matching probes file we intentionally share.
+project/*
+!project/DAQ_LAUNCH.runs/
+project/DAQ_LAUNCH.runs/*
+!project/DAQ_LAUNCH.runs/impl_1/
+project/DAQ_LAUNCH.runs/impl_1/*
+!project/DAQ_LAUNCH.runs/impl_1/top.bit
+hw/*
+!hw/DAQ_LAUNCH.ltx
 
 # Vitis/XSDK generated workspace
 sw/workspace/
