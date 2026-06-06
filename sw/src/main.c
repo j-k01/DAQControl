@@ -43,6 +43,12 @@
 #define CTRL_DAC_TXEN          (1u << 3)
 #define CTRL_ADC1_RESET        (1u << 4)
 #define CTRL_ADC2_RESET        (1u << 5)
+#define CTRL_ADC_CH1_ENDCC     (1u << 6)
+#define CTRL_ADC_CH2_ENDCC     (1u << 7)
+#define CTRL_ADC_CH3_ENDCC     (1u << 8)
+#define CTRL_ADC_CH4_ENDCC     (1u << 9)
+#define CTRL_ADC_ENDCC_MASK    (CTRL_ADC_CH1_ENDCC | CTRL_ADC_CH2_ENDCC | \
+                                CTRL_ADC_CH3_ENDCC | CTRL_ADC_CH4_ENDCC)
 #define CTRL_DAC_CS_N          (1u << 16)
 #define CTRL_DAC_SCLK          (1u << 17)
 #define CTRL_DAC_SDIN          (1u << 18)
@@ -498,6 +504,129 @@ static int token_eq_ci(const char *token, const char *word)
     }
 
     return *token == '\0' || *token == ' ' || *token == '\t';
+}
+
+static void advance_token(char **cursor)
+{
+    char *p = *cursor;
+
+    while (*p != '\0' && *p != ' ' && *p != '\t')
+        p++;
+    while (*p == ' ' || *p == '\t')
+        p++;
+    *cursor = p;
+}
+
+static void print_adc_coupling(void)
+{
+    u32 rw0 = Xil_In32(RW_REG0);
+
+    send_str("adc_coupling: ch1=");
+    send_str((rw0 & CTRL_ADC_CH1_ENDCC) ? "dc" : "ac");
+    send_str(" ch2=");
+    send_str((rw0 & CTRL_ADC_CH2_ENDCC) ? "dc" : "ac");
+    send_str(" ch3=");
+    send_str((rw0 & CTRL_ADC_CH3_ENDCC) ? "dc" : "ac");
+    send_str(" ch4=");
+    send_str((rw0 & CTRL_ADC_CH4_ENDCC) ? "dc" : "ac");
+    send_str("\r\n");
+}
+
+static int parse_adc_coupling_target(char **cursor, u32 *mask)
+{
+    char *p = *cursor;
+    u32 channel;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (*p == '\0')
+        return 0;
+
+    if (token_eq_ci(p, "all")) {
+        *mask = CTRL_ADC_ENDCC_MASK;
+        advance_token(&p);
+        *cursor = p;
+        return 1;
+    }
+
+    if (!parse_u32_arg(&p, &channel) || channel < 1u || channel > 4u)
+        return 0;
+
+    *mask = 1u << (channel + 5u);
+    *cursor = p;
+    return 1;
+}
+
+static int parse_adc_coupling_mode(char **cursor, u32 *dc_enable)
+{
+    char *p = *cursor;
+    u32 value;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (*p == '\0')
+        return 0;
+
+    if (token_eq_ci(p, "ac")) {
+        *dc_enable = 0u;
+        advance_token(&p);
+    } else if (token_eq_ci(p, "dc")) {
+        *dc_enable = 1u;
+        advance_token(&p);
+    } else if (parse_u32_arg(&p, &value) && value <= 1u) {
+        *dc_enable = value;
+    } else {
+        return 0;
+    }
+
+    *cursor = p;
+    return 1;
+}
+
+static void cmd_coup(void)
+{
+    char *p = &cmd[4];
+    u32 mask;
+    u32 dc_enable;
+    u32 rw0;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (*p == '\0') {
+        print_adc_coupling();
+        return;
+    }
+
+    if (!parse_adc_coupling_target(&p, &mask)) {
+        send_str("ERR COUP expects [all|1..4] [ac|dc|0|1]\r\n");
+        return;
+    }
+
+    if (!parse_adc_coupling_mode(&p, &dc_enable)) {
+        send_str("ERR COUP expects [all|1..4] [ac|dc|0|1]\r\n");
+        return;
+    }
+
+    rw0 = Xil_In32(RW_REG0);
+    if (dc_enable) {
+        rw0 |= mask;
+    } else {
+        rw0 &= ~mask;
+    }
+    Xil_Out32(RW_REG0, rw0);
+
+    send_str("OK COUP ");
+    send_str(dc_enable ? "dc" : "ac");
+    send_str(" RW0=");
+    send_hex(rw0);
+    send_str("\r\n");
+    if (dc_enable) {
+        send_str("WARNING: ADC DC coupling enabled; use only with known-safe source amplitude.\r\n");
+    }
+    print_adc_coupling();
 }
 
 static int parse_adc_test_mode(char **cursor, u32 *mode)
@@ -1018,6 +1147,7 @@ static void cmd_help(void)
     send_str("  LOOP             dump DAC TX / ADC1 RX loopback diagnostics\r\n");
     send_str("  RXSW             sweep ADC1 RX ILAS/order/polarity diagnostics\r\n");
     send_str("  ADCT mode        ADS54J60 test mode: off,d21,k28,ila,rpat,transport\r\n");
+    send_str("  COUP [all|1..4] [ac|dc] ADC input coupling; default/safe state is AC\r\n");
     send_str("  NSRC [ch|all] mode DAC source: auto,dds,bram,izh,vout\r\n");
     send_str("  NEUR ch param value  program IZH Q16.16 param on ch=0..3 or all\r\n");
     send_str("                 params: a,b,c,d,i/current,dt,iconst/bias,offset,period,source,output,reset,default\r\n");
@@ -1038,6 +1168,7 @@ static void cmd_help(void)
     send_str("  [0]/[31] FMC_C2M_PG override unused on ZCU102 HPC0\r\n");
     send_str("  [1] HMC reset, [2] DAC_RESET_N, [3] DAC_TXEN\r\n");
     send_str("  [4] ADC1 reset, [5] ADC2 reset when manual SPI is enabled\r\n");
+    send_str("  [9:6] ADC CH4..CH1 ENDCC; 0=AC coupling, 1=DC coupling\r\n");
     send_str("  [16:22] manual DAC/HMC SPI pins, enabled by [30]\r\n");
     send_str("  [28:26] ADC test mode, [29] ADC test-mode SPI one-shot request\r\n");
     send_str("  [31] FMC_C2M_PG override enable\r\n");
@@ -1130,6 +1261,7 @@ static void cmd_status(void)
     send_uint((rw2 & RW2_ADC1_CAPTURE_FORMAT_MASK) >> RW2_ADC1_CAPTURE_FORMAT_SHIFT);
     send_str((rw2 & RW2_ADC1_DP_ORDER) ? " physical_dp_order" : " sundance_dp_order");
     send_str("\r\n");
+    print_adc_coupling();
     print_uart_config();
 }
 
@@ -1156,6 +1288,8 @@ static void process_cmd(void)
         cmd_rxsw();
     } else if (strncmp(cmd, "ADCT", 4) == 0) {
         cmd_adct();
+    } else if (strncmp(cmd, "COUP", 4) == 0) {
+        cmd_coup();
     } else if (strncmp(cmd, "NSRC", 4) == 0) {
         cmd_nsrc();
     } else if (strncmp(cmd, "NEUR", 4) == 0) {

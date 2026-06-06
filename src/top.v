@@ -40,6 +40,10 @@ module top #(
     output wire        ADC1_CS_N,
     output wire        ADC2_CS_N,
     output wire        ADC1_SYNC_N,
+    output wire        CH1_ENDCC,
+    output wire        CH2_ENDCC,
+    output wire        CH3_ENDCC,
+    output wire        CH4_ENDCC,
 
     output wire        HMC_CLK_RESET,
     output wire        HMC_CLK_CS_N,
@@ -661,6 +665,10 @@ module top #(
     assign ADC_SCLK      = adc_auto_sclk;
     assign ADC_SDIN      = adc_auto_sdin;
     assign ADC1_SYNC_N   = adc1_sync_n_async;
+    assign CH1_ENDCC     = rw_reg0[6];
+    assign CH2_ENDCC     = rw_reg0[7];
+    assign CH3_ENDCC     = rw_reg0[8];
+    assign CH4_ENDCC     = rw_reg0[9];
 
 `ifdef DAQ_WITH_LITEJESD
     assign DAC_CS_N      = manual_spi_enable ? rw_reg0[16] : dac_auto_cs_n;
@@ -1734,7 +1742,10 @@ module top #(
     };
 
     wire [31:0] raw_pin_reg = {
-        4'd0,
+        CH4_ENDCC,
+        CH3_ENDCC,
+        CH2_ENDCC,
+        CH1_ENDCC,
         adc2_sdout_pipe[2],
         ADC2_SDOUT,
         adc1_sdout_pipe[2],
@@ -1762,7 +1773,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_002B;
+    wire [31:0] build_id = 32'hDA01_002C;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]

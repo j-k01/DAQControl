@@ -66,6 +66,19 @@ set_property PACKAGE_PIN W6 [get_ports ADC1_SDOUT]
 set_property PACKAGE_PIN AB8 [get_ports ADC2_CS_N]
 set_property IOSTANDARD LVCMOS18 [get_ports {ADC1_RESET ADC2_RESET ADC_SDIN ADC_SCLK ADC2_SDOUT ADC1_CS_N ADC1_SYNC_N ADC1_SDOUT ADC2_CS_N}]
 
+# ADC input AC/DC coupling controls. The FMC-ADC500-CD pulls these down, so
+# reset/default 0 is the safe AC-coupled state. Drive 1 only for intentional DC
+# coupling with a known-safe source.
+# CH1_ENDCC -> LA08_P / FMC J5 G12
+# CH2_ENDCC -> LA08_N / FMC J5 G13
+# CH3_ENDCC -> LA09_P / FMC J5 D14
+# CH4_ENDCC -> LA09_N / FMC J5 D15
+set_property PACKAGE_PIN V4 [get_ports CH1_ENDCC]
+set_property PACKAGE_PIN V3 [get_ports CH2_ENDCC]
+set_property PACKAGE_PIN W2 [get_ports CH3_ENDCC]
+set_property PACKAGE_PIN W1 [get_ports CH4_ENDCC]
+set_property IOSTANDARD LVCMOS18 [get_ports {CH1_ENDCC CH2_ENDCC CH3_ENDCC CH4_ENDCC}]
+
 # HMC7044 SPI / reset pins
 # HMC_CLK_RESET -> LA13_N
 # HMC_CLK_SDIO  -> LA14_P

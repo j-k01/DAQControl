@@ -70,6 +70,7 @@ RDRO n
 RDRW n
 WRTE n value
 ADCT mode
+COUP [all|1..4] [ac|dc]
 ```
 
 `RO0` is packed status. `RO1` is the latest one-second `CLK_FMC` sampled-edge
@@ -145,6 +146,10 @@ actual baud.
 | 3 | DAC TX enable |
 | 4 | ADC1 reset |
 | 5 | ADC2 reset |
+| 6 | ADC channel 1 / IN1 DC-coupling enable, `0` = AC/default |
+| 7 | ADC channel 2 DC-coupling enable, `0` = AC/default |
+| 8 | ADC channel 3 DC-coupling enable, `0` = AC/default |
+| 9 | ADC channel 4 DC-coupling enable, `0` = AC/default |
 | 16 | DAC CS_n, active when bit 30 enables manual SPI |
 | 17 | DAC SCLK, active when bit 30 enables manual SPI |
 | 18 | DAC SDIN, active when bit 30 enables manual SPI |
@@ -156,6 +161,25 @@ actual baud.
 | 29 | Pulse ADS54J60 JESD test-mode SPI update, normally driven by `ADCT` |
 | 30 | Manual SPI enable |
 | 31 | Unused on ZCU102 HPC0 |
+
+## ADC/DAC Coupling
+
+The FMC-ADC500-CD user guide states that the ADC inputs are AC-coupled by
+default and can be switched to DC coupling in firmware with `CH1_ENDCC` through
+`CH4_ENDCC`. In this ZCU102 design those controls are `RW0[6]` through
+`RW0[9]`, and the UART helper command is:
+
+```text
+COUP              # print current ADC input coupling
+COUP 1 ac         # ADC IN1 / channel 1 AC coupling, safe default
+COUP 1 dc         # ADC IN1 / channel 1 DC coupling
+COUP all ac       # return every ADC input to AC coupling
+```
+
+Use DC coupling only with a known-safe ADC source amplitude. The Sundance guide
+also notes that the DAC SSMC outputs are AC-coupled on the card; the low end is
+about 5 MHz with a 50 ohm load, so slow pulses/trapezoids are expected to be
+baseline-shaped at the DAC connector even when the digital JESD path is working.
 
 ## RW2 GTH Control Bits
 
