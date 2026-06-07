@@ -25,7 +25,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import capture_plot_adc_uart as cap  # noqa: E402
 
 
-RW2_DAC0_LOOPBACK_ALL_ACTIVE = 0x010000F8
+RW2_DAC0_LOOPBACK_NATIVE = 0x01000018
 
 
 def unpack_program_samples(words: list[int]) -> list[int]:
@@ -337,8 +337,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="COM10")
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--expect-build-id", type=parse_int, default=0xDA01002C)
-    parser.add_argument("--rw2", type=parse_int, default=RW2_DAC0_LOOPBACK_ALL_ACTIVE)
+    parser.add_argument("--expect-build-id", type=parse_int, default=0xDA010033)
+    parser.add_argument("--rw2", type=parse_int, default=RW2_DAC0_LOOPBACK_NATIVE)
     parser.add_argument("--tests", type=parse_tests, default=parse_tests("sine100 sine50 triangle50 trapezoid50"))
     parser.add_argument("--frames", type=int, default=2048)
     parser.add_argument("--program-words", type=int, default=8192)

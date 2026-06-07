@@ -17,7 +17,7 @@ from typing import Iterable
 
 
 MAX_PROGRAM_WORDS = 8192
-DAC0_RW2_ONLY = 0x01000038  # sample_map=0, tx_lane=3, conv_sel=1
+DAC_NORMAL_RW2 = 0x01000018  # sample_map=0, tx_lane=3; source selection is NSRC.
 
 
 def parse_int(text: str) -> int:
@@ -213,7 +213,11 @@ def main() -> None:
     parser.add_argument("--words", type=int, default=MAX_PROGRAM_WORDS, help="u32 program words.")
     parser.add_argument("--expect-build-id", type=parse_int, default=None)
     parser.add_argument("--timeout", type=float, default=5.0)
-    parser.add_argument("--leave-all-active", action="store_true", help="Do not gate off DAC1..DAC3.")
+    parser.add_argument(
+        "--leave-all-active",
+        action="store_true",
+        help="Deprecated; RW2 no longer gates DAC channels. Source selection is done with NSRC.",
+    )
     args = parser.parse_args()
 
     if args.shape in ("square", "squareweave"):
@@ -223,7 +227,7 @@ def main() -> None:
 
     program = make_program(args)
     frame_count = len(program) // 2
-    rw2 = 0x010000F8 if args.leave_all_active else DAC0_RW2_ONLY
+    rw2 = DAC_NORMAL_RW2
     rw3_run = ((frame_count << 8) & 0xFFFFFF00) | 0x60
 
     print(

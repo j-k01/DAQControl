@@ -218,112 +218,65 @@ module daq_litejesd_dac_tx_path #(
         sine_sample1,
         sine_sample0
     };
-    wire [63:0] dac_zero64 = 64'd0;
     wire [63:0] dac_tag_word0 = {16'h4444, 16'h3333, 16'h2222, 16'h1111};
     wire [63:0] dac_tag_word1 = {16'h8888, 16'h7777, 16'h6666, 16'h5555};
     wire [63:0] dac_tag_word2 = {16'hCCCC, 16'hBBBB, 16'hAAAA, 16'h9999};
     wire [63:0] dac_tag_word3 = {16'h0F0F, 16'hFFFF, 16'hEEEE, 16'hDDDD};
 
-    // Converter select is diagnostic-only:
-    //   0     broadcast the same scalar waveform to all four converters
-    //   1..4  drive only converter 0..3 respectively, others at midscale
-    //   5..7  broadcast, matching the original bring-up behavior
-    wire drive_converter0 = (active_converter == 3'd0) ||
-                            (active_converter == 3'd1) ||
-                            (active_converter >= 3'd5);
-    wire drive_converter1 = (active_converter == 3'd0) ||
-                            (active_converter == 3'd2) ||
-                            (active_converter >= 3'd5);
-    wire drive_converter2 = (active_converter == 3'd0) ||
-                            (active_converter == 3'd3) ||
-                            (active_converter >= 3'd5);
-    wire drive_converter3 = (active_converter == 3'd0) ||
-                            (active_converter == 3'd4) ||
-                            (active_converter >= 3'd5);
-
-    wire [63:0] program_converter0 = drive_converter0 ? program_word0 : dac_zero64;
-    wire [63:0] program_converter1 = drive_converter1 ? program_word1 : dac_zero64;
-    wire [63:0] program_converter2 = drive_converter2 ? program_word2 : dac_zero64;
-    wire [63:0] program_converter3 = drive_converter3 ? program_word3 : dac_zero64;
-
-    wire [63:0] sine_converter0 = drive_converter0 ? sine_quad_word : dac_zero64;
-    wire [63:0] sine_converter1 = drive_converter1 ? sine_quad_word : dac_zero64;
-    wire [63:0] sine_converter2 = drive_converter2 ? sine_quad_word : dac_zero64;
-    wire [63:0] sine_converter3 = drive_converter3 ? sine_quad_word : dac_zero64;
-
-    wire [63:0] neuron_converter0 = drive_converter0 ? neuron_word0 : dac_zero64;
-    wire [63:0] neuron_converter1 = drive_converter1 ? neuron_word1 : dac_zero64;
-    wire [63:0] neuron_converter2 = drive_converter2 ? neuron_word2 : dac_zero64;
-    wire [63:0] neuron_converter3 = drive_converter3 ? neuron_word3 : dac_zero64;
+    // Each DAC channel owns one 64-bit time-vector mux.  Every source uses the
+    // same contract: [15:0] is the first sample, [63:48] is the fourth sample.
+    // No byte, lane, physical-output, or connector rearrangement is allowed
+    // before this boundary.
+    wire [63:0] dds_word0 = sine_quad_word;
+    wire [63:0] dds_word1 = sine_quad_word;
+    wire [63:0] dds_word2 = sine_quad_word;
+    wire [63:0] dds_word3 = sine_quad_word;
 
     wire [1:0] source_mode0 = source_modes[1:0];
     wire [1:0] source_mode1 = source_modes[3:2];
     wire [1:0] source_mode2 = source_modes[5:4];
     wire [1:0] source_mode3 = source_modes[7:6];
 
-    wire [1:0] effective_source_mode0 = (source_mode0 == 2'd0) ?
-        (program_enable ? 2'd2 : 2'd1) : source_mode0;
-    wire [1:0] effective_source_mode1 = (source_mode1 == 2'd0) ?
-        (program_enable ? 2'd2 : 2'd1) : source_mode1;
-    wire [1:0] effective_source_mode2 = (source_mode2 == 2'd0) ?
-        (program_enable ? 2'd2 : 2'd1) : source_mode2;
-    wire [1:0] effective_source_mode3 = (source_mode3 == 2'd0) ?
-        (program_enable ? 2'd2 : 2'd1) : source_mode3;
+    wire [63:0] selected_src_converter0;
+    wire [63:0] selected_src_converter1;
+    wire [63:0] selected_src_converter2;
+    wire [63:0] selected_src_converter3;
 
-    reg [63:0] selected_src_converter0;
-    reg [63:0] selected_src_converter1;
-    reg [63:0] selected_src_converter2;
-    reg [63:0] selected_src_converter3;
+    dac_channel_source_mux u_dac0_source_mux (
+        .source_mode    (source_mode0),
+        .program_enable (program_enable),
+        .dds_word       (dds_word0),
+        .bram_word      (program_word0),
+        .pulse_word     (neuron_word0),
+        .dac_word       (selected_src_converter0)
+    );
 
-    always @(*) begin
-        case (effective_source_mode0)
-        2'd2: begin
-            selected_src_converter0 = program_converter0;
-        end
-        2'd3: begin
-            selected_src_converter0 = neuron_converter0;
-        end
-        default: begin
-            selected_src_converter0 = sine_converter0;
-        end
-        endcase
+    dac_channel_source_mux u_dac1_source_mux (
+        .source_mode    (source_mode1),
+        .program_enable (program_enable),
+        .dds_word       (dds_word1),
+        .bram_word      (program_word1),
+        .pulse_word     (neuron_word1),
+        .dac_word       (selected_src_converter1)
+    );
 
-        case (effective_source_mode1)
-        2'd2: begin
-            selected_src_converter1 = program_converter1;
-        end
-        2'd3: begin
-            selected_src_converter1 = neuron_converter1;
-        end
-        default: begin
-            selected_src_converter1 = sine_converter1;
-        end
-        endcase
+    dac_channel_source_mux u_dac2_source_mux (
+        .source_mode    (source_mode2),
+        .program_enable (program_enable),
+        .dds_word       (dds_word2),
+        .bram_word      (program_word2),
+        .pulse_word     (neuron_word2),
+        .dac_word       (selected_src_converter2)
+    );
 
-        case (effective_source_mode2)
-        2'd2: begin
-            selected_src_converter2 = program_converter2;
-        end
-        2'd3: begin
-            selected_src_converter2 = neuron_converter2;
-        end
-        default: begin
-            selected_src_converter2 = sine_converter2;
-        end
-        endcase
-
-        case (effective_source_mode3)
-        2'd2: begin
-            selected_src_converter3 = program_converter3;
-        end
-        2'd3: begin
-            selected_src_converter3 = neuron_converter3;
-        end
-        default: begin
-            selected_src_converter3 = sine_converter3;
-        end
-        endcase
-    end
+    dac_channel_source_mux u_dac3_source_mux (
+        .source_mode    (source_mode3),
+        .program_enable (program_enable),
+        .dds_word       (dds_word3),
+        .bram_word      (program_word3),
+        .pulse_word     (neuron_word3),
+        .dac_word       (selected_src_converter3)
+    );
 
     wire [63:0] src_converter0 = tag_source_enable ? dac_tag_word0 : selected_src_converter0;
     wire [63:0] src_converter1 = tag_source_enable ? dac_tag_word1 : selected_src_converter1;
@@ -360,18 +313,10 @@ module daq_litejesd_dac_tx_path #(
     wire [63:0] native_converter2 = src_converter2;
     wire [63:0] native_converter3 = src_converter3;
 
-    // sample_map_mode:
-    //   0 = native LiteJESD converter streams. This is the normal path: the
-    //       source mux outputs are passed through as complete 64-bit streams.
-    //   1 = whole-stream output-order diagnostic. It may reorder complete
-    //       streams but never bytes or halfwords.
-    //   2 = legacy DAC39J84 sample-remap diagnostic. This intentionally mixes
-    //       bytes from multiple source streams and must not be the default.
-    //   3 = whole-stream output-order diagnostic alias with RW2[9:8]
-    //       variations.
-    wire use_legacy_remap = (sample_map_mode == 2'd2);
-    wire use_physical_map = (sample_map_mode == 2'd1) ||
-                            (sample_map_mode == 2'd3);
+    // sample_map_mode is retained only as a status/ILA tag. The live DAC path
+    // below always passes whole 64-bit source streams into LiteJESD converters.
+    // The physical/remap blocks are always computed for comparison probes, but
+    // they are not selected into the output path.
 
     wire [63:0] remap_in0 = src_converter0;
     wire [63:0] remap_in1 = src_converter1;
@@ -393,14 +338,12 @@ module daq_litejesd_dac_tx_path #(
         .converter3_out (remap_out3)
     );
 
-    wire [63:0] jesd_converter0 = use_physical_map ? physical_converter0 :
-                                   use_legacy_remap ? remap_out0 : native_converter0;
-    wire [63:0] jesd_converter1 = use_physical_map ? physical_converter1 :
-                                   use_legacy_remap ? remap_out1 : native_converter1;
-    wire [63:0] jesd_converter2 = use_physical_map ? physical_converter2 :
-                                   use_legacy_remap ? remap_out2 : native_converter2;
-    wire [63:0] jesd_converter3 = use_physical_map ? physical_converter3 :
-                                   use_legacy_remap ? remap_out3 : native_converter3;
+    // The live datapath always consumes complete DAC channel input streams.
+    // Legacy byte-mixing diagnostics remain visible in ILA probes only.
+    wire [63:0] jesd_converter0 = native_converter0;
+    wire [63:0] jesd_converter1 = native_converter1;
+    wire [63:0] jesd_converter2 = native_converter2;
+    wire [63:0] jesd_converter3 = native_converter3;
 
     assign debug_bram_words = {
         program_word3,
@@ -539,7 +482,7 @@ module daq_litejesd_dac_tx_path #(
 
     assign status = {
         4'd0,
-        effective_source_mode0,
+        source_mode0,
         sample_map_mode,
         active_converter,
         stpl_enable,

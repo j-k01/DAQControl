@@ -188,9 +188,9 @@ These bits are only used by the `--with-staged-gt` build.
 | Bits | Function |
 | --- | --- |
 | 0 | Assert GTH reset-all while high |
-| 2:1 | DAC sample-map diagnostic mode: `0` native LiteJESD, `1` general four-channel preimage + remap, `2` old direct remap, `3` physical DAC mapper |
-| 4:3 | DAC TX lane diagnostic mode: `0` identity, `1` FPGA board map, `2` inverse/check map, `3` DAC-crossbar inverse diagnostic |
-| 7:5 | DAC converter select: `0`/`5..7` broadcast, `1..4` drive only converter 0..3 |
+| 2:1 | DAC sample-map diagnostic mode for ILA only; live DAC path is always native LiteJESD converter streams |
+| 4:3 | DAC TX lane mode: `0` identity, `1` FPGA board map for DAC identity crossbar, `2` inverse/check map, `3` DAC-crossbar inverse for `0x3021`/`0x7654` |
+| 7:5 | DAC debug/source probe select only; source selection is handled by `NSRC` and the four per-channel muxes |
 | 15:8 | Per-lane TX polarity invert |
 | 23:16 | Per-lane RX polarity invert |
 | 24 | Bypass ADC1 LiteJESD ILAS checking |
@@ -506,50 +506,41 @@ reconstruction, or Sundance-style reversed-byte reconstruction. `RW2[24]=1`
 bypasses ILAS checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL
 checker, and `RW2[26]=1` switches ADC1 from Sundance signal order to physical
 DP0-DP3 order.
-The MicroBlaze firmware defaults `RW2` to `0x010000F8`: ADS54J60 ILAS checking
-is bypassed for bring-up, all four DAC outputs are enabled, the DAC sample path
-uses native LiteJESD converter streams, and the FPGA TX lane mux uses the
+The MicroBlaze firmware defaults `RW2` to `0x01000018`: ADS54J60 ILAS checking
+is bypassed for bring-up, the DAC sample path uses native LiteJESD converter
+streams, and the FPGA TX lane mux uses the
 `dac_xbar` lane order for the DAC-side `0x3021/0x7654` octetpath crossbar.
 In this mode BRAM/DDS/neuron channel N remains a complete 64-bit source stream;
 no byte-lane preimage is applied between the source mux and LiteJESD.
+The expected channel-to-connector identity assumes the DAC39J84 analog output
+mux registers remain in their default identity state.
 Clear bit 24 only when deliberately re-enabling ADC ILAS checking while
 debugging the expected ILAS fields.
 
 For the optional `--with-gth-tx-ila` diagnostic build, set `RW2[12]` to force
 all DAC sources to fixed 16-bit tag words before the DAC mapping logic. For
-example, `WRTE 2 0x010010F8` keeps the normal DAC diagnostic mode but replaces
+example, `WRTE 2 0x01001018` keeps the normal DAC diagnostic mode but replaces
 the live/BRAM/neuron samples with a systematic tag pattern from `1111` through
 `FFFF`, plus `0F0F` as the final unique marker. The TX ILA then exposes the BRAM
 output, selected source, native stream path, whole-stream order path, legacy
 remap input/output, final LiteJESD converter inputs, raw LiteJESD lane data, and
 post-TX-lane-mux GTH user data.
 
-For the stream-order diagnostic mapper, `RW2[9:8]` selects how complete 64-bit
-source streams are assigned to LiteJESD converter inputs:
-
-| Source order | Meaning |
-| --- | --- |
-| `0` | Direct candidate order: source0, source1, source2, source3 |
-| `1` | Reverse candidate order for connector-label discovery |
-| `2` | Swap the first candidate pair for diagnostics |
-| `3` | Swap the upper candidate pair for diagnostics |
-
-`RW2[11:10]` is intentionally ignored by the stream-order mapper so diagnostics
-cannot silently reintroduce a byte-lane preimage. With `sample_map=3`, sweep
-whole-stream ownership and TX lane mode using the helper below. To hand-test
-identity-lane source ownership, use:
-`RW2=0x01000006`, `0x01000106`, `0x01000206`, and `0x01000306`.
-The automated cabled-pair sweep is:
+The old stream-order and sample-map controls are retained as ILA tags only.
+They do not select the live DAC output path. To check the DAC lane correction,
+keep source streams native and sweep only the TX lane mode when needed:
+`RW2=0x01000000`, `0x01000008`, `0x01000010`, and `0x01000018`
+before setting any ADC-only bits. The automated cabled-pair sweep is:
 
 ```powershell
-python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010032
+python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010033
 ```
 
-Before accepting the mapper, use a byte-asymmetric BRAM pattern rather than
+Before accepting the lane map, use a byte-asymmetric BRAM pattern rather than
 only sine waves:
 
 ```powershell
-python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010032 --rw2 0x010000F8 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
+python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010033 --rw2 0x01000018 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
 ```
 
 The generated raw 16-bit sample stream starts `0x1201, 0x2302, 0x3403,
