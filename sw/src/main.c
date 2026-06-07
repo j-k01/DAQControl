@@ -1068,6 +1068,47 @@ static void cmd_program(u32 channel, u32 words)
     send_str("\r\n");
 }
 
+static void cmd_dpwr(u32 channel, u32 start_word, u32 words)
+{
+    u32 i;
+
+    if (channel >= DAC_PROGRAM_CHANNELS) {
+        send_str("ERR DPWR channel must be 0..3\r\n");
+        return;
+    }
+
+    if (start_word >= DAC_PROGRAM_WORDS_PER_CHANNEL) {
+        send_str("ERR DPWR start out of range\r\n");
+        return;
+    }
+
+    if (words == 0u || start_word + words > DAC_PROGRAM_WORDS_PER_CHANNEL) {
+        send_str("ERR DPWR word count out of range\r\n");
+        return;
+    }
+
+    send_str("DPWR ch=");
+    send_uint(channel);
+    send_str(" start=");
+    send_uint(start_word);
+    send_str(" words=");
+    send_uint(words);
+    send_str("\r\n");
+
+    for (i = 0; i < words; i++) {
+        Xil_Out32(dac_program_bram_base[channel] + (start_word + i) * 4u,
+                  recv_le32_blocking());
+    }
+
+    send_str("OK DPWR ch=");
+    send_uint(channel);
+    send_str(" start=");
+    send_uint(start_word);
+    send_str(" words=");
+    send_uint(words);
+    send_str("\r\n");
+}
+
 static void cmd_dprd(u32 channel, u32 start_word, u32 words)
 {
     u32 i;
@@ -1156,6 +1197,7 @@ static void cmd_help(void)
     send_str("  WRTE n value     write RW register 0..3; use 0x prefix for hex masks\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("  PROG ch [n]      upload even n little-endian u32 words to DAC channel ch=0..3\r\n");
+    send_str("  DPWR ch start n  write n little-endian u32 words to DAC BRAM 32-bit word addresses\r\n");
     send_str("  DPRD ch [start] [n] read back DAC program BRAM u32 words\r\n");
     send_str("  CAPS             print ADC BRAM capture status\r\n");
     send_str("  CAPT [frames]    capture ADC1 128-bit frames and stream 4 u32 words/frame\r\n");
@@ -1184,10 +1226,10 @@ static void cmd_help(void)
     send_str("                 with RW3[6]=1 and RW2[31]=1, selector 7 returns DAC program word\r\n");
     send_str("                 word select is RW2[30:28]: 0/1=ch0 lo/hi ... 6/7=ch3 lo/hi\r\n");
 #endif
-    send_str("RW2 DAC TX diag: [2:1] sample_map 0=native_lmf841_odd_bswap 1=general_preimage 2=old_remap 3=lane_pair_preimage\r\n");
+    send_str("RW2 DAC TX diag: [2:1] sample_map 0=native_lmf841_odd_bswap 1=physical_preimage 2=legacy_remap 3=physical_preimage_diag\r\n");
     send_str("                 [4:3] tx_lane 0=identity 1=board_map 2=inverse_check 3=dac_xbar\r\n");
     send_str("                 [7:5] DAC source select 0/5..7=all, 1..4=outputs0..3 in physical mode\r\n");
-    send_str("                 lane_pair_preimage [9:8]=candidate order: 0=direct, 1=reverse\r\n");
+    send_str("                 physical_preimage_diag [9:8]=candidate order: 0=direct, 1=reverse\r\n");
     send_str("                         2=swap first pair, 3=swap second pair\r\n");
     send_str("                 [11:10]=pair orient: 0=expected, 1=flip upper, 2=flip lower,\r\n");
     send_str("                         3=flip all byte pairs\r\n");
@@ -1342,6 +1384,18 @@ static void process_cmd(void)
             channel = 0;
         }
         cmd_program(channel, words);
+    } else if (strncmp(cmd, "DPWR", 4) == 0) {
+        char *p = &cmd[4];
+        u32 channel = 0;
+        u32 start_word = 0;
+        u32 words = 0;
+        if (!parse_u32_arg(&p, &channel) ||
+            !parse_u32_arg(&p, &start_word) ||
+            !parse_u32_arg(&p, &words)) {
+            send_str("ERR DPWR expects channel, start, and word count\r\n");
+            return;
+        }
+        cmd_dpwr(channel, start_word, words);
     } else if (strncmp(cmd, "DPRD", 4) == 0) {
         char *p = &cmd[4];
         u32 channel = 0;

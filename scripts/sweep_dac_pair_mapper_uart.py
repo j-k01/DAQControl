@@ -101,7 +101,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="COM10")
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--expect-build-id", type=lambda x: int(x, 0), default=0xDA010031)
+    parser.add_argument("--expect-build-id", type=lambda x: int(x, 0), default=0xDA010032)
     parser.add_argument("--rw2-base", type=lambda x: int(x, 0), default=0x010000FE)
     parser.add_argument(
         "--source-order-modes",

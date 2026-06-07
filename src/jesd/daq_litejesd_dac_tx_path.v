@@ -386,21 +386,21 @@ module daq_litejesd_dac_tx_path #(
     wire [63:0] native_converter3 = swap_sample_bytes64(src_converter3);
 
     // sample_map_mode:
-    //   0 = native LMF841 / LiteJESD converter-bus diagnostic, with the odd
-    //       source streams byte-swapped for A/B testing.
-    //   1 = four-channel preimage + legacy DAC39J84 sample remap
-    //   2 = direct source buses through legacy DAC39J84 sample remap
-    //   3 = general table-driven byte-lane preimage; firmware default as of
-    //       build 0xDA010030.
-    wire use_preimage_remap = (sample_map_mode == 2'd1);
-    wire use_any_remap = use_preimage_remap ||
-                         (sample_map_mode == 2'd2);
-    wire use_physical_map = (sample_map_mode == 2'd3);
+    //   0 = native LiteJESD converter-bus diagnostic.
+    //   1 = normal physical-DAC preimage. The four source streams are the
+    //       four user-visible DAC outputs; this adapter only hides the byte
+    //       placement needed before the LiteJESD lane splitter.
+    //   2 = legacy DAC39J84 sample-remap diagnostic. This intentionally mixes
+    //       bytes from multiple source streams and must not be the default.
+    //   3 = physical-DAC preimage diagnostic alias with RW2[11:8] variations.
+    wire use_legacy_remap = (sample_map_mode == 2'd2);
+    wire use_physical_map = (sample_map_mode == 2'd1) ||
+                            (sample_map_mode == 2'd3);
 
-    wire [63:0] remap_in0 = use_preimage_remap ? preimage_converter0 : src_converter0;
-    wire [63:0] remap_in1 = use_preimage_remap ? preimage_converter1 : src_converter1;
-    wire [63:0] remap_in2 = use_preimage_remap ? preimage_converter2 : src_converter2;
-    wire [63:0] remap_in3 = use_preimage_remap ? preimage_converter3 : src_converter3;
+    wire [63:0] remap_in0 = src_converter0;
+    wire [63:0] remap_in1 = src_converter1;
+    wire [63:0] remap_in2 = src_converter2;
+    wire [63:0] remap_in3 = src_converter3;
     wire [63:0] remap_out0;
     wire [63:0] remap_out1;
     wire [63:0] remap_out2;
@@ -418,13 +418,13 @@ module daq_litejesd_dac_tx_path #(
     );
 
     wire [63:0] jesd_converter0 = use_physical_map ? physical_converter0 :
-                                   use_any_remap ? remap_out0 : native_converter0;
+                                   use_legacy_remap ? remap_out0 : native_converter0;
     wire [63:0] jesd_converter1 = use_physical_map ? physical_converter1 :
-                                   use_any_remap ? remap_out1 : native_converter1;
+                                   use_legacy_remap ? remap_out1 : native_converter1;
     wire [63:0] jesd_converter2 = use_physical_map ? physical_converter2 :
-                                   use_any_remap ? remap_out2 : native_converter2;
+                                   use_legacy_remap ? remap_out2 : native_converter2;
     wire [63:0] jesd_converter3 = use_physical_map ? physical_converter3 :
-                                   use_any_remap ? remap_out3 : native_converter3;
+                                   use_legacy_remap ? remap_out3 : native_converter3;
 
     assign debug_bram_words = {
         program_word3,

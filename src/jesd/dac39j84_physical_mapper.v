@@ -12,6 +12,21 @@ module dac39j84_physical_mapper (
     output wire [63:0] converter3
 );
 
+    // Public contract:
+    //   dac_out0..3 are the user-visible physical DAC output streams.
+    //   Each stream is four chronological 16-bit samples, sample0 in [15:0].
+    //
+    // This module is only the hidden preimage between those physical streams
+    // and the generated LiteJESD converter-bus interface. The byte placement
+    // follows the Sundance DAC sample adapter pattern for the current board:
+    //
+    //   output 0: high lane 3, low lane 0
+    //   output 1: high lane 2, low lane 1
+    //   output 2: high lane 7, low lane 6
+    //   output 3: high lane 5, low lane 4
+    //
+    // map_mode is retained only for diagnostics. Normal operation is 4'd0.
+
     genvar i;
     generate
         for (i = 0; i < 4; i = i + 1) begin : gen_sample
@@ -58,9 +73,7 @@ module dac39j84_physical_mapper (
                     cand_d = src2;
                 end
                 default: begin
-                    // Default general mapping: sourceN feeds candidate N.
-                    // Candidate names are internal byte-lane candidates, not
-                    // front-panel connector labels.
+                    // Default contract: physical DAC output N uses dac_outN.
                     cand_a = src0;
                     cand_b = src1;
                     cand_c = src2;

@@ -46,15 +46,20 @@ data, the TX user clock is 250 MHz.
 
 `daq_litejesd_dac_tx_path.v` is the hardware-facing shell for the launch test.
 It instantiates `litejesd_dac_tx` and builds four 64-bit source words. There
-are two primary DAC mapping paths exposed at runtime:
+are three DAC mapping paths exposed at runtime:
 
 - `sample_map=0`: native LMF841 diagnostic, where LiteJESD logical lanes are
   adjacent high/low byte pairs for converters A/B/C/D, with the previously
   observed odd-converter byte swap still available for A/B testing.
-- `sample_map=3`: table-driven byte-lane preimage. Four independent source
-  streams are assigned to internal candidates A-D, then each candidate's high
-  and low bytes are placed into explicit LiteJESD logical byte lanes before the
-  generated core repacks them into `converter0..3`.
+- `sample_map=1`: normal physical-DAC preimage. `src0..src3` are the
+  user-visible physical DAC output streams. The mapper hides only the
+  byte-lane placement needed before the generated LiteJESD lane splitter.
+- `sample_map=2`: legacy byte-mixing remap diagnostic. This path intentionally
+  combines bytes from different source streams and must not be used as the
+  normal physical-DAC path.
+- `sample_map=3`: physical-DAC preimage diagnostic alias. It uses the same
+  table-driven mapper as `sample_map=1`, with `RW2[11:8]` variations enabled
+  for byte-order and connector-order experiments.
 
 The preimage is not a claim that the DAC39J84 itself requires non-adjacent
 logical byte pairs. It is a way to reproduce the Sundance-like internal
@@ -68,11 +73,10 @@ gth_txdata[255:0]    // {lane7, ..., lane0}, 32 bits per lane
 gth_txcharisk[31:0]  // {lane7, ..., lane0}, 4 bits per lane
 ```
 
-`dac39j84_physical_mapper` has a runtime source-order selector so the cabled
-DAC outputs can disambiguate front-panel labels without another implementation
-run. Source order `0` maps `src0..src3` directly to candidate outputs A-D,
-source order `1` reverses them, and source orders `2`/`3` swap one candidate
-pair at a time. `map_mode[3:2]=0` uses the expected lane-pair preimage:
+`dac39j84_physical_mapper` is the normal hidden adapter. Source order `0`
+means physical DAC output N uses `srcN`; source order `1` reverses them, and
+source orders `2`/`3` swap one candidate pair at a time only for diagnostics.
+`map_mode[3:2]=0` uses the expected Sundance-style lane-pair preimage:
 
 ```text
 candidate A: high J3, low J0
@@ -86,34 +90,26 @@ only the lower candidate-pair orientation, and `3` flips all candidate byte
 pairs. Those modes are for byte-orientation verification with asymmetric test
 patterns, not for source-number cargo culting.
 
-For the current DAC39J84 initialization, the firmware default uses
-`sample_map=1`, TX lane mode 0, and `conv_sel=7` (`RW2=0x010000E2`). In that
-mode, the existing preimage feeds `dac39j84_sample_remap` so the LiteJESD
-converter buses receive the desired source streams, while the FPGA TX lane mux
-stays identity and the DAC-side `0x3021/0x7654` octetpath crossbar performs
-the physical lane correction. The table-driven `sample_map=3` mapper remains
-available for byte-lane diagnostics, but it is not the firmware default after
-the 2026-06-06 hidden-loopback test.
+For the current DAC39J84 initialization, the firmware default remains
+`sample_map=1`, TX lane mode 0, and `conv_sel=7` (`RW2=0x010000E2`), but
+`sample_map=1` now means the physical-DAC preimage mapper. The normal contract
+is:
 
-Current cabled diagnostics:
+```text
+BRAM/DDS/neuron channel 0 -> physical DAC output 0
+BRAM/DDS/neuron channel 1 -> physical DAC output 1
+BRAM/DDS/neuron channel 2 -> physical DAC output 2
+BRAM/DDS/neuron channel 3 -> physical DAC output 3
+```
 
-| Physical output under test | Clean setting | Recovered bin | Notes |
-| --- | --- | --- | --- |
-| DAC1 | `sample_map=2`, source 3 only | 2000 | Legacy remap path, useful as a byte-pair probe only. |
-| DAC2 | `sample_map=1`, source 3 only | 2800 | General preimage path, useful as a byte-pair probe only. |
-| DAC3 | `sample_map=3`, source 2 only | 2400 | Strong evidence that a byte-lane preimage is needed. |
-| DAC3 | `sample_map=0`, source 3 only | 2800 | Coherent but weaker than the byte-lane preimage route. |
-| Hidden ADC converter0 | `sample_map=1`, TX lane 0, all sources | 1600/source0 | Clean, correlation +0.961. |
-| Hidden ADC converter1 | `sample_map=1`, TX lane 0, all sources | 2800/source3 | Clean, correlation +0.998 after inversion/phase. |
-
-Do not turn the probe-source numbers in this table directly into a final
-four-channel byte table: different `sample_map` modes place the same source
-bytes on different lane pairs. The next acceptance test should use an
-asymmetric pattern such as `0x1201, 0x2302, 0x3403, 0x4504, ...`, because a
-sine can land at the correct FFT bin while byte orientation is still wrong.
+The legacy remap and source-order sweeps are diagnostic tools only. Do not
+turn probe-source numbers from those modes into a final mapping. The acceptance
+test must use a byte-asymmetric pattern such as
+`0x1201, 0x2302, 0x3403, 0x4504, ...`, because a sine can land at the right FFT
+bin while byte orientation is still wrong.
 
 ```powershell
-python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010031 --rw2 0x010000E2 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
+python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010032 --rw2 0x010000E2 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
 ```
 
 Connect `gth_txcharisk` in the same lane order as `gth_txdata` to the 8B/10B
