@@ -298,7 +298,7 @@ def main() -> None:
 
     play = sub.add_parser("play", help="Set BRAM playback mode and frame loop count.")
     play.add_argument("--frames", type=parse_u32, required=True)
-    play.add_argument("--rw2", type=parse_u32, default=0x010000E2)
+    play.add_argument("--rw2", type=parse_u32, default=0x010000F8)
     play.set_defaults(func=run_play)
 
     args = parser.parse_args()

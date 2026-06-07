@@ -506,27 +506,26 @@ reconstruction, or Sundance-style reversed-byte reconstruction. `RW2[24]=1`
 bypasses ILAS checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL
 checker, and `RW2[26]=1` switches ADC1 from Sundance signal order to physical
 DP0-DP3 order.
-The MicroBlaze firmware defaults `RW2` to `0x010000E2`: ADS54J60 ILAS checking
+The MicroBlaze firmware defaults `RW2` to `0x010000F8`: ADS54J60 ILAS checking
 is bypassed for bring-up, all four DAC outputs are enabled, the DAC sample path
-uses the physical-DAC preimage mapper, and the FPGA TX lane mux is identity so
-the DAC-side `0x3021/0x7654` octetpath crossbar performs the board lane
-correction. In this mode BRAM/DDS/neuron channel N is physical DAC output N;
-the mapper is only the hidden byte-lane preimage before the LiteJESD core.
+uses native LiteJESD converter streams, and the FPGA TX lane mux uses the
+`dac_xbar` lane order for the DAC-side `0x3021/0x7654` octetpath crossbar.
+In this mode BRAM/DDS/neuron channel N remains a complete 64-bit source stream;
+no byte-lane preimage is applied between the source mux and LiteJESD.
 Clear bit 24 only when deliberately re-enabling ADC ILAS checking while
 debugging the expected ILAS fields.
 
 For the optional `--with-gth-tx-ila` diagnostic build, set `RW2[12]` to force
 all DAC sources to fixed 16-bit tag words before the DAC mapping logic. For
-example, `WRTE 2 0x010010E2` keeps the normal DAC diagnostic mode but replaces
+example, `WRTE 2 0x010010F8` keeps the normal DAC diagnostic mode but replaces
 the live/BRAM/neuron samples with a systematic tag pattern from `1111` through
-`FFFF`, plus `0F0F` as the final unique marker. The TX ILA then exposes the BRAM output, selected source,
-native byte-swap path, legacy preimage path, table-driven physical mapper path, legacy
+`FFFF`, plus `0F0F` as the final unique marker. The TX ILA then exposes the BRAM
+output, selected source, native stream path, whole-stream order path, legacy
 remap input/output, final LiteJESD converter inputs, raw LiteJESD lane data, and
 post-TX-lane-mux GTH user data.
 
-For the physical mapper, `RW2[9:8]` selects how source words are assigned to
-physical byte-lane outputs before the preimage is packed into LiteJESD
-converter buses:
+For the stream-order diagnostic mapper, `RW2[9:8]` selects how complete 64-bit
+source streams are assigned to LiteJESD converter inputs:
 
 | Source order | Meaning |
 | --- | --- |
@@ -535,10 +534,9 @@ converter buses:
 | `2` | Swap the first candidate pair for diagnostics |
 | `3` | Swap the upper candidate pair for diagnostics |
 
-Set `RW2[11:10]=1` to invert only the upper candidate-pair byte orientation,
-`2` to invert only the lower candidate pair, and `3` to invert all candidate
-byte pairs. Normal builds keep those bits clear. With `sample_map=3`, sweep
-candidate byte-lane ownership and TX lane mode using the helper below. To hand-test
+`RW2[11:10]` is intentionally ignored by the stream-order mapper so diagnostics
+cannot silently reintroduce a byte-lane preimage. With `sample_map=3`, sweep
+whole-stream ownership and TX lane mode using the helper below. To hand-test
 identity-lane source ownership, use:
 `RW2=0x01000006`, `0x01000106`, `0x01000206`, and `0x01000306`.
 The automated cabled-pair sweep is:
@@ -551,7 +549,7 @@ Before accepting the mapper, use a byte-asymmetric BRAM pattern rather than
 only sine waves:
 
 ```powershell
-python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010032 --rw2 0x010000E2 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
+python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010032 --rw2 0x010000F8 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
 ```
 
 The generated raw 16-bit sample stream starts `0x1201, 0x2302, 0x3403,

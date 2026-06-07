@@ -241,19 +241,6 @@ module daq_litejesd_dac_tx_path #(
                             (active_converter == 3'd4) ||
                             (active_converter >= 3'd5);
 
-    function [63:0] swap_sample_bytes64;
-        input [63:0] value;
-        integer j;
-        begin
-            for (j = 0; j < 4; j = j + 1) begin
-                swap_sample_bytes64[(16*j) +: 16] = {
-                    value[(16*j) +: 8],
-                    value[(16*j + 8) +: 8]
-                };
-            end
-        end
-    endfunction
-
     wire [63:0] program_converter0 = drive_converter0 ? program_word0 : dac_zero64;
     wire [63:0] program_converter1 = drive_converter1 ? program_word1 : dac_zero64;
     wire [63:0] program_converter2 = drive_converter2 ? program_word2 : dac_zero64;
@@ -343,25 +330,13 @@ module daq_litejesd_dac_tx_path #(
     wire [63:0] src_converter2 = tag_source_enable ? dac_tag_word2 : selected_src_converter2;
     wire [63:0] src_converter3 = tag_source_enable ? dac_tag_word3 : selected_src_converter3;
 
-    wire [63:0] preimage_converter0;
-    wire [63:0] preimage_converter1;
-    wire [63:0] preimage_converter2;
-    wire [63:0] preimage_converter3;
-
-    genvar preimage_index;
-    generate
-        for (preimage_index = 0; preimage_index < 4; preimage_index = preimage_index + 1) begin : gen_dac_sample_preimage
-            wire [15:0] desired0 = src_converter0[(16*preimage_index) +: 16];
-            wire [15:0] desired1 = src_converter1[(16*preimage_index) +: 16];
-            wire [15:0] desired2 = src_converter2[(16*preimage_index) +: 16];
-            wire [15:0] desired3 = src_converter3[(16*preimage_index) +: 16];
-
-            assign preimage_converter0[(16*preimage_index) +: 16] = {desired2[7:0], desired2[15:8]};
-            assign preimage_converter1[(16*preimage_index) +: 16] = {desired3[7:0], desired3[15:8]};
-            assign preimage_converter2[(16*preimage_index) +: 16] = {desired1[15:8], desired0[7:0]};
-            assign preimage_converter3[(16*preimage_index) +: 16] = {desired1[7:0], desired0[15:8]};
-        end
-    endgenerate
+    // The source mux output is already the complete per-DAC stream contract.
+    // Keep this ILA stage as an identity checkpoint so stale captures do not
+    // imply an active byte-lane preimage.
+    wire [63:0] preimage_converter0 = src_converter0;
+    wire [63:0] preimage_converter1 = src_converter1;
+    wire [63:0] preimage_converter2 = src_converter2;
+    wire [63:0] preimage_converter3 = src_converter3;
 
     wire [63:0] physical_converter0;
     wire [63:0] physical_converter1;
@@ -381,18 +356,19 @@ module daq_litejesd_dac_tx_path #(
     );
 
     wire [63:0] native_converter0 = src_converter0;
-    wire [63:0] native_converter1 = swap_sample_bytes64(src_converter1);
+    wire [63:0] native_converter1 = src_converter1;
     wire [63:0] native_converter2 = src_converter2;
-    wire [63:0] native_converter3 = swap_sample_bytes64(src_converter3);
+    wire [63:0] native_converter3 = src_converter3;
 
     // sample_map_mode:
-    //   0 = native LiteJESD converter-bus diagnostic.
-    //   1 = normal physical-DAC preimage. The four source streams are the
-    //       four user-visible DAC outputs; this adapter only hides the byte
-    //       placement needed before the LiteJESD lane splitter.
+    //   0 = native LiteJESD converter streams. This is the normal path: the
+    //       source mux outputs are passed through as complete 64-bit streams.
+    //   1 = whole-stream output-order diagnostic. It may reorder complete
+    //       streams but never bytes or halfwords.
     //   2 = legacy DAC39J84 sample-remap diagnostic. This intentionally mixes
     //       bytes from multiple source streams and must not be the default.
-    //   3 = physical-DAC preimage diagnostic alias with RW2[11:8] variations.
+    //   3 = whole-stream output-order diagnostic alias with RW2[9:8]
+    //       variations.
     wire use_legacy_remap = (sample_map_mode == 2'd2);
     wire use_physical_map = (sample_map_mode == 2'd1) ||
                             (sample_map_mode == 2'd3);

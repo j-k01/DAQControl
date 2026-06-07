@@ -48,52 +48,38 @@ data, the TX user clock is 250 MHz.
 It instantiates `litejesd_dac_tx` and builds four 64-bit source words. There
 are three DAC mapping paths exposed at runtime:
 
-- `sample_map=0`: native LMF841 diagnostic, where LiteJESD logical lanes are
-  adjacent high/low byte pairs for converters A/B/C/D, with the previously
-  observed odd-converter byte swap still available for A/B testing.
-- `sample_map=1`: normal physical-DAC preimage. `src0..src3` are the
-  user-visible physical DAC output streams. The mapper hides only the
-  byte-lane placement needed before the generated LiteJESD lane splitter.
+- `sample_map=0`: native LMF841 stream mode. `src0..src3` pass directly to
+  LiteJESD `converter0..3` as four complete 64-bit sample streams.
+- `sample_map=1`: whole-stream order diagnostic. It can reorder complete
+  source streams for connector-label experiments, but it never splits bytes or
+  halfwords.
 - `sample_map=2`: legacy byte-mixing remap diagnostic. This path intentionally
   combines bytes from different source streams and must not be used as the
   normal physical-DAC path.
-- `sample_map=3`: physical-DAC preimage diagnostic alias. It uses the same
-  table-driven mapper as `sample_map=1`, with `RW2[11:8]` variations enabled
-  for byte-order and connector-order experiments.
+- `sample_map=3`: whole-stream order diagnostic alias. It uses the same mapper
+  as `sample_map=1`, with `RW2[9:8]` stream-order variations enabled.
 
-The preimage is not a claim that the DAC39J84 itself requires non-adjacent
-logical byte pairs. It is a way to reproduce the Sundance-like internal
-core-lane placement while still keeping the hardware contract clean:
+The source mux contract is deliberately simple:
 `src0[63:0]..src3[63:0]` are four chronological 16-bit samples per independent
-DAC source. The legacy remap paths remain available only as diagnostics. The shell
-exports:
+DAC source. The shell must not turn those streams into byte-lane preimages
+before LiteJESD. Board lane correction is handled after LiteJESD by moving
+`TXDATA` and `TXCHARISK` together. The legacy remap paths remain available only
+as diagnostics. The shell exports:
 
 ```verilog
 gth_txdata[255:0]    // {lane7, ..., lane0}, 32 bits per lane
 gth_txcharisk[31:0]  // {lane7, ..., lane0}, 4 bits per lane
 ```
 
-`dac39j84_physical_mapper` is the normal hidden adapter. Source order `0`
-means physical DAC output N uses `srcN`; source order `1` reverses them, and
-source orders `2`/`3` swap one candidate pair at a time only for diagnostics.
-`map_mode[3:2]=0` uses the expected Sundance-style lane-pair preimage:
-
-```text
-candidate A: high J3, low J0
-candidate B: high J2, low J1
-candidate C: high J7, low J6
-candidate D: high J5, low J4
-```
-
-`map_mode[3:2]=1` flips only the upper candidate-pair orientation, `2` flips
-only the lower candidate-pair orientation, and `3` flips all candidate byte
-pairs. Those modes are for byte-orientation verification with asymmetric test
-patterns, not for source-number cargo culting.
+`dac39j84_physical_mapper` is a whole-stream order diagnostic. Source order `0`
+means LiteJESD converter N uses `srcN`; source order `1` reverses them, and
+source orders `2`/`3` swap one stream pair at a time only for diagnostics.
+`map_mode[3:2]` is intentionally ignored so this mapper cannot silently
+reintroduce byte-lane preimage behavior.
 
 For the current DAC39J84 initialization, the firmware default remains
-`sample_map=1`, TX lane mode 0, and `conv_sel=7` (`RW2=0x010000E2`), but
-`sample_map=1` now means the physical-DAC preimage mapper. The normal contract
-is:
+`sample_map=0`, TX lane mode 3, and `conv_sel=7` (`RW2=0x010000F8`). The normal
+contract is:
 
 ```text
 BRAM/DDS/neuron channel 0 -> physical DAC output 0
@@ -109,7 +95,7 @@ test must use a byte-asymmetric pattern such as
 bin while byte orientation is still wrong.
 
 ```powershell
-python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010032 --rw2 0x010000E2 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
+python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010032 --rw2 0x010000F8 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
 ```
 
 Connect `gth_txcharisk` in the same lane order as `gth_txdata` to the 8B/10B
