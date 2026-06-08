@@ -12,13 +12,13 @@ byte preimage:
 
     first CPU u32, for t1/t0:
         converter0 = {0D, 1C, 0B, 1A}
-        converter1 = {1D, 0C, 1B, 0A}
+        converter1 = {0C, 1D, 0A, 1B}
         converter2 = {3C, 2C, 3A, 2A}
         converter3 = {2D, 3D, 2B, 3B}
 
     second CPU u32, for t3/t2:
         converter0 = {0H, 1G, 0F, 1E}
-        converter1 = {1H, 0G, 1F, 0E}
+        converter1 = {0G, 1H, 0E, 1F}
         converter2 = {3G, 2G, 3E, 2E}
         converter3 = {2H, 3H, 2F, 3F}
 
@@ -150,8 +150,8 @@ def build_converter_programs(
         # Therefore append the t1/t0 preimage word first, then the t3/t2 word.
         conv0_w0 = pack_u32_bytes([s0["D"], s1["C"], s0["B"], s1["A"]])
         conv0_w1 = pack_u32_bytes([s0["H"], s1["G"], s0["F"], s1["E"]])
-        conv1_w0 = pack_u32_bytes([s1["D"], s0["C"], s1["B"], s0["A"]])
-        conv1_w1 = pack_u32_bytes([s1["H"], s0["G"], s1["F"], s0["E"]])
+        conv1_w0 = pack_u32_bytes([s0["C"], s1["D"], s0["A"], s1["B"]])
+        conv1_w1 = pack_u32_bytes([s0["G"], s1["H"], s0["E"], s1["F"]])
         conv2_w0 = pack_u32_bytes([s3["C"], s2["C"], s3["A"], s2["A"]])
         conv2_w1 = pack_u32_bytes([s3["G"], s2["G"], s3["E"], s2["E"]])
         conv3_w0 = pack_u32_bytes([s2["D"], s3["D"], s2["B"], s3["B"]])

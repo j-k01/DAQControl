@@ -65,8 +65,8 @@ module dac_source_to_converter_preimage (
     // CPU-visible 32-bit halves, for readability:
     //   converter0[31:0]  = {0D, 1C, 0B, 1A}
     //   converter0[63:32] = {0H, 1G, 0F, 1E}
-    //   converter1[31:0]  = {1D, 0C, 1B, 0A}
-    //   converter1[63:32] = {1H, 0G, 1F, 0E}
+    //   converter1[31:0]  = {0C, 1D, 0A, 1B}
+    //   converter1[63:32] = {0G, 1H, 0E, 1F}
     //   converter2[31:0]  = {3C, 2C, 3A, 2A}
     //   converter2[63:32] = {3G, 2G, 3E, 2E}
     //   converter3[31:0]  = {2D, 3D, 2B, 3B}
@@ -78,8 +78,8 @@ module dac_source_to_converter_preimage (
     };
 
     assign converter1 = {
-        s1_h, s0_g, s1_f, s0_e,
-        s1_d, s0_c, s1_b, s0_a
+        s0_g, s1_h, s0_e, s1_f,
+        s0_c, s1_d, s0_a, s1_b
     };
 
     assign converter2 = {
