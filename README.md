@@ -517,30 +517,27 @@ mux registers remain in their default identity state.
 Clear bit 24 only when deliberately re-enabling ADC ILAS checking while
 debugging the expected ILAS fields.
 
-For the optional `--with-gth-tx-ila` diagnostic build, set `RW2[12]` to force
-all DAC sources to fixed 16-bit tag words before the DAC mapping logic. For
-example, `WRTE 2 0x01001018` keeps the normal DAC diagnostic mode but replaces
-the live/BRAM/neuron samples with a systematic tag pattern from `1111` through
-`FFFF`, plus `0F0F` as the final unique marker. The TX ILA then exposes the BRAM
+For the optional `--with-gth-tx-ila` diagnostic build, keep `RW2[15:8]=0`
+unless you are deliberately testing TX polarity. The TX ILA exposes the BRAM
 output, selected source, native stream path, whole-stream order path, legacy
 remap input/output, final LiteJESD converter inputs, raw LiteJESD lane data, and
-post-TX-lane-mux GTH user data.
+post-TX-lane-mux GTH user data without needing any RW2 bits above bit 7.
 
-The old stream-order and sample-map controls are retained as ILA tags only.
-They do not select the live DAC output path. To check the DAC lane correction,
-keep source streams native and sweep only the TX lane mode when needed:
+The old sample-map control is retained as an ILA tag only. It does not select
+the live DAC output path. To check the DAC lane correction, keep source streams
+native and sweep only the TX lane mode when needed:
 `RW2=0x01000000`, `0x01000008`, `0x01000010`, and `0x01000018`
 before setting any ADC-only bits. The automated cabled-pair sweep is:
 
 ```powershell
-python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010033
+python scripts\sweep_dac_pair_mapper_uart.py --port COM10 --expect-build-id 0xDA010034
 ```
 
 Before accepting the lane map, use a byte-asymmetric BRAM pattern rather than
 only sine waves:
 
 ```powershell
-python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010033 --rw2 0x01000018 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
+python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010034 --rw2 0x01000018 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
 ```
 
 The generated raw 16-bit sample stream starts `0x1201, 0x2302, 0x3403,

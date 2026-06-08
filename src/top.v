@@ -826,21 +826,26 @@ module top #(
         .dest     (dac_sine_phase_inc_tx)
     );
 
-    wire [11:0] dac_tx_control_tx;
+    // Keep DAC control out of RW2[15:8]. Those bits drive GTH TX polarity.
+    // DAC-side runtime controls are limited to RW2[7:1]:
+    //   [2:1] ILA-only sample-map tag
+    //   [4:3] post-LiteJESD TX lane mode
+    //   [7:5] debug/source probe select
+    wire [6:0] dac_tx_control_tx;
     cdc_vector_sync #(
-        .WIDTH (12)
+        .WIDTH (7)
     ) u_dac_tx_control_sync (
         .dest_clk (gth_tx_usrclk2),
         .dest_rst (litejesd_reset),
-        .src      (rw_reg2[12:1]),
+        .src      (rw_reg2[7:1]),
         .dest     (dac_tx_control_tx)
     );
 
     wire [1:0] dac_sample_map_mode_tx = dac_tx_control_tx[1:0];
     wire [1:0] dac_tx_lane_mode_tx = dac_tx_control_tx[3:2];
     wire [2:0] dac_active_converter_tx = dac_tx_control_tx[6:4];
-    wire [3:0] dac_physical_map_mode_tx = dac_tx_control_tx[10:7];
-    wire       dac_tag_source_enable_tx = dac_tx_control_tx[11];
+    wire [3:0] dac_physical_map_mode_tx = 4'd0;
+    wire       dac_tag_source_enable_tx = 1'b0;
 
     wire [43:0] izh_cfg_bus_tx;
     cdc_vector_sync #(
@@ -1821,7 +1826,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_0033;
+    wire [31:0] build_id = 32'hDA01_0034;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]

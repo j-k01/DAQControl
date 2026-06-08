@@ -78,12 +78,9 @@
 #define RW2_DAC_TX_LANE_MASK     (3u << RW2_DAC_TX_LANE_SHIFT)
 #define RW2_DAC_CONV_SHIFT       5
 #define RW2_DAC_CONV_MASK        (7u << RW2_DAC_CONV_SHIFT)
+#define RW2_DAC_TX_POL_SHIFT     8
+#define RW2_DAC_TX_POL_MASK      (0xFFu << RW2_DAC_TX_POL_SHIFT)
 #define RW2_CAPTURE_STATUS_SEL (1u << 31)
-#define RW2_DAC_CANDIDATE_ORDER_SHIFT 8
-#define RW2_DAC_CANDIDATE_ORDER_MASK  (3u << RW2_DAC_CANDIDATE_ORDER_SHIFT)
-#define RW2_DAC_PAIR_ORIENT_SHIFT 10
-#define RW2_DAC_PAIR_ORIENT_MASK  (3u << RW2_DAC_PAIR_ORIENT_SHIFT)
-#define RW2_DAC_TAG_SOURCE        (1u << 12)
 #define RW2_LAUNCH_DEFAULT     (RW2_ADC1_ILAS_BYPASS | \
                                 (0u << RW2_DAC_SAMPLE_MAP_SHIFT) | \
                                 (3u << RW2_DAC_TX_LANE_SHIFT))
@@ -1228,10 +1225,9 @@ static void cmd_help(void)
     send_str("RW2 DAC TX diag: [2:1] sample_map is ILA-only; live path is native 4x channel streams\r\n");
     send_str("                 [4:3] tx_lane 0=identity 1=board_map 2=inverse_check 3=dac_xbar\r\n");
     send_str("                 [7:5] DAC debug select only; channel source select is NSRC\r\n");
-    send_str("                 [9:8]/[11:10] feed ILA diagnostics only, not live DAC output\r\n");
-    send_str("                 [12] force fixed ILA tag source: 1111/2222/.../FFFF/0F0F\r\n");
+    send_str("                 [15:8] TX polarity invert mask only; keep 0 unless debugging polarity\r\n");
     send_str("RW2 ADC1 JESD RX: [24] bypass ILAS check, [25] STPL check, [26] DP order\r\n");
-    send_str("                  firmware diagnostic default is RW2=0x01000018\r\n");
+    send_str("                  firmware diagnostic default is RW2=0x01000018; DAC-only safe value is 0x00000018\r\n");
     send_str("                  [29:28] capture format: 0=LiteJESD converters, 1=post-link lanes\r\n");
     send_str("                         2=Sundance normal, 3=Sundance reversed-byte\r\n");
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
@@ -1289,12 +1285,8 @@ static void cmd_status(void)
     send_uint((rw2 & RW2_DAC_TX_LANE_MASK) >> RW2_DAC_TX_LANE_SHIFT);
     send_str(" debug_sel=");
     send_uint((rw2 & RW2_DAC_CONV_MASK) >> RW2_DAC_CONV_SHIFT);
-    send_str(" src_order=");
-    send_uint((rw2 & RW2_DAC_CANDIDATE_ORDER_MASK) >> RW2_DAC_CANDIDATE_ORDER_SHIFT);
-    send_str(" pair_orient=");
-    send_uint((rw2 & RW2_DAC_PAIR_ORIENT_MASK) >> RW2_DAC_PAIR_ORIENT_SHIFT);
-    send_str(" tag=");
-    send_uint((rw2 & RW2_DAC_TAG_SOURCE) ? 1u : 0u);
+    send_str(" txpol=");
+    send_hex((rw2 & RW2_DAC_TX_POL_MASK) >> RW2_DAC_TX_POL_SHIFT);
     send_str(" last_src=");
     send_uint((Xil_In32(RW_REG3) & RW3_DAC_SOURCE_MASK) >> RW3_DAC_SOURCE_SHIFT);
     send_str("\r\n");

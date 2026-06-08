@@ -86,14 +86,14 @@ BRAM/DDS/neuron channel 2 -> physical DAC output 2
 BRAM/DDS/neuron channel 3 -> physical DAC output 3
 ```
 
-The legacy remap and source-order sweeps are diagnostic tools only. Do not
-turn probe-source numbers from those modes into a final mapping. The acceptance
-test must use a byte-asymmetric pattern such as
+The legacy remap calculations are diagnostic probes only. Do not turn
+probe-source numbers from those modes into a final mapping. The acceptance test
+must use a byte-asymmetric pattern such as
 `0x1201, 0x2302, 0x3403, 0x4504, ...`, because a sine can land at the right FFT
 bin while byte orientation is still wrong.
 
 ```powershell
-python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010033 --rw2 0x01000018 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
+python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010034 --rw2 0x01000018 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
 ```
 
 Connect `gth_txcharisk` in the same lane order as `gth_txdata` to the 8B/10B
