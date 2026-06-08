@@ -283,13 +283,21 @@ module daq_litejesd_dac_tx_path #(
     wire [63:0] src_converter2 = tag_source_enable ? dac_tag_word2 : selected_src_converter2;
     wire [63:0] src_converter3 = tag_source_enable ? dac_tag_word3 : selected_src_converter3;
 
-    // The source mux output is already the complete per-DAC stream contract.
-    // Keep this ILA stage as an identity checkpoint so stale captures do not
-    // imply an active byte-lane preimage.
-    wire [63:0] preimage_converter0 = src_converter0;
-    wire [63:0] preimage_converter1 = src_converter1;
-    wire [63:0] preimage_converter2 = src_converter2;
-    wire [63:0] preimage_converter3 = src_converter3;
+    wire [63:0] preimage_converter0;
+    wire [63:0] preimage_converter1;
+    wire [63:0] preimage_converter2;
+    wire [63:0] preimage_converter3;
+
+    dac_source_to_converter_preimage u_dac_source_to_converter_preimage (
+        .source0    (src_converter0),
+        .source1    (src_converter1),
+        .source2    (src_converter2),
+        .source3    (src_converter3),
+        .converter0 (preimage_converter0),
+        .converter1 (preimage_converter1),
+        .converter2 (preimage_converter2),
+        .converter3 (preimage_converter3)
+    );
 
     wire [63:0] physical_converter0;
     wire [63:0] physical_converter1;
@@ -314,8 +322,8 @@ module daq_litejesd_dac_tx_path #(
     wire [63:0] native_converter3 = src_converter3;
 
     // sample_map_mode is retained only as a status/ILA tag. The live DAC path
-    // below always passes whole 64-bit source streams into LiteJESD converters.
-    // The physical/remap blocks are always computed for comparison probes, but
+    // below always passes the named source-to-converter preimage into LiteJESD.
+    // The native/physical/remap blocks are computed for comparison probes, but
     // they are not selected into the output path.
 
     wire [63:0] remap_in0 = src_converter0;
@@ -338,12 +346,10 @@ module daq_litejesd_dac_tx_path #(
         .converter3_out (remap_out3)
     );
 
-    // The live datapath always consumes complete DAC channel input streams.
-    // Legacy byte-mixing diagnostics remain visible in ILA probes only.
-    wire [63:0] jesd_converter0 = native_converter0;
-    wire [63:0] jesd_converter1 = native_converter1;
-    wire [63:0] jesd_converter2 = native_converter2;
-    wire [63:0] jesd_converter3 = native_converter3;
+    wire [63:0] jesd_converter0 = preimage_converter0;
+    wire [63:0] jesd_converter1 = preimage_converter1;
+    wire [63:0] jesd_converter2 = preimage_converter2;
+    wire [63:0] jesd_converter3 = preimage_converter3;
 
     assign debug_bram_words = {
         program_word3,
