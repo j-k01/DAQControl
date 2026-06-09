@@ -554,8 +554,11 @@ class LiteJESD204BLinkTX(Module):
         self.submodules.ilas = ilas
 
         # Datapath
+        # Link datapaths operate on one serialized lane. The framer's
+        # octets-per-frame argument is therefore JESD F, i.e. octets per lane
+        # per frame, not the aggregate converter sample octets in a frame.
         datapath = LiteJESD204BLinkTXDatapath(data_width,
-            jesd_settings.octets_per_frame,
+            jesd_settings.octets_per_lane,
             jesd_settings.transport.k)
         self.submodules.datapath = datapath
         self.comb += datapath.sink.eq(sink)
@@ -659,8 +662,11 @@ class LiteJESD204BLinkRX(Module):
         self.submodules.ilas = ilas
 
         # Datapath
+        # Link datapaths operate on one serialized lane. The deframer's
+        # octets-per-frame argument is therefore JESD F, i.e. octets per lane
+        # per frame, not the aggregate converter sample octets in a frame.
         datapath = LiteJESD204BLinkRXDatapath(data_width,
-            jesd_settings.octets_per_frame,
+            jesd_settings.octets_per_lane,
             jesd_settings.transport.k)
         self.submodules.datapath = datapath
         self.comb += source.eq(datapath.source)

@@ -9,7 +9,7 @@
 // Filename   : litejesd_dac_tx.v
 // Device     : xczu9eg-ffvb1156-2-e
 // LiteX sha1 : --------
-// Date       : 2026-06-01 00:12:04
+// Date       : 2026-06-08 21:41:19
 //------------------------------------------------------------------------------
 
 `timescale 1ns / 1ps
@@ -1446,8 +1446,8 @@ always @(*) begin
     core_litejesd204blinktx0_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx0_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx0_framer_enable) begin
-        core_litejesd204blinktx0_framer_source_frame_last <= 4'd10;
-        if ((core_litejesd204blinktx0_framer_counter == 4'd15)) begin
+        core_litejesd204blinktx0_framer_source_frame_last <= 4'd15;
+        if ((core_litejesd204blinktx0_framer_counter == 3'd7)) begin
             core_litejesd204blinktx0_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -1619,8 +1619,8 @@ always @(*) begin
     core_litejesd204blinktx1_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx1_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx1_framer_enable) begin
-        core_litejesd204blinktx1_framer_source_frame_last <= 4'd10;
-        if ((core_litejesd204blinktx1_framer_counter == 4'd15)) begin
+        core_litejesd204blinktx1_framer_source_frame_last <= 4'd15;
+        if ((core_litejesd204blinktx1_framer_counter == 3'd7)) begin
             core_litejesd204blinktx1_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -1792,8 +1792,8 @@ always @(*) begin
     core_litejesd204blinktx2_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx2_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx2_framer_enable) begin
-        core_litejesd204blinktx2_framer_source_frame_last <= 4'd10;
-        if ((core_litejesd204blinktx2_framer_counter == 4'd15)) begin
+        core_litejesd204blinktx2_framer_source_frame_last <= 4'd15;
+        if ((core_litejesd204blinktx2_framer_counter == 3'd7)) begin
             core_litejesd204blinktx2_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -1965,8 +1965,8 @@ always @(*) begin
     core_litejesd204blinktx3_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx3_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx3_framer_enable) begin
-        core_litejesd204blinktx3_framer_source_frame_last <= 4'd10;
-        if ((core_litejesd204blinktx3_framer_counter == 4'd15)) begin
+        core_litejesd204blinktx3_framer_source_frame_last <= 4'd15;
+        if ((core_litejesd204blinktx3_framer_counter == 3'd7)) begin
             core_litejesd204blinktx3_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -2138,8 +2138,8 @@ always @(*) begin
     core_litejesd204blinktx4_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx4_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx4_framer_enable) begin
-        core_litejesd204blinktx4_framer_source_frame_last <= 4'd10;
-        if ((core_litejesd204blinktx4_framer_counter == 4'd15)) begin
+        core_litejesd204blinktx4_framer_source_frame_last <= 4'd15;
+        if ((core_litejesd204blinktx4_framer_counter == 3'd7)) begin
             core_litejesd204blinktx4_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -2311,8 +2311,8 @@ always @(*) begin
     core_litejesd204blinktx5_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx5_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx5_framer_enable) begin
-        core_litejesd204blinktx5_framer_source_frame_last <= 4'd10;
-        if ((core_litejesd204blinktx5_framer_counter == 4'd15)) begin
+        core_litejesd204blinktx5_framer_source_frame_last <= 4'd15;
+        if ((core_litejesd204blinktx5_framer_counter == 3'd7)) begin
             core_litejesd204blinktx5_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -2484,8 +2484,8 @@ always @(*) begin
     core_litejesd204blinktx6_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx6_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx6_framer_enable) begin
-        core_litejesd204blinktx6_framer_source_frame_last <= 4'd10;
-        if ((core_litejesd204blinktx6_framer_counter == 4'd15)) begin
+        core_litejesd204blinktx6_framer_source_frame_last <= 4'd15;
+        if ((core_litejesd204blinktx6_framer_counter == 3'd7)) begin
             core_litejesd204blinktx6_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -2657,8 +2657,8 @@ always @(*) begin
     core_litejesd204blinktx7_framer_source_frame_last <= 4'd0;
     core_litejesd204blinktx7_framer_source_multiframe_last <= 4'd0;
     if (core_litejesd204blinktx7_framer_enable) begin
-        core_litejesd204blinktx7_framer_source_frame_last <= 4'd10;
-        if ((core_litejesd204blinktx7_framer_counter == 4'd15)) begin
+        core_litejesd204blinktx7_framer_source_frame_last <= 4'd15;
+        if ((core_litejesd204blinktx7_framer_counter == 3'd7)) begin
             core_litejesd204blinktx7_framer_source_multiframe_last <= 4'd8;
         end
     end
@@ -4291,5 +4291,5 @@ FDPE #(
 endmodule
 
 // -----------------------------------------------------------------------------
-//  Auto-Generated by LiteX on 2026-06-01 00:12:04.
+//  Auto-Generated by LiteX on 2026-06-08 21:41:19.
 //------------------------------------------------------------------------------
