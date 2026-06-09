@@ -55,7 +55,7 @@ module hmc7044_init #(
         ST_READ_LOAD     = 3'd6,
         ST_DONE          = 3'd7;
 
-    localparam [7:0] SEQ_LEN = 8'd128;
+    localparam [7:0] SEQ_LEN = 8'd142;
     localparam [3:0] READ_LEN = 4'd14;
 
     reg [2:0]  state = ST_IDLE;
@@ -106,7 +106,7 @@ module hmc7044_init #(
         input [7:0] idx;
         begin
             case (idx)
-                8'd2, 8'd47, 8'd117, 8'd120, 8'd122, 8'd124, 8'd126: seq_is_delay = 1'b1;
+                8'd2, 8'd47, 8'd131, 8'd134, 8'd136, 8'd138, 8'd140: seq_is_delay = 1'b1;
                 default: seq_is_delay = 1'b0;
             endcase
         end
@@ -118,11 +118,11 @@ module hmc7044_init #(
             case (idx)
                 8'd2:   seq_delay_us = 32'd100;
                 8'd47:  seq_delay_us = 32'd10_000;
-                8'd117: seq_delay_us = 32'd10_000;
-                8'd120: seq_delay_us = 32'd1_000;
-                8'd122: seq_delay_us = 32'd1_000;
-                8'd124: seq_delay_us = 32'd100;
-                8'd126: seq_delay_us = 32'd10_000;
+                8'd131: seq_delay_us = 32'd10_000;
+                8'd134: seq_delay_us = 32'd1_000;
+                8'd136: seq_delay_us = 32'd1_000;
+                8'd138: seq_delay_us = 32'd100;
+                8'd140: seq_delay_us = 32'd10_000;
                 default: seq_delay_us = 32'd0;
             endcase
         end
@@ -246,13 +246,27 @@ module hmc7044_init #(
                 8'd113: seq_reg_addr = 12'h126;
                 8'd114: seq_reg_addr = 12'h129;
                 8'd115: seq_reg_addr = 12'h122;
-                8'd116: seq_reg_addr = 12'h001;
-                8'd118: seq_reg_addr = 12'h001;
-                8'd119: seq_reg_addr = 12'h001;
-                8'd121: seq_reg_addr = 12'h001;
-                8'd123: seq_reg_addr = 12'h001;
-                8'd125: seq_reg_addr = 12'h001;
-                8'd127: seq_reg_addr = 12'h008;
+                8'd116: seq_reg_addr = 12'h141;
+                8'd117: seq_reg_addr = 12'h142;
+                8'd118: seq_reg_addr = 12'h148;
+                8'd119: seq_reg_addr = 12'h143;
+                8'd120: seq_reg_addr = 12'h144;
+                8'd121: seq_reg_addr = 12'h147;
+                8'd122: seq_reg_addr = 12'h140;
+                8'd123: seq_reg_addr = 12'h14B;
+                8'd124: seq_reg_addr = 12'h14C;
+                8'd125: seq_reg_addr = 12'h152;
+                8'd126: seq_reg_addr = 12'h14D;
+                8'd127: seq_reg_addr = 12'h14E;
+                8'd128: seq_reg_addr = 12'h151;
+                8'd129: seq_reg_addr = 12'h14A;
+                8'd130: seq_reg_addr = 12'h001;
+                8'd132: seq_reg_addr = 12'h001;
+                8'd133: seq_reg_addr = 12'h001;
+                8'd135: seq_reg_addr = 12'h001;
+                8'd137: seq_reg_addr = 12'h001;
+                8'd139: seq_reg_addr = 12'h001;
+                8'd141: seq_reg_addr = 12'h008;
                 default: seq_reg_addr = 12'h000;
             endcase
         end
@@ -376,13 +390,30 @@ module hmc7044_init #(
                 8'd113: seq_reg_data = 8'h00;
                 8'd114: seq_reg_data = 8'h00;
                 8'd115: seq_reg_data = 8'hD1;
-                8'd116: seq_reg_data = 8'h02;
-                8'd118: seq_reg_data = 8'h00;
-                8'd119: seq_reg_data = 8'h80;
+                // HMC outputs 12/13 are the ADC2 device clock and SYSREF.
+                // They were disabled by the initial output clear above; program
+                // them to match the working ADC1 clock/SYSREF outputs.
+                8'd116: seq_reg_data = 8'h03;
+                8'd117: seq_reg_data = 8'h00;
+                8'd118: seq_reg_data = 8'h01;
+                8'd119: seq_reg_data = 8'h00;
+                8'd120: seq_reg_data = 8'h00;
                 8'd121: seq_reg_data = 8'h00;
-                8'd123: seq_reg_data = 8'h04;
-                8'd125: seq_reg_data = 8'h00;
-                8'd127: seq_reg_data = 8'hAD;
+                8'd122: seq_reg_data = 8'hD1;
+                8'd123: seq_reg_data = 8'h00;
+                8'd124: seq_reg_data = 8'h03;
+                8'd125: seq_reg_data = 8'h10;
+                8'd126: seq_reg_data = 8'h00;
+                8'd127: seq_reg_data = 8'h00;
+                8'd128: seq_reg_data = 8'h00;
+                8'd129: seq_reg_data = 8'hD1;
+                8'd130: seq_reg_data = 8'h02;
+                8'd132: seq_reg_data = 8'h00;
+                8'd133: seq_reg_data = 8'h80;
+                8'd135: seq_reg_data = 8'h00;
+                8'd137: seq_reg_data = 8'h04;
+                8'd139: seq_reg_data = 8'h00;
+                8'd141: seq_reg_data = 8'hAD;
                 default: seq_reg_data = 8'h00;
             endcase
         end
