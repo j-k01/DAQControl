@@ -17,14 +17,17 @@
     defined(XPAR_DAC1_PROGRAM_BRAM_CTRL_S_AXI_BASEADDR) && \
     defined(XPAR_DAC2_PROGRAM_BRAM_CTRL_S_AXI_BASEADDR) && \
     defined(XPAR_DAC3_PROGRAM_BRAM_CTRL_S_AXI_BASEADDR) && \
-    defined(XPAR_ADC_CAPTURE_BRAM_CTRL_S_AXI_BASEADDR)
+    defined(XPAR_ADC0_CAPTURE_BRAM_CTRL_S_AXI_BASEADDR) && \
+    defined(XPAR_ADC1_CAPTURE_BRAM_CTRL_S_AXI_BASEADDR)
 #define HAS_BRAM_DATAPLANE 1
 #define DAC_PROGRAM_CHANNELS 4u
 #define DAC_PROGRAM_FRAMES 4096u
 #define DAC_PROGRAM_WORDS_PER_CHANNEL (DAC_PROGRAM_FRAMES * 2u)
-#define ADC_CAPTURE_BRAM_BASE XPAR_ADC_CAPTURE_BRAM_CTRL_S_AXI_BASEADDR
+#define ADC0_CAPTURE_BRAM_BASE XPAR_ADC0_CAPTURE_BRAM_CTRL_S_AXI_BASEADDR
+#define ADC1_CAPTURE_BRAM_BASE XPAR_ADC1_CAPTURE_BRAM_CTRL_S_AXI_BASEADDR
 #define ADC_CAPTURE_FRAMES 4096u
 #define ADC_CAPTURE_WORDS_PER_FRAME 8u
+#define ADC_CAPTURE_WORDS_PER_CHIP_FRAME 4u
 #else
 #define HAS_BRAM_DATAPLANE 0
 #endif
@@ -1309,14 +1312,12 @@ static void cmd_dprd(u32 channel, u32 start_word, u32 words)
 static void cmd_capture(u32 frames, int use_dac_program)
 {
     u32 status = 0;
-    u32 i;
-    u32 words;
+    u32 frame;
+    u32 word;
 
     if (frames == 0u || frames > ADC_CAPTURE_FRAMES) {
         frames = ADC_CAPTURE_FRAMES;
     }
-    words = frames * ADC_CAPTURE_WORDS_PER_FRAME;
-
     trigger_capture(use_dac_program);
     if (!wait_capture_done(&status)) {
         send_str("ERR capture timeout; ");
@@ -1330,12 +1331,23 @@ static void cmd_capture(u32 frames, int use_dac_program)
     send_byte(CAPTURE_SYNC2);
     send_byte(CAPTURE_SYNC3);
 
-    for (i = 0; i < words; i++) {
-        u32 sample = Xil_In32(ADC_CAPTURE_BRAM_BASE + i * 4u);
-        send_byte((u8)(sample & 0xFFu));
-        send_byte((u8)((sample >> 8) & 0xFFu));
-        send_byte((u8)((sample >> 16) & 0xFFu));
-        send_byte((u8)((sample >> 24) & 0xFFu));
+    for (frame = 0; frame < frames; frame++) {
+        for (word = 0; word < ADC_CAPTURE_WORDS_PER_CHIP_FRAME; word++) {
+            u32 sample = Xil_In32(ADC0_CAPTURE_BRAM_BASE +
+                                  (frame * ADC_CAPTURE_WORDS_PER_CHIP_FRAME + word) * 4u);
+            send_byte((u8)(sample & 0xFFu));
+            send_byte((u8)((sample >> 8) & 0xFFu));
+            send_byte((u8)((sample >> 16) & 0xFFu));
+            send_byte((u8)((sample >> 24) & 0xFFu));
+        }
+        for (word = 0; word < ADC_CAPTURE_WORDS_PER_CHIP_FRAME; word++) {
+            u32 sample = Xil_In32(ADC1_CAPTURE_BRAM_BASE +
+                                  (frame * ADC_CAPTURE_WORDS_PER_CHIP_FRAME + word) * 4u);
+            send_byte((u8)(sample & 0xFFu));
+            send_byte((u8)((sample >> 8) & 0xFFu));
+            send_byte((u8)((sample >> 16) & 0xFFu));
+            send_byte((u8)((sample >> 24) & 0xFFu));
+        }
     }
 }
 #endif

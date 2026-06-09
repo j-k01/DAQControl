@@ -61,20 +61,29 @@ module dataplane_bram_ip (
     input  wire         dac3_fabric_rst,
     input  wire [7:0]   dac3_fabric_we,
 
-    input  wire [31:0]  adc_axi_addr,
-    input  wire         adc_axi_clk,
-    input  wire [31:0]  adc_axi_din,
-    output wire [31:0]  adc_axi_dout,
-    input  wire         adc_axi_en,
-    input  wire         adc_axi_rst,
-    input  wire [3:0]   adc_axi_we,
+    input  wire [31:0]  adc0_axi_addr,
+    input  wire         adc0_axi_clk,
+    input  wire [31:0]  adc0_axi_din,
+    output wire [31:0]  adc0_axi_dout,
+    input  wire         adc0_axi_en,
+    input  wire         adc0_axi_rst,
+    input  wire [3:0]   adc0_axi_we,
+    input  wire [31:0]  adc1_axi_addr,
+    input  wire         adc1_axi_clk,
+    input  wire [31:0]  adc1_axi_din,
+    output wire [31:0]  adc1_axi_dout,
+    input  wire         adc1_axi_en,
+    input  wire         adc1_axi_rst,
+    input  wire [3:0]   adc1_axi_we,
     input  wire [31:0]  adc_fabric_addr,
     input  wire         adc_fabric_clk,
-    input  wire [255:0] adc_fabric_din,
-    output wire [255:0] adc_fabric_dout,
+    input  wire [127:0] adc0_fabric_din,
+    output wire [127:0] adc0_fabric_dout,
+    input  wire [127:0] adc1_fabric_din,
+    output wire [127:0] adc1_fabric_dout,
     input  wire         adc_fabric_en,
     input  wire         adc_fabric_rst,
-    input  wire [31:0]  adc_fabric_we
+    input  wire [15:0]  adc_fabric_we
 );
 
     dac0_program_bram u_dac0_program_bram (
@@ -137,24 +146,39 @@ module dataplane_bram_ip (
         .doutb (dac3_fabric_dout)
     );
 
-    adc_capture_bram u_adc_capture_bram (
-        .clka  (adc_axi_clk),
-        .ena   (adc_axi_en),
-        .wea   (adc_axi_we),
-        .addra (adc_axi_addr[16:2]),
-        .dina  (adc_axi_din),
-        .douta (adc_axi_dout),
+    adc0_capture_bram u_adc0_capture_bram (
+        .clka  (adc0_axi_clk),
+        .ena   (adc0_axi_en),
+        .wea   (adc0_axi_we),
+        .addra (adc0_axi_addr[15:2]),
+        .dina  (adc0_axi_din),
+        .douta (adc0_axi_dout),
         .clkb  (adc_fabric_clk),
         .enb   (adc_fabric_en),
         .web   (adc_fabric_we),
-        .addrb (adc_fabric_addr[16:5]),
-        .dinb  (adc_fabric_din),
-        .doutb (adc_fabric_dout)
+        .addrb (adc_fabric_addr[15:4]),
+        .dinb  (adc0_fabric_din),
+        .doutb (adc0_fabric_dout)
+    );
+
+    adc1_capture_bram u_adc1_capture_bram (
+        .clka  (adc1_axi_clk),
+        .ena   (adc1_axi_en),
+        .wea   (adc1_axi_we),
+        .addra (adc1_axi_addr[15:2]),
+        .dina  (adc1_axi_din),
+        .douta (adc1_axi_dout),
+        .clkb  (adc_fabric_clk),
+        .enb   (adc_fabric_en),
+        .web   (adc_fabric_we),
+        .addrb (adc_fabric_addr[15:4]),
+        .dinb  (adc1_fabric_din),
+        .doutb (adc1_fabric_dout)
     );
 
     wire unused = dac0_axi_rst ^ dac0_fabric_rst ^
                   dac1_axi_rst ^ dac1_fabric_rst ^
                   dac2_axi_rst ^ dac2_fabric_rst ^
                   dac3_axi_rst ^ dac3_fabric_rst ^
-                  adc_axi_rst ^ adc_fabric_rst;
+                  adc0_axi_rst ^ adc1_axi_rst ^ adc_fabric_rst;
 endmodule

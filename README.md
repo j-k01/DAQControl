@@ -99,8 +99,8 @@ readbacks selected by `RW7[4:0]`: `0=status`, `1=lane status`, `2=events`,
 select `adc_chN` with `RW7[9:8]` and low/high half with `RW7[10]`. The `ADCS`
 UART command is the convenient wrapper for these fields.
 
-With the BRAM dataplane build, ADC capture frames are 256-bit fabric frames
-streamed as eight little-endian u32 words:
+With the BRAM dataplane build, each ADC chip has its own 128-bit capture BRAM.
+Firmware streams the two chip memories as one logical eight-word frame:
 `adc_ch0 low/high`, `adc_ch1 low/high`, `adc_ch2 low/high`, `adc_ch3 low/high`.
 The main plotting script reconstructs these as `adc_ch0` through `adc_ch3`.
 
@@ -369,11 +369,11 @@ CAPS
 CAPT 4096
 ```
 
-`CAPT [frames]` leaves the normal DAC generator running and writes 256-bit
-logical ADC frames into the ADC capture BRAM before streaming little-endian
-32-bit words over UART after sync bytes `FE 10 CA FE`. Each frame is eight
-words: `adc_ch0 low/high`, `adc_ch1 low/high`, `adc_ch2 low/high`,
-`adc_ch3 low/high`. `PCAP [frames]` is the explicit variant that
+`CAPT [frames]` leaves the normal DAC generator running and writes the ADC0
+and ADC1 chip streams into separate capture BRAMs before streaming
+little-endian 32-bit words over UART after sync bytes `FE 10 CA FE`. Each
+logical frame is eight words: `adc_ch0 low/high`, `adc_ch1 low/high`,
+`adc_ch2 low/high`, `adc_ch3 low/high`. `PCAP [frames]` is the explicit variant that
 enables/restarts the DAC BRAM program players first; use it only after
 uploading channel program words with `PROG`.
 
@@ -384,8 +384,8 @@ must be even so every uploaded 64-bit frame is complete. Upload with:
 
 The generated Xilinx BMG IP is intentionally asymmetric: each DAC program RAM
 has Port A at 32-bit read/write width for the AXI BRAM controller and Port B at
-64-bit read width for fabric playback. The ADC capture RAM is Port A 32-bit for
-MicroBlaze readout and Port B 256-bit for fabric capture. Project generation
+64-bit read width for fabric playback. Each ADC chip capture RAM is Port A
+32-bit for MicroBlaze readout and Port B 128-bit for fabric capture. Project generation
 checks these generated IP widths and fails if Vivado collapses them.
 
 ```text

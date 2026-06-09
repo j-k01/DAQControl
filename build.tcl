@@ -85,7 +85,8 @@ proc validate_microblaze_bd_contract {} {
         dac1_program_bram_ctrl
         dac2_program_bram_ctrl
         dac3_program_bram_ctrl
-        adc_capture_bram_ctrl
+        adc0_capture_bram_ctrl
+        adc1_capture_bram_ctrl
     }
     foreach cell_name $bram_dataplane_cells {
         set count [llength [get_bd_cells -quiet $cell_name]]
@@ -102,7 +103,8 @@ proc validate_microblaze_bd_contract {} {
         DAC1_AXI_BRAM_PORTA
         DAC2_AXI_BRAM_PORTA
         DAC3_AXI_BRAM_PORTA
-        ADC_AXI_BRAM_PORTA
+        ADC0_AXI_BRAM_PORTA
+        ADC1_AXI_BRAM_PORTA
     }
     foreach port_name $bram_dataplane_ports {
         set count [llength [get_bd_intf_ports -quiet $port_name]]
@@ -119,7 +121,8 @@ proc validate_microblaze_bd_contract {} {
         dac1_program_bram
         dac2_program_bram
         dac3_program_bram
-        adc_capture_bram
+        adc0_capture_bram
+        adc1_capture_bram
     }
     foreach ip_name $bram_dataplane_ips {
         set count [llength [get_ips -quiet $ip_name]]

@@ -88,13 +88,20 @@ module microblaze_bd_wrapper (
     output wire        DAC3_AXI_BRAM_PORTA_en,
     output wire        DAC3_AXI_BRAM_PORTA_rst,
     output wire [3:0]  DAC3_AXI_BRAM_PORTA_we,
-    output wire [31:0] ADC_AXI_BRAM_PORTA_addr,
-    output wire        ADC_AXI_BRAM_PORTA_clk,
-    output wire [31:0] ADC_AXI_BRAM_PORTA_din,
-    input  wire [31:0] ADC_AXI_BRAM_PORTA_dout,
-    output wire        ADC_AXI_BRAM_PORTA_en,
-    output wire        ADC_AXI_BRAM_PORTA_rst,
-    output wire [3:0]  ADC_AXI_BRAM_PORTA_we
+    output wire [31:0] ADC0_AXI_BRAM_PORTA_addr,
+    output wire        ADC0_AXI_BRAM_PORTA_clk,
+    output wire [31:0] ADC0_AXI_BRAM_PORTA_din,
+    input  wire [31:0] ADC0_AXI_BRAM_PORTA_dout,
+    output wire        ADC0_AXI_BRAM_PORTA_en,
+    output wire        ADC0_AXI_BRAM_PORTA_rst,
+    output wire [3:0]  ADC0_AXI_BRAM_PORTA_we,
+    output wire [31:0] ADC1_AXI_BRAM_PORTA_addr,
+    output wire        ADC1_AXI_BRAM_PORTA_clk,
+    output wire [31:0] ADC1_AXI_BRAM_PORTA_din,
+    input  wire [31:0] ADC1_AXI_BRAM_PORTA_dout,
+    output wire        ADC1_AXI_BRAM_PORTA_en,
+    output wire        ADC1_AXI_BRAM_PORTA_rst,
+    output wire [3:0]  ADC1_AXI_BRAM_PORTA_we
 );
     initial begin
         RW_REG0_0 = 32'h0009_0000;
@@ -143,12 +150,18 @@ module microblaze_bd_wrapper (
     assign DAC3_AXI_BRAM_PORTA_en = 1'b0;
     assign DAC3_AXI_BRAM_PORTA_rst = 1'b0;
     assign DAC3_AXI_BRAM_PORTA_we = 4'd0;
-    assign ADC_AXI_BRAM_PORTA_addr = 32'd0;
-    assign ADC_AXI_BRAM_PORTA_clk = Clk;
-    assign ADC_AXI_BRAM_PORTA_din = 32'd0;
-    assign ADC_AXI_BRAM_PORTA_en = 1'b0;
-    assign ADC_AXI_BRAM_PORTA_rst = 1'b0;
-    assign ADC_AXI_BRAM_PORTA_we = 4'd0;
+    assign ADC0_AXI_BRAM_PORTA_addr = 32'd0;
+    assign ADC0_AXI_BRAM_PORTA_clk = Clk;
+    assign ADC0_AXI_BRAM_PORTA_din = 32'd0;
+    assign ADC0_AXI_BRAM_PORTA_en = 1'b0;
+    assign ADC0_AXI_BRAM_PORTA_rst = 1'b0;
+    assign ADC0_AXI_BRAM_PORTA_we = 4'd0;
+    assign ADC1_AXI_BRAM_PORTA_addr = 32'd0;
+    assign ADC1_AXI_BRAM_PORTA_clk = Clk;
+    assign ADC1_AXI_BRAM_PORTA_din = 32'd0;
+    assign ADC1_AXI_BRAM_PORTA_en = 1'b0;
+    assign ADC1_AXI_BRAM_PORTA_rst = 1'b0;
+    assign ADC1_AXI_BRAM_PORTA_we = 4'd0;
 
     wire unused = Clk ^ reset ^ rs232_uart_rxd ^ RO_REG0_WE_0 ^ RO_REG1_WE_0 ^
                   RO_REG2_WE_0 ^ RO_REG3_WE_0 ^ RO_REG4_WE_0 ^ RO_REG5_WE_0 ^
@@ -157,7 +170,7 @@ module microblaze_bd_wrapper (
                   ^RO_REG4_IN_0 ^ ^RO_REG5_IN_0 ^ ^RO_REG6_IN_0 ^ ^RO_REG7_IN_0 ^
                   ^DAC0_AXI_BRAM_PORTA_dout ^ ^DAC1_AXI_BRAM_PORTA_dout ^
                   ^DAC2_AXI_BRAM_PORTA_dout ^ ^DAC3_AXI_BRAM_PORTA_dout ^
-                  ^ADC_AXI_BRAM_PORTA_dout;
+                  ^ADC0_AXI_BRAM_PORTA_dout ^ ^ADC1_AXI_BRAM_PORTA_dout;
 endmodule
 
 `define DAC_PROGRAM_BRAM_STUB(module_name) \
@@ -186,22 +199,42 @@ endmodule
 `DAC_PROGRAM_BRAM_STUB(dac2_program_bram)
 `DAC_PROGRAM_BRAM_STUB(dac3_program_bram)
 
-module adc_capture_bram (
+module adc0_capture_bram (
     input  wire         clka,
     input  wire         ena,
     input  wire [3:0]   wea,
-    input  wire [14:0]  addra,
+    input  wire [13:0]  addra,
     input  wire [31:0]  dina,
     output wire [31:0]  douta,
     input  wire         clkb,
     input  wire         enb,
-    input  wire [31:0]  web,
+    input  wire [15:0]  web,
     input  wire [11:0]  addrb,
-    input  wire [255:0] dinb,
-    output wire [255:0] doutb
+    input  wire [127:0] dinb,
+    output wire [127:0] doutb
 );
     assign douta = 32'd0;
-    assign doutb = 256'd0;
+    assign doutb = 128'd0;
+    wire unused = clka ^ ena ^ ^wea ^ ^addra ^ ^dina ^
+                  clkb ^ enb ^ ^web ^ ^addrb ^ ^dinb;
+endmodule
+
+module adc1_capture_bram (
+    input  wire         clka,
+    input  wire         ena,
+    input  wire [3:0]   wea,
+    input  wire [13:0]  addra,
+    input  wire [31:0]  dina,
+    output wire [31:0]  douta,
+    input  wire         clkb,
+    input  wire         enb,
+    input  wire [15:0]  web,
+    input  wire [11:0]  addrb,
+    input  wire [127:0] dinb,
+    output wire [127:0] doutb
+);
+    assign douta = 32'd0;
+    assign doutb = 128'd0;
     wire unused = clka ^ ena ^ ^wea ^ ^addra ^ ^dina ^
                   clkb ^ enb ^ ^web ^ ^addrb ^ ^dinb;
 endmodule

@@ -18,11 +18,13 @@ module adc_bram_capture #(
 
     output wire [31:0] bram_addr,
     output wire        bram_clk,
-    output wire [255:0] bram_din,
-    input  wire [255:0] bram_dout,
+    output wire [127:0] adc0_bram_din,
+    input  wire [127:0] adc0_bram_dout,
+    output wire [127:0] adc1_bram_din,
+    input  wire [127:0] adc1_bram_dout,
     output wire        bram_en,
     output wire        bram_rst,
-    output wire [31:0] bram_we,
+    output wire [15:0] bram_we,
 
     output wire [31:0] status
 );
@@ -43,19 +45,21 @@ module adc_bram_capture #(
 
     assign bram_clk  = clk;
     assign bram_rst  = 1'b0;
-    assign bram_addr = {{(27-ADDR_W){1'b0}}, addr_count, 5'b00000};
-    assign bram_din  = {
-        ch3_high,
-        ch3_low,
-        ch2_high,
-        ch2_low,
+    assign bram_addr = {{(28-ADDR_W){1'b0}}, addr_count, 4'b0000};
+    assign adc0_bram_din = {
         ch1_high,
         ch1_low,
         ch0_high,
         ch0_low
     };
+    assign adc1_bram_din = {
+        ch3_high,
+        ch3_low,
+        ch2_high,
+        ch2_low
+    };
     assign bram_en   = capture_write;
-    assign bram_we   = {32{capture_write}};
+    assign bram_we   = {16{capture_write}};
     wire [15:0] status_count = captured_count;
 
     always @(posedge clk) begin
@@ -103,6 +107,6 @@ module adc_bram_capture #(
         status_count
     };
 
-    wire unused = ^bram_dout;
+    wire unused = ^adc0_bram_dout ^ ^adc1_bram_dout;
 
 endmodule

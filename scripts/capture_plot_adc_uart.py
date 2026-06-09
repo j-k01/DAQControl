@@ -727,7 +727,7 @@ def main():
         "--words",
         type=int,
         default=DEFAULT_FRAMES,
-        help="Number of ADC 256-bit frames to capture. Each frame has eight u32 words.",
+        help="Number of logical ADC frames to capture. Each frame has eight u32 words across ADC0/ADC1 capture BRAMs.",
     )
     parser.add_argument("--sources", default="0,1,2,3,4,5,6,7")
     parser.add_argument(

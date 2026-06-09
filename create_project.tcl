@@ -249,16 +249,19 @@ proc verify_bram_dataplane_ips {} {
         require_ip_property $ip CONFIG.Register_PortB_Output_of_Memory_Core false
     }
 
-    require_ip_property adc_capture_bram CONFIG.Write_Width_A 32
-    require_ip_property adc_capture_bram CONFIG.Read_Width_A 32
-    require_ip_property adc_capture_bram CONFIG.Write_Width_B 256
-    require_ip_property adc_capture_bram CONFIG.Read_Width_B 256
-    require_ip_property adc_capture_bram CONFIG.Write_Depth_A 32768
-    require_ip_property adc_capture_bram CONFIG.Use_Byte_Write_Enable true
-    require_ip_property adc_capture_bram CONFIG.Register_PortA_Output_of_Memory_Primitives false
-    require_ip_property adc_capture_bram CONFIG.Register_PortA_Output_of_Memory_Core false
-    require_ip_property adc_capture_bram CONFIG.Register_PortB_Output_of_Memory_Primitives false
-    require_ip_property adc_capture_bram CONFIG.Register_PortB_Output_of_Memory_Core false
+    foreach chip {0 1} {
+        set ip adc${chip}_capture_bram
+        require_ip_property $ip CONFIG.Write_Width_A 32
+        require_ip_property $ip CONFIG.Read_Width_A 32
+        require_ip_property $ip CONFIG.Write_Width_B 128
+        require_ip_property $ip CONFIG.Read_Width_B 128
+        require_ip_property $ip CONFIG.Write_Depth_A 16384
+        require_ip_property $ip CONFIG.Use_Byte_Write_Enable true
+        require_ip_property $ip CONFIG.Register_PortA_Output_of_Memory_Primitives false
+        require_ip_property $ip CONFIG.Register_PortA_Output_of_Memory_Core false
+        require_ip_property $ip CONFIG.Register_PortB_Output_of_Memory_Primitives false
+        require_ip_property $ip CONFIG.Register_PortB_Output_of_Memory_Core false
+    }
 }
 
 proc create_microblaze_bd {bd_name include_bram_dataplane} {
@@ -333,7 +336,8 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
         foreach ch {0 1 2 3} {
             create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* dac${ch}_program_bram_ctrl
         }
-        create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* adc_capture_bram_ctrl
+        create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* adc0_capture_bram_ctrl
+        create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* adc1_capture_bram_ctrl
         foreach bram_ctrl {dac0_program_bram_ctrl dac1_program_bram_ctrl dac2_program_bram_ctrl dac3_program_bram_ctrl} {
             set_property -dict [list \
                 CONFIG.SINGLE_PORT_BRAM {1} \
@@ -342,16 +346,19 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
                 CONFIG.SUPPORTS_NARROW_BURST {1} \
             ] [get_bd_cells $bram_ctrl]
         }
-        set_property -dict [list \
-            CONFIG.SINGLE_PORT_BRAM {1} \
-            CONFIG.PROTOCOL {AXI4} \
-            CONFIG.DATA_WIDTH {32} \
-            CONFIG.SUPPORTS_NARROW_BURST {1} \
-        ] [get_bd_cells adc_capture_bram_ctrl]
+        foreach bram_ctrl {adc0_capture_bram_ctrl adc1_capture_bram_ctrl} {
+            set_property -dict [list \
+                CONFIG.SINGLE_PORT_BRAM {1} \
+                CONFIG.PROTOCOL {AXI4} \
+                CONFIG.DATA_WIDTH {32} \
+                CONFIG.SUPPORTS_NARROW_BURST {1} \
+            ] [get_bd_cells $bram_ctrl]
+        }
         foreach ch {0 1 2 3} {
             export_bram_ctrl_port dac${ch}_program_bram_ctrl/BRAM_PORTA DAC${ch}_AXI_BRAM_PORTA
         }
-        export_bram_ctrl_port adc_capture_bram_ctrl/BRAM_PORTA ADC_AXI_BRAM_PORTA
+        export_bram_ctrl_port adc0_capture_bram_ctrl/BRAM_PORTA ADC0_AXI_BRAM_PORTA
+        export_bram_ctrl_port adc1_capture_bram_ctrl/BRAM_PORTA ADC1_AXI_BRAM_PORTA
     }
 
     if {[llength [get_bd_cells -quiet microblaze_0_axi_periph]] == 0} {
@@ -360,7 +367,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     }
     set axi_masters 2
     if {$include_bram_dataplane} {
-        set axi_masters 7
+        set axi_masters 8
     }
     set_property CONFIG.NUM_MI $axi_masters [get_bd_cells microblaze_0_axi_periph]
 
@@ -371,12 +378,13 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
         foreach ch {0 1 2 3} mi {M02_AXI M03_AXI M04_AXI M05_AXI} {
             safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/$mi] [get_bd_intf_pins dac${ch}_program_bram_ctrl/S_AXI]
         }
-        safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M06_AXI] [get_bd_intf_pins adc_capture_bram_ctrl/S_AXI]
+        safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M06_AXI] [get_bd_intf_pins adc0_capture_bram_ctrl/S_AXI]
+        safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M07_AXI] [get_bd_intf_pins adc1_capture_bram_ctrl/S_AXI]
     }
 
     set axi_clk_pins {ACLK S00_ACLK M00_ACLK M01_ACLK}
     if {$include_bram_dataplane} {
-        lappend axi_clk_pins M02_ACLK M03_ACLK M04_ACLK M05_ACLK M06_ACLK
+        lappend axi_clk_pins M02_ACLK M03_ACLK M04_ACLK M05_ACLK M06_ACLK M07_ACLK
     }
     foreach pin_name $axi_clk_pins {
         safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins microblaze_0_axi_periph/$pin_name]
@@ -389,7 +397,8 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
         foreach ch {0 1 2 3} {
             safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins dac${ch}_program_bram_ctrl/s_axi_aclk]
         }
-        safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins adc_capture_bram_ctrl/s_axi_aclk]
+        safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins adc0_capture_bram_ctrl/s_axi_aclk]
+        safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins adc1_capture_bram_ctrl/s_axi_aclk]
     }
 
     set resetn_pin [get_bd_pins -quiet */peripheral_aresetn]
@@ -399,7 +408,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     set resetn_pin [lindex $resetn_pin 0]
     set axi_rst_pins {ARESETN S00_ARESETN M00_ARESETN M01_ARESETN}
     if {$include_bram_dataplane} {
-        lappend axi_rst_pins M02_ARESETN M03_ARESETN M04_ARESETN M05_ARESETN M06_ARESETN
+        lappend axi_rst_pins M02_ARESETN M03_ARESETN M04_ARESETN M05_ARESETN M06_ARESETN M07_ARESETN
     }
     foreach pin_name $axi_rst_pins {
         safe_connect_bd_net $resetn_pin [get_bd_pins microblaze_0_axi_periph/$pin_name]
@@ -410,7 +419,8 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
         foreach ch {0 1 2 3} {
             safe_connect_bd_net $resetn_pin [get_bd_pins dac${ch}_program_bram_ctrl/s_axi_aresetn]
         }
-        safe_connect_bd_net $resetn_pin [get_bd_pins adc_capture_bram_ctrl/s_axi_aresetn]
+        safe_connect_bd_net $resetn_pin [get_bd_pins adc0_capture_bram_ctrl/s_axi_aresetn]
+        safe_connect_bd_net $resetn_pin [get_bd_pins adc1_capture_bram_ctrl/s_axi_aresetn]
     }
 
     foreach idx {0 1 2 3 4 5 6 7} {
@@ -427,7 +437,8 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
         assign_mb_addr_exact microblaze_0/Data dac1_program_bram_ctrl/S_AXI/Mem0 0xC0010000 0x00008000
         assign_mb_addr_exact microblaze_0/Data dac2_program_bram_ctrl/S_AXI/Mem0 0xC0020000 0x00008000
         assign_mb_addr_exact microblaze_0/Data dac3_program_bram_ctrl/S_AXI/Mem0 0xC0030000 0x00008000
-        assign_mb_addr_exact microblaze_0/Data adc_capture_bram_ctrl/S_AXI/Mem0 0xC0100000 0x00020000
+        assign_mb_addr_exact microblaze_0/Data adc0_capture_bram_ctrl/S_AXI/Mem0 0xC0100000 0x00010000
+        assign_mb_addr_exact microblaze_0/Data adc1_capture_bram_ctrl/S_AXI/Mem0 0xC0110000 0x00010000
     }
 
     validate_bd_design
@@ -443,7 +454,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     }
 
     if {$include_bram_dataplane} {
-        foreach bram_ctrl {dac0_program_bram_ctrl dac1_program_bram_ctrl dac2_program_bram_ctrl dac3_program_bram_ctrl adc_capture_bram_ctrl} {
+        foreach bram_ctrl {dac0_program_bram_ctrl dac1_program_bram_ctrl dac2_program_bram_ctrl dac3_program_bram_ctrl adc0_capture_bram_ctrl adc1_capture_bram_ctrl} {
             require_cell_property $bram_ctrl CONFIG.DATA_WIDTH 32
             require_cell_property $bram_ctrl CONFIG.SINGLE_PORT_BRAM 1
         }
@@ -600,23 +611,25 @@ if {$include_bram_dataplane} {
         ] [get_ips dac${ch}_program_bram]
     }
 
-    create_ip -name blk_mem_gen -vendor xilinx.com -library ip -module_name adc_capture_bram -dir $ip_dir
-    set_property -dict [list \
-        CONFIG.Memory_Type            {True_Dual_Port_RAM} \
-        CONFIG.Interface_Type         {Native} \
-        CONFIG.Use_Byte_Write_Enable  {true} \
-        CONFIG.Byte_Size              {8} \
-        CONFIG.Write_Width_A          {32} \
-        CONFIG.Read_Width_A           {32} \
-        CONFIG.Write_Width_B          {256} \
-        CONFIG.Read_Width_B           {256} \
-        CONFIG.Write_Depth_A          {32768} \
-        CONFIG.Assume_Synchronous_Clk {false} \
-        CONFIG.Register_PortA_Output_of_Memory_Primitives {false} \
-        CONFIG.Register_PortA_Output_of_Memory_Core {false} \
-        CONFIG.Register_PortB_Output_of_Memory_Primitives {false} \
-        CONFIG.Register_PortB_Output_of_Memory_Core {false} \
-    ] [get_ips adc_capture_bram]
+    foreach chip {0 1} {
+        create_ip -name blk_mem_gen -vendor xilinx.com -library ip -module_name adc${chip}_capture_bram -dir $ip_dir
+        set_property -dict [list \
+            CONFIG.Memory_Type            {True_Dual_Port_RAM} \
+            CONFIG.Interface_Type         {Native} \
+            CONFIG.Use_Byte_Write_Enable  {true} \
+            CONFIG.Byte_Size              {8} \
+            CONFIG.Write_Width_A          {32} \
+            CONFIG.Read_Width_A           {32} \
+            CONFIG.Write_Width_B          {128} \
+            CONFIG.Read_Width_B           {128} \
+            CONFIG.Write_Depth_A          {16384} \
+            CONFIG.Assume_Synchronous_Clk {false} \
+            CONFIG.Register_PortA_Output_of_Memory_Primitives {false} \
+            CONFIG.Register_PortA_Output_of_Memory_Core {false} \
+            CONFIG.Register_PortB_Output_of_Memory_Primitives {false} \
+            CONFIG.Register_PortB_Output_of_Memory_Core {false} \
+        ] [get_ips adc${chip}_capture_bram]
+    }
 }
 
 if {$include_staged_gt} {

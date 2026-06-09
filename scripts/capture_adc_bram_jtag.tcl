@@ -9,14 +9,15 @@ if {[llength $argv] > 1} {
     set out_file [file normalize [lindex $argv 1]]
 }
 
-set words [expr {$frames * 4}]
+set chip_words [expr {$frames * 4}]
 
 set REG_BASE  0x44A10000
 set RW_REG1   [format "0x%08X" [expr {$REG_BASE + 0x04}]]
 set RW_REG2   [format "0x%08X" [expr {$REG_BASE + 0x08}]]
 set RW_REG3   [format "0x%08X" [expr {$REG_BASE + 0x0C}]]
-set RO_REG3   [format "0x%08X" [expr {$REG_BASE + 0x1C}]]
-set ADC_CAPTURE_BRAM_BASE 0xC0100000
+set RO_REG3   [format "0x%08X" [expr {$REG_BASE + 0x2C}]]
+set ADC0_CAPTURE_BRAM_BASE 0xC0100000
+set ADC1_CAPTURE_BRAM_BASE 0xC0110000
 
 proc read32 {addr} {
     return [expr {[lindex [mrd -value $addr] 0] & 0xffffffff}]
@@ -64,19 +65,29 @@ if {!$done} {
     error [format "ADC BRAM capture timed out, status=0x%08X" $status]
 }
 
-puts [format "Capture complete, status=0x%08X. Reading %d frames / %d words from ADC BRAM..." $status $frames $words]
-set samples [mrd -value [format "0x%08X" $ADC_CAPTURE_BRAM_BASE] $words]
+puts [format "Capture complete, status=0x%08X. Reading %d frames from ADC0/ADC1 capture BRAMs..." $status $frames]
+set adc0_samples [mrd -value [format "0x%08X" $ADC0_CAPTURE_BRAM_BASE] $chip_words]
+set adc1_samples [mrd -value [format "0x%08X" $ADC1_CAPTURE_BRAM_BASE] $chip_words]
 
 set fd [open $out_file w]
 puts $fd "frame,source,word_hex,lo16,hi16,lo16_signed,hi16_signed"
-set index 0
-foreach sample $samples {
-    set word [expr {$sample & 0xffffffff}]
-    set lo [expr {$word & 0xffff}]
-    set hi [expr {($word >> 16) & 0xffff}]
-    puts $fd [format "%d,%d,0x%08X,%d,%d,%d,%d" \
-        [expr {$index / 4}] [expr {$index % 4}] $word $lo $hi [signed16 $lo] [signed16 $hi]]
-    incr index
+for {set frame 0} {$frame < $frames} {incr frame} {
+    for {set word_index 0} {$word_index < 4} {incr word_index} {
+        set sample [lindex $adc0_samples [expr {$frame * 4 + $word_index}]]
+        set word [expr {$sample & 0xffffffff}]
+        set lo [expr {$word & 0xffff}]
+        set hi [expr {($word >> 16) & 0xffff}]
+        puts $fd [format "%d,%d,0x%08X,%d,%d,%d,%d" \
+            $frame $word_index $word $lo $hi [signed16 $lo] [signed16 $hi]]
+    }
+    for {set word_index 0} {$word_index < 4} {incr word_index} {
+        set sample [lindex $adc1_samples [expr {$frame * 4 + $word_index}]]
+        set word [expr {$sample & 0xffffffff}]
+        set lo [expr {$word & 0xffff}]
+        set hi [expr {($word >> 16) & 0xffff}]
+        puts $fd [format "%d,%d,0x%08X,%d,%d,%d,%d" \
+            $frame [expr {$word_index + 4}] $word $lo $hi [signed16 $lo] [signed16 $hi]]
+    }
 }
 close $fd
 
