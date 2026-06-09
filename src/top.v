@@ -460,10 +460,9 @@ module top #(
     wire [63:0] dac_program_word1_reg;
     wire [63:0] dac_program_word2_reg;
     wire [63:0] dac_program_word3_reg;
-    wire [63:0] dac_neuron_word0_async;
-    wire [63:0] dac_neuron_word1_async;
-    wire [63:0] dac_neuron_word2_async;
-    wire [63:0] dac_neuron_word3_async;
+    wire [3:0]  izh_spike_flags_fabric;
+    wire [3:0]  izh_spike_flags_tx;
+    wire [7:0]  dac_source_modes_fabric;
     wire [7:0]  dac_source_modes_tx;
     wire [31:0] dac_neuron_debug_async;
     wire [31:0] dac_neuron_debug_reg;
@@ -852,6 +851,47 @@ module top #(
     wire        adc_stpl_enable_ctrl = adc_new_control_enable ? rw_reg5[9] : rw_reg2[25];
     wire [7:0]  gth_rx_polarity_ctrl = adc_new_control_enable ? rw_reg5[23:16] : rw_reg2[23:16];
 
+    reg        izh_cfg_strobe_d = 1'b0;
+    reg        izh_cfg_strobe_fabric = 1'b0;
+    reg [31:0] izh_cfg_value_fabric = 32'd0;
+    reg [3:0]  izh_cfg_param_fabric = 4'd0;
+    reg [1:0]  izh_cfg_channel_fabric = 2'd0;
+    reg        izh_cfg_all_fabric = 1'b0;
+
+    always @(posedge clk_200) begin
+        if (fabric_rst) begin
+            izh_cfg_strobe_d <= 1'b0;
+            izh_cfg_strobe_fabric <= 1'b0;
+            izh_cfg_value_fabric <= 32'd0;
+            izh_cfg_param_fabric <= 4'd0;
+            izh_cfg_channel_fabric <= 2'd0;
+            izh_cfg_all_fabric <= 1'b0;
+        end else begin
+            izh_cfg_strobe_d <= rw_reg3[7];
+            izh_cfg_strobe_fabric <= rw_reg3[7] & ~izh_cfg_strobe_d;
+            if (rw_reg3[7] & ~izh_cfg_strobe_d) begin
+                izh_cfg_value_fabric <= rw_reg1;
+                izh_cfg_param_fabric <= rw_reg3[11:8];
+                izh_cfg_channel_fabric <= rw_reg3[13:12];
+                izh_cfg_all_fabric <= rw_reg3[14];
+            end
+        end
+    end
+
+    izh_dac_bank u_izh_dac_bank (
+        .clk           (clk_200),
+        .reset         (fabric_rst),
+        .cfg_strobe    (izh_cfg_strobe_fabric),
+        .cfg_channel   (izh_cfg_channel_fabric),
+        .cfg_all       (izh_cfg_all_fabric),
+        .cfg_param     (izh_cfg_param_fabric),
+        .cfg_value     (izh_cfg_value_fabric),
+        .debug_channel (rw_reg2[7:5]),
+        .source_modes  (dac_source_modes_fabric),
+        .debug_word    (dac_neuron_debug_async),
+        .spike_flags   (izh_spike_flags_fabric)
+    );
+
 `ifdef DAQ_WITH_GTH
     wire        gth_reset_all = fabric_rst | rw_reg2[0] | ~hmc_auto_done;
     wire        gth_tx_userclk_active;
@@ -941,70 +981,24 @@ module top #(
     wire [3:0] dac_physical_map_mode_tx = 4'd0;
     wire       dac_tag_source_enable_tx = 1'b0;
 
-    wire [43:0] izh_cfg_bus_tx;
     cdc_vector_sync #(
-        .WIDTH (44)
-    ) u_izh_cfg_bus_sync (
+        .WIDTH (8)
+    ) u_dac_source_modes_sync (
         .dest_clk (gth_tx_usrclk2),
         .dest_rst (litejesd_reset),
-        .src      ({rw_reg1, rw_reg3[15:4]}),
-        .dest     (izh_cfg_bus_tx)
+        .src      (dac_source_modes_fabric),
+        .dest     (dac_source_modes_tx)
     );
 
-    wire       izh_cfg_strobe_level_tx = izh_cfg_bus_tx[3];
-    reg [43:0] izh_cfg_bus_latched_tx = 44'd0;
-    reg [2:0]  izh_cfg_strobe_count_tx = 3'd0;
-    reg        izh_cfg_strobe_seen_tx = 1'b0;
-    reg        izh_cfg_strobe_tx_r = 1'b0;
-
-    always @(posedge gth_tx_usrclk2) begin
-        if (litejesd_reset) begin
-            izh_cfg_bus_latched_tx <= 44'd0;
-            izh_cfg_strobe_count_tx <= 3'd0;
-            izh_cfg_strobe_seen_tx <= 1'b0;
-            izh_cfg_strobe_tx_r <= 1'b0;
-        end else if (!izh_cfg_strobe_level_tx) begin
-            izh_cfg_strobe_count_tx <= 3'd0;
-            izh_cfg_strobe_seen_tx <= 1'b0;
-            izh_cfg_strobe_tx_r <= 1'b0;
-        end else begin
-            izh_cfg_bus_latched_tx <= izh_cfg_bus_tx;
-            izh_cfg_strobe_tx_r <= 1'b0;
-
-            if (!izh_cfg_strobe_seen_tx) begin
-                if (izh_cfg_strobe_count_tx == 3'd4) begin
-                    izh_cfg_strobe_tx_r <= 1'b1;
-                    izh_cfg_strobe_seen_tx <= 1'b1;
-                end else begin
-                    izh_cfg_strobe_count_tx <= izh_cfg_strobe_count_tx + 1'b1;
-                end
-            end
-        end
-    end
-
-    wire [31:0] izh_cfg_value_tx = izh_cfg_bus_latched_tx[43:12];
-    wire [11:0] izh_cfg_ctrl_tx = izh_cfg_bus_latched_tx[11:0];
-    wire [3:0] izh_cfg_param_tx = izh_cfg_ctrl_tx[7:4];
-    wire [1:0] izh_cfg_channel_tx = izh_cfg_ctrl_tx[9:8];
-    wire       izh_cfg_all_tx = izh_cfg_ctrl_tx[10];
-    wire       izh_cfg_strobe_tx = izh_cfg_strobe_tx_r;
-
-    izh_dac_bank u_izh_dac_bank (
-        .clk           (gth_tx_usrclk2),
-        .reset         (litejesd_reset),
-        .cfg_strobe    (izh_cfg_strobe_tx),
-        .cfg_channel   (izh_cfg_channel_tx),
-        .cfg_all       (izh_cfg_all_tx),
-        .cfg_param     (izh_cfg_param_tx),
-        .cfg_value     (izh_cfg_value_tx),
-        .debug_channel (dac_active_converter_tx),
-        .dac_word0     (dac_neuron_word0_async),
-        .dac_word1     (dac_neuron_word1_async),
-        .dac_word2     (dac_neuron_word2_async),
-        .dac_word3     (dac_neuron_word3_async),
-        .source_modes  (dac_source_modes_tx),
-        .debug_word    (dac_neuron_debug_async),
-        .spike_flags   ()
+    // The neurons live in the fabric clock domain.  Only their one-bit spike
+    // events cross into the JESD domain, where the DAC-rate pulse shapers live.
+    cdc_vector_sync #(
+        .WIDTH (4)
+    ) u_izh_spike_flags_sync (
+        .dest_clk (gth_tx_usrclk2),
+        .dest_rst (litejesd_reset),
+        .src      (izh_spike_flags_fabric),
+        .dest     (izh_spike_flags_tx)
     );
 
 `ifdef DAQ_WITH_BRAM_DATAPLANE
@@ -1150,10 +1144,7 @@ module top #(
         .program_word1    (dac_program_word1_async),
         .program_word2    (dac_program_word2_async),
         .program_word3    (dac_program_word3_async),
-        .neuron_word0     (dac_neuron_word0_async),
-        .neuron_word1     (dac_neuron_word1_async),
-        .neuron_word2     (dac_neuron_word2_async),
-        .neuron_word3     (dac_neuron_word3_async),
+        .neuron_spikes    (izh_spike_flags_tx),
         .litejesd_ready   (litejesd_ready_async),
         .status           (litejesd_status_async),
         .triangle_word    (litejesd_triangle_async),
@@ -1309,12 +1300,7 @@ module top #(
     assign dac_program_word1_async = 64'd0;
     assign dac_program_word2_async = 64'd0;
     assign dac_program_word3_async = 64'd0;
-    assign dac_neuron_word0_async = 64'd0;
-    assign dac_neuron_word1_async = 64'd0;
-    assign dac_neuron_word2_async = 64'd0;
-    assign dac_neuron_word3_async = 64'd0;
     assign dac_source_modes_tx = 8'd0;
-    assign dac_neuron_debug_async = 32'd0;
     assign dac_program_status_async = 32'd0;
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     assign dac0_bram_addr = 32'd0;
@@ -1997,7 +1983,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_003B;
+    wire [31:0] build_id = 32'hDA01_003C;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]

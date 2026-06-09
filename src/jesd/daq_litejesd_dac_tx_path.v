@@ -27,10 +27,7 @@ module daq_litejesd_dac_tx_path #(
     input  wire [63:0]   program_word1,
     input  wire [63:0]   program_word2,
     input  wire [63:0]   program_word3,
-    input  wire [63:0]   neuron_word0,
-    input  wire [63:0]   neuron_word1,
-    input  wire [63:0]   neuron_word2,
-    input  wire [63:0]   neuron_word3,
+    input  wire [3:0]    neuron_spikes,
 
     output wire          litejesd_ready,
     output wire [31:0]   status,
@@ -222,6 +219,58 @@ module daq_litejesd_dac_tx_path #(
     wire [63:0] dac_tag_word1 = {16'h8888, 16'h7777, 16'h6666, 16'h5555};
     wire [63:0] dac_tag_word2 = {16'hCCCC, 16'hBBBB, 16'hAAAA, 16'h9999};
     wire [63:0] dac_tag_word3 = {16'h0F0F, 16'hFFFF, 16'hEEEE, 16'hDDDD};
+
+    wire [15:0] neuron_sample0;
+    wire [15:0] neuron_sample1;
+    wire [15:0] neuron_sample2;
+    wire [15:0] neuron_sample3;
+    wire [63:0] neuron_word0;
+    wire [63:0] neuron_word1;
+    wire [63:0] neuron_word2;
+    wire [63:0] neuron_word3;
+
+    izh_spike_trapezoid u_izh_spike_trapezoid0 (
+        .clk        (jesd_clk),
+        .reset      (jesd_rst || !enable),
+        .spike      (neuron_spikes[0]),
+        .active     (),
+        .dac_sample (neuron_sample0),
+        .dac_word   (neuron_word0)
+    );
+
+    izh_spike_trapezoid u_izh_spike_trapezoid1 (
+        .clk        (jesd_clk),
+        .reset      (jesd_rst || !enable),
+        .spike      (neuron_spikes[1]),
+        .active     (),
+        .dac_sample (neuron_sample1),
+        .dac_word   (neuron_word1)
+    );
+
+    izh_spike_trapezoid u_izh_spike_trapezoid2 (
+        .clk        (jesd_clk),
+        .reset      (jesd_rst || !enable),
+        .spike      (neuron_spikes[2]),
+        .active     (),
+        .dac_sample (neuron_sample2),
+        .dac_word   (neuron_word2)
+    );
+
+    izh_spike_trapezoid u_izh_spike_trapezoid3 (
+        .clk        (jesd_clk),
+        .reset      (jesd_rst || !enable),
+        .spike      (neuron_spikes[3]),
+        .active     (),
+        .dac_sample (neuron_sample3),
+        .dac_word   (neuron_word3)
+    );
+
+    wire unused_neuron_samples = ^{
+        neuron_sample0,
+        neuron_sample1,
+        neuron_sample2,
+        neuron_sample3
+    };
 
     // Each DAC channel owns one 64-bit time-vector mux.  Every source uses the
     // same contract: [15:0] is the first sample, [63:48] is the fourth sample.

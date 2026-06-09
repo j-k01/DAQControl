@@ -10,10 +10,6 @@ module izh_dac_bank (
     input  wire [31:0] cfg_value,
     input  wire [2:0]  debug_channel,
 
-    output wire [63:0] dac_word0,
-    output wire [63:0] dac_word1,
-    output wire [63:0] dac_word2,
-    output wire [63:0] dac_word3,
     output wire [7:0]  source_modes,
     output wire [31:0] debug_word,
     output wire [3:0]  spike_flags
@@ -48,9 +44,8 @@ module izh_dac_bank (
 
     wire signed [31:0] v_out [0:3];
     wire signed [31:0] u_out [0:3];
-    wire [15:0] dac_sample [0:3];
-    wire [63:0] dac_word [0:3];
     wire [3:0] spike;
+    wire [3:0] step_enable;
 
     integer cfg_i;
 
@@ -162,32 +157,42 @@ module izh_dac_bank (
     genvar neuron_idx;
     generate
         for (neuron_idx = 0; neuron_idx < 4; neuron_idx = neuron_idx + 1) begin : gen_izh_channels
-            izh_dac_channel u_izh_dac_channel (
+            reg [23:0] update_counter = 24'd0;
+            wire [23:0] update_reload = (update_period[neuron_idx] <= 24'd1) ?
+                                         24'd0 : (update_period[neuron_idx] - 1'b1);
+
+            always @(posedge clk) begin
+                if (reset | neuron_reset[neuron_idx]) begin
+                    update_counter <= 24'd0;
+                end else if (update_reload == 24'd0) begin
+                    update_counter <= 24'd0;
+                end else if (update_counter == update_reload) begin
+                    update_counter <= 24'd0;
+                end else begin
+                    update_counter <= update_counter + 1'b1;
+                end
+            end
+
+            assign step_enable[neuron_idx] = (update_counter == 24'd0);
+
+            izh_neuron u_izh_neuron (
                 .clk        (clk),
                 .reset      (reset | neuron_reset[neuron_idx]),
                 .a_param    (a_param[neuron_idx]),
                 .b_param    (b_param[neuron_idx]),
                 .c_param    (c_param[neuron_idx]),
                 .d_param    (d_param[neuron_idx]),
-                .i_param    (i_param[neuron_idx]),
+                .I          (i_param[neuron_idx]),
                 .v_timestep (timestep_param[neuron_idx]),
-                .i_constant (i_constant[neuron_idx]),
-                .v_offset   (v_offset[neuron_idx]),
-                .update_period(update_period[neuron_idx]),
-                .direct_vout_enable(direct_vout_mode[neuron_idx]),
-                .spike      (spike[neuron_idx]),
+                .I_constant (i_constant[neuron_idx]),
+                .step_enable(step_enable[neuron_idx]),
+                .SPIKE      (spike[neuron_idx]),
                 .v_out      (v_out[neuron_idx]),
-                .u_out      (u_out[neuron_idx]),
-                .dac_sample (dac_sample[neuron_idx]),
-                .dac_word   (dac_word[neuron_idx])
+                .u_out      (u_out[neuron_idx])
             );
         end
     endgenerate
 
-    assign dac_word0 = dac_word[0];
-    assign dac_word1 = dac_word[1];
-    assign dac_word2 = dac_word[2];
-    assign dac_word3 = dac_word[3];
     assign source_modes = {
         source_mode[3],
         source_mode[2],

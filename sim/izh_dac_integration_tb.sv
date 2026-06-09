@@ -92,10 +92,6 @@ module izh_dac_integration_tb;
     reg [3:0]  cfg_param = 4'd0;
     reg [31:0] cfg_value = 32'd0;
     reg [2:0]  debug_channel = 3'd1;
-    wire [63:0] bank_word0;
-    wire [63:0] bank_word1;
-    wire [63:0] bank_word2;
-    wire [63:0] bank_word3;
     wire [7:0]  bank_source_modes;
     wire [31:0] bank_debug_word;
     wire [3:0]  bank_spike_flags;
@@ -109,10 +105,6 @@ module izh_dac_integration_tb;
         .cfg_param     (cfg_param),
         .cfg_value     (cfg_value),
         .debug_channel (debug_channel),
-        .dac_word0     (bank_word0),
-        .dac_word1     (bank_word1),
-        .dac_word2     (bank_word2),
-        .dac_word3     (bank_word3),
         .source_modes  (bank_source_modes),
         .debug_word    (bank_debug_word),
         .spike_flags   (bank_spike_flags)
