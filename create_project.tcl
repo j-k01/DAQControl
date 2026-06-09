@@ -500,8 +500,10 @@ if {$include_litejesd} {
 
 file mkdir $project_dir
 file mkdir $report_dir
-refresh_axi_register_file_ip_metadata $script_dir
 create_project $project_name $project_dir -part $part -force
+refresh_axi_register_file_ip_metadata $script_dir
+close_project_if_open
+open_project [file join $project_dir ${project_name}.xpr]
 set_first_available_board_part $board_candidates
 set_property target_language Verilog [current_project]
 set_property XPM_LIBRARIES {XPM_CDC} [current_project]
