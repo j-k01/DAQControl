@@ -146,7 +146,8 @@ module adc_frontend (
 
     daq_litejesd_adc1_rx_path #(
         .STATUS_TAG (8'hA0),
-        .SWAP_CHANNEL_B_BYTES (1'b1)
+        .SWAP_CHANNEL_B_BYTES (1'b1),
+        .USE_TRANSPORT_CROSSPAIR (1'b0)
     ) u_adc0_rx_path (
         .jesd_clk           (jesd_clk),
         .jesd_rst           (jesd_rst),
@@ -189,7 +190,8 @@ module adc_frontend (
 
     daq_litejesd_adc1_rx_path #(
         .STATUS_TAG (8'hA1),
-        .SWAP_CHANNEL_B_BYTES (1'b1)
+        .SWAP_CHANNEL_B_BYTES (1'b1),
+        .USE_TRANSPORT_CROSSPAIR (1'b1)
     ) u_adc1_rx_path (
         .jesd_clk           (jesd_clk),
         .jesd_rst           (jesd_rst),

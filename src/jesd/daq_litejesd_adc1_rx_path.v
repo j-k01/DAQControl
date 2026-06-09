@@ -2,7 +2,8 @@
 
 module daq_litejesd_adc1_rx_path #(
     parameter [7:0] STATUS_TAG = 8'hA1,
-    parameter       SWAP_CHANNEL_B_BYTES = 1'b1
+    parameter       SWAP_CHANNEL_B_BYTES = 1'b1,
+    parameter       USE_TRANSPORT_CROSSPAIR = 1'b0
 ) (
     input  wire        jesd_clk,
     input  wire        jesd_rst,
@@ -250,6 +251,8 @@ module daq_litejesd_adc1_rx_path #(
     wire [63:0] sun_ch2_normal;
     wire [63:0] sun_ch1_revbyte;
     wire [63:0] sun_ch2_revbyte;
+    wire [63:0] crosspair_ch_a;
+    wire [63:0] crosspair_ch_b;
 
     function [15:0] swap_sample_bytes16;
         input [15:0] value;
@@ -263,26 +266,35 @@ module daq_litejesd_adc1_rx_path #(
     wire [15:0] sample_b2 = sample_b[47:32];
     wire [15:0] sample_b3 = sample_b[63:48];
 
-    // ADS54J60 LMFS=4211 on the FMC-ADC500-CD needs one last publication
-    // step after LiteJESD link/transport decoding.  Sundance's reference
-    // design rebuilds ADC samples from transport lane-byte regions; board
-    // tests with distinct DAC0/DAC1 tones show the generated LiteJESD sample
-    // order is already chronological for channel A, while channel B's 16-bit
-    // samples need byte swapping on the validated ADC1 path.  Keep that as a
-    // per-chip parameter so ADC2 can be tested without disturbing ADC1.
-    //
-    // Published order, four chronological samples per jesd_clk:
-    //   CH A: generated slots [0,1,2,3]
-    //   CH B: generated slots [0,1,2,3], with sample bytes swapped
-    wire [63:0] sample_a_lmfs4211 = sample_a;
     wire [63:0] sample_b_swapped = {
         swap_sample_bytes16(sample_b3),
         swap_sample_bytes16(sample_b2),
         swap_sample_bytes16(sample_b1),
         swap_sample_bytes16(sample_b0)
     };
+
+    // Diagnostic captures on ADC chip1 with clean DAC0/DAC1 tones cabled to
+    // IN3/IN4 showed the valid post-link byte pairings are lane0/lane2 for
+    // channel A and lane1/lane3 for channel B.  This is a publication step at
+    // the ADC frontend boundary; ADC chip0 keeps the earlier validated
+    // generated-converter publication.
+    adc1_sundance_halfbeat #(
+        .REVERSE_BYTES (0),
+        .SWAP_SAMPLE_BYTES (0)
+    ) u_adc1_transport_crosspair (
+        .lane0    (transport_lane0),
+        .lane1    (transport_lane2),
+        .lane2    (transport_lane1),
+        .lane3    (transport_lane3),
+        .adc1_ch1 (crosspair_ch_a),
+        .adc1_ch2 (crosspair_ch_b)
+    );
+
+    wire [63:0] sample_a_lmfs4211 =
+        USE_TRANSPORT_CROSSPAIR ? crosspair_ch_a : sample_a;
     wire [63:0] sample_b_lmfs4211 =
-        SWAP_CHANNEL_B_BYTES ? sample_b_swapped : sample_b;
+        USE_TRANSPORT_CROSSPAIR ? crosspair_ch_b :
+        (SWAP_CHANNEL_B_BYTES ? sample_b_swapped : sample_b);
 
     adc1_sundance_halfbeat #(
         .REVERSE_BYTES (0),
