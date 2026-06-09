@@ -57,8 +57,8 @@ dac_channel_word[63:48] = sample 3
 ```
 
 No source is allowed to prearrange bytes, lanes, physical DAC outputs, or
-connector labels before this mux boundary. After source selection, the live
-datapath feeds these four complete channel streams through
+connector labels before this mux boundary. After source selection, the four
+complete channel streams are registered on `jesd_clk` and then fed through
 `dac_source_to_converter_preimage`, a wiring-only module that creates the
 LiteJESD converter preimage. Board lane correction is still handled after
 LiteJESD by moving `TXDATA` and `TXCHARISK` together. Legacy remap calculations
@@ -77,7 +77,7 @@ stream pair at a time only for diagnostics. `map_mode[3:2]` is intentionally
 ignored so this mapper cannot silently reintroduce byte-lane preimage behavior.
 
 For the current DAC39J84 initialization, the firmware default remains
-source-preimage mode, TX lane mode 3, and `RW2=0x01000018`. The normal source
+source-preimage mode, TX lane mode 3, and `RW2=0x00000018`. The normal source
 contract, before the preimage module, is:
 
 ```text
@@ -94,8 +94,27 @@ must use a byte-asymmetric pattern such as
 bin while byte orientation is still wrong.
 
 ```powershell
-python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010034 --rw2 0x01000018 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
+python scripts\capture_plot_adc_uart.py --port COM10 --expect-build-id 0xDA010034 --rw2 0x00000018 --program-mode byte-pattern --program-channel all --verify-upload-words 16 --words 4096 --sources 0,1,2,3 --prefix dac_byte_pattern_check
 ```
+
+After a bitstream/firmware load, the firmware does more than set the DAC source
+mux. It releases the GT path, waits for the TX/LiteJESD stream to become
+stable, then pulses the DAC39J84 init FSM so the DAC sees a clean
+CGS/ILAS/data sequence. A valid no-reprogram DAC recovery sequence is:
+
+```text
+WRTE 3 0
+WRTE 5 0x80000100
+WRTE 2 0x00000019
+WRTE 2 0x00000018
+WRTE 3 2
+WRTE 3 0
+```
+
+Do not judge an ADC loopback capture until that sequence, or the equivalent
+firmware startup path, has restored visible DAC output. In particular,
+`RW3[0]` is the HMC restart bit; accidentally leaving it asserted can disturb
+the clock tree and will not be repaired by merely selecting DDS afterward.
 
 Connect `gth_txcharisk` in the same lane order as `gth_txdata` to the 8B/10B
 `TXCTRL2` path, with `TXCTRL0` and `TXCTRL1` tied low unless the generated

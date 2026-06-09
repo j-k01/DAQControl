@@ -278,10 +278,31 @@ module daq_litejesd_dac_tx_path #(
         .dac_word       (selected_src_converter3)
     );
 
-    wire [63:0] src_converter0 = tag_source_enable ? dac_tag_word0 : selected_src_converter0;
-    wire [63:0] src_converter1 = tag_source_enable ? dac_tag_word1 : selected_src_converter1;
-    wire [63:0] src_converter2 = tag_source_enable ? dac_tag_word2 : selected_src_converter2;
-    wire [63:0] src_converter3 = tag_source_enable ? dac_tag_word3 : selected_src_converter3;
+    wire [63:0] src_converter0_next = tag_source_enable ? dac_tag_word0 : selected_src_converter0;
+    wire [63:0] src_converter1_next = tag_source_enable ? dac_tag_word1 : selected_src_converter1;
+    wire [63:0] src_converter2_next = tag_source_enable ? dac_tag_word2 : selected_src_converter2;
+    wire [63:0] src_converter3_next = tag_source_enable ? dac_tag_word3 : selected_src_converter3;
+
+    // Source contract boundary: all four 64-bit channel words are captured on
+    // the JESD beat before any source-to-converter or diagnostic remapping.
+    reg [63:0] src_converter0 = 64'd0;
+    reg [63:0] src_converter1 = 64'd0;
+    reg [63:0] src_converter2 = 64'd0;
+    reg [63:0] src_converter3 = 64'd0;
+
+    always @(posedge jesd_clk) begin
+        if (jesd_rst || !enable) begin
+            src_converter0 <= 64'd0;
+            src_converter1 <= 64'd0;
+            src_converter2 <= 64'd0;
+            src_converter3 <= 64'd0;
+        end else begin
+            src_converter0 <= src_converter0_next;
+            src_converter1 <= src_converter1_next;
+            src_converter2 <= src_converter2_next;
+            src_converter3 <= src_converter3_next;
+        end
+    end
 
     wire [63:0] preimage_converter0;
     wire [63:0] preimage_converter1;
