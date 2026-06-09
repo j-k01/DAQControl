@@ -15,7 +15,7 @@ except ImportError as exc:
 
 SYNC_WORD = b"\xFE\x10\xCA\xFE"
 DEFAULT_FRAMES = 4096
-ADC_WORDS_PER_FRAME = 4
+ADC_WORDS_PER_FRAME = 8
 MAX_CAPTURE_FRAMES = 4096
 MAX_PROGRAM_WORDS = 8192
 
@@ -453,8 +453,8 @@ def parse_sources(text):
     sources = []
     for token in text.replace(",", " ").split():
         source = int(token, 0)
-        if source < 0 or source > 3:
-            raise ValueError("sources must be in the range 0..3")
+        if source < 0 or source >= ADC_WORDS_PER_FRAME:
+            raise ValueError(f"sources must be in the range 0..{ADC_WORDS_PER_FRAME - 1}")
         sources.append(source)
     if not sources:
         raise ValueError("at least one source is required")
@@ -465,11 +465,11 @@ def parse_adc_converters(text):
     converters = []
     for token in text.replace(",", " ").split():
         converter = int(token, 0)
-        if converter < 0 or converter > 1:
-            raise ValueError("ADC converters must be 0, 1, or a comma list")
+        if converter < 0 or converter > 3:
+            raise ValueError("ADC channels must be 0..3 or a comma list")
         converters.append(converter)
     if not converters:
-        raise ValueError("at least one ADC converter is required")
+        raise ValueError("at least one ADC channel is required")
     return converters
 
 
@@ -520,7 +520,7 @@ def capture_frames(port, command_name, frames):
 def split_frame_captures(frame_words):
     captures = {source: [] for source in range(ADC_WORDS_PER_FRAME)}
     if len(frame_words) % ADC_WORDS_PER_FRAME:
-        raise ValueError("ADC frame stream length is not a multiple of four u32 words")
+        raise ValueError(f"ADC frame stream length is not a multiple of {ADC_WORDS_PER_FRAME} u32 words")
     for index in range(0, len(frame_words), ADC_WORDS_PER_FRAME):
         for source in range(ADC_WORDS_PER_FRAME):
             captures[source].append(frame_words[index + source])
@@ -533,7 +533,7 @@ def split_words(words):
     return lo, hi
 
 
-def combine_converter(low_words, high_words):
+def combine_channel(low_words, high_words):
     samples = []
     for low_word, high_word in zip(low_words, high_words):
         samples.append(signed16(low_word & 0xFFFF))
@@ -544,12 +544,16 @@ def combine_converter(low_words, high_words):
 
 
 def build_converter_streams(captures, active_converters=None):
-    active = {0, 1} if active_converters is None else set(active_converters)
+    active = {0, 1, 2, 3} if active_converters is None else set(active_converters)
     streams = {}
-    if 0 in active and 0 in captures and 1 in captures:
-        streams["adc1_converter0"] = combine_converter(captures[0], captures[1])
-    if 1 in active and 2 in captures and 3 in captures:
-        streams["adc1_converter1"] = combine_converter(captures[2], captures[3])
+    for channel in range(4):
+        low_source = 2 * channel
+        high_source = low_source + 1
+        if channel in active and low_source in captures and high_source in captures:
+            streams[f"adc_ch{channel}"] = combine_channel(
+                captures[low_source],
+                captures[high_source],
+            )
     return streams
 
 
@@ -723,16 +727,17 @@ def main():
         "--words",
         type=int,
         default=DEFAULT_FRAMES,
-        help="Number of ADC 128-bit frames to capture. Each frame has four u32 words.",
+        help="Number of ADC 256-bit frames to capture. Each frame has eight u32 words.",
     )
-    parser.add_argument("--sources", default="0,1,2,3")
+    parser.add_argument("--sources", default="0,1,2,3,4,5,6,7")
     parser.add_argument(
         "--active-adc-converters",
-        default="0,1",
+        "--active-adc-channels",
+        dest="active_adc_converters",
+        default="0,1,2,3",
         help=(
-            "Reconstructed ADC converter streams to write/plot. Use 0 for the "
-            "current one-cabled ADC1 CH-A loopback setup; converter1 is "
-            "unconnected noise unless another ADC channel is cabled/initialized."
+            "Reconstructed logical ADC channels to write/plot. Channel N is "
+            "built from raw source words 2N and 2N+1."
         ),
     )
     parser.add_argument("--command", choices=["CAPT", "PCAP"], default="CAPT")
@@ -814,7 +819,7 @@ def main():
     parser.add_argument(
         "--plot-raw-sources",
         action="store_true",
-        help="Plot raw capture sources as lo16/hi16 instead of reconstructed ADC converter streams.",
+        help="Plot raw capture sources as lo16/hi16 instead of reconstructed logical ADC channels.",
     )
     parser.add_argument("--show", action="store_true")
     args = parser.parse_args()
@@ -859,7 +864,7 @@ def main():
         if args.upload_only:
             print("Upload complete; skipping capture.")
             return
-        print(f"Capturing {args.words} ADC 128-bit frames with {command_name}...")
+        print(f"Capturing {args.words} ADC 256-bit frames with {command_name}...")
         presync, frame_words = capture_frames(port, command_name, args.words)
         all_captures = split_frame_captures(frame_words)
         for source in sources:
@@ -881,11 +886,8 @@ def main():
         write_combined_csv(combined_csv_path, streams)
         print(f"Wrote {combined_csv_path}")
         summaries.append(
-            "combined streams note: source 0+1 reconstruct ADC1 converter0; "
-            "source 2+3 reconstruct ADC1 converter1 from the same captured "
-            "128-bit ADC frame. In the current physical loopback setup, only "
-            "ADC1 converter0 is cabled/initialized; converter1 should be "
-            "treated as unconnected noise unless explicitly wired."
+            "combined streams note: each logical adc_chN is reconstructed from "
+            "raw source words 2N and 2N+1 in the 256-bit capture frame."
         )
         for name, samples in streams.items():
             summaries.append(summarize_stream(name, samples))

@@ -57,7 +57,7 @@ if {[llength $explicit_async_meta_pins] > 0} {
 # LiteJESD's generated reset synchronizers are emitted as FDPE instances instead
 # of ASYNC_REG-attributed Verilog regs.  They are reset synchronizers, not data
 # paths, so the async preset timing must not dominate implementation.
-set litejesd_reset_sync_cells [get_cells -hier -quiet -regexp {.*(u_litejesd_dac_tx_path/u_litejesd_dac_tx|u_litejesd_adc1_rx_path/u_litejesd_adc1_rx)/FDPE_[0-9]+$}]
+set litejesd_reset_sync_cells [get_cells -hier -quiet -regexp {.*(u_litejesd_dac_tx_path/u_litejesd_dac_tx|u_adc_frontend/u_adc[01]_rx_path/u_litejesd_adc1_rx)/FDPE_[0-9]+$}]
 if {[llength $litejesd_reset_sync_cells] > 0} {
     set_property ASYNC_REG TRUE $litejesd_reset_sync_cells
     set litejesd_reset_sync_pre_pins [daq_get_cell_pins_by_ref_name $litejesd_reset_sync_cells PRE]

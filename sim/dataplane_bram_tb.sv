@@ -47,6 +47,18 @@ module dataplane_bram_tb;
         end
     endtask
 
+    task check256;
+        input [255:0] label;
+        input [255:0] actual;
+        input [255:0] expected;
+        begin
+            if (actual !== expected) begin
+                $display("FAIL %0s actual=0x%064x expected=0x%064x", label, actual, expected);
+                $fatal;
+            end
+        end
+    endtask
+
     reg         dac_rst = 1'b1;
     reg         dac_enable = 1'b0;
     reg         dac_restart = 1'b0;
@@ -91,21 +103,25 @@ module dataplane_bram_tb;
     reg         adc_rst = 1'b1;
     reg         adc_start = 1'b0;
     reg         adc_valid = 1'b0;
-    reg  [31:0] adc_a_low = 32'd0;
-    reg  [31:0] adc_a_high = 32'd0;
-    reg  [31:0] adc_b_low = 32'd0;
-    reg  [31:0] adc_b_high = 32'd0;
+    reg  [31:0] adc_ch0_low = 32'd0;
+    reg  [31:0] adc_ch0_high = 32'd0;
+    reg  [31:0] adc_ch1_low = 32'd0;
+    reg  [31:0] adc_ch1_high = 32'd0;
+    reg  [31:0] adc_ch2_low = 32'd0;
+    reg  [31:0] adc_ch2_high = 32'd0;
+    reg  [31:0] adc_ch3_low = 32'd0;
+    reg  [31:0] adc_ch3_high = 32'd0;
     wire [31:0] adc_bram_addr;
     wire        adc_bram_clk;
-    wire [127:0] adc_bram_din;
-    wire [127:0] adc_bram_dout;
+    wire [255:0] adc_bram_din;
+    wire [255:0] adc_bram_dout;
     wire        adc_bram_en;
     wire        adc_bram_rst;
-    wire [15:0] adc_bram_we;
+    wire [31:0] adc_bram_we;
     wire [31:0] adc_status;
 
-    reg [127:0] adc_mem [0:3];
-    assign adc_bram_dout = 128'd0;
+    reg [255:0] adc_mem [0:3];
+    assign adc_bram_dout = 256'd0;
 
     adc_bram_capture #(
         .CAPTURE_FRAMES (4)
@@ -114,10 +130,14 @@ module dataplane_bram_tb;
         .rst           (adc_rst),
         .start         (adc_start),
         .data_valid    (adc_valid),
-        .sample_a_low  (adc_a_low),
-        .sample_a_high (adc_a_high),
-        .sample_b_low  (adc_b_low),
-        .sample_b_high (adc_b_high),
+        .ch0_low       (adc_ch0_low),
+        .ch0_high      (adc_ch0_high),
+        .ch1_low       (adc_ch1_low),
+        .ch1_high      (adc_ch1_high),
+        .ch2_low       (adc_ch2_low),
+        .ch2_high      (adc_ch2_high),
+        .ch3_low       (adc_ch3_low),
+        .ch3_high      (adc_ch3_high),
         .bram_addr     (adc_bram_addr),
         .bram_clk      (adc_bram_clk),
         .bram_din      (adc_bram_din),
@@ -130,7 +150,7 @@ module dataplane_bram_tb;
 
     always @(posedge adc_bram_clk) begin
         if (adc_bram_en && |adc_bram_we) begin
-            adc_mem[adc_bram_addr[31:4]] <= adc_bram_din;
+            adc_mem[adc_bram_addr[31:5]] <= adc_bram_din;
         end
     end
 
@@ -140,7 +160,7 @@ module dataplane_bram_tb;
             dac_mem[i] = 64'h1000_0000_0000_0000 + i;
         end
         for (i = 0; i < 4; i = i + 1) begin
-            adc_mem[i] = 128'd0;
+            adc_mem[i] = 256'd0;
         end
 
         tick();
@@ -213,18 +233,28 @@ module dataplane_bram_tb;
         adc_start = 1'b0;
 
         for (i = 0; i < 4; i = i + 1) begin
-            adc_a_low  = 32'hA000_0000 + i;
-            adc_a_high = 32'hA100_0000 + i;
-            adc_b_low  = 32'hB000_0000 + i;
-            adc_b_high = 32'hB100_0000 + i;
+            adc_ch0_low  = 32'hA000_0000 + i;
+            adc_ch0_high = 32'hA100_0000 + i;
+            adc_ch1_low  = 32'hB000_0000 + i;
+            adc_ch1_high = 32'hB100_0000 + i;
+            adc_ch2_low  = 32'hC000_0000 + i;
+            adc_ch2_high = 32'hC100_0000 + i;
+            adc_ch3_low  = 32'hD000_0000 + i;
+            adc_ch3_high = 32'hD100_0000 + i;
             tick();
         end
 
-        check128("adc frame 0 packing", adc_mem[0], {
-            32'hB100_0000, 32'hB000_0000, 32'hA100_0000, 32'hA000_0000
+        check256("adc frame 0 packing", adc_mem[0], {
+            32'hD100_0000, 32'hD000_0000,
+            32'hC100_0000, 32'hC000_0000,
+            32'hB100_0000, 32'hB000_0000,
+            32'hA100_0000, 32'hA000_0000
         });
-        check128("adc frame 3 packing", adc_mem[3], {
-            32'hB100_0003, 32'hB000_0003, 32'hA100_0003, 32'hA000_0003
+        check256("adc frame 3 packing", adc_mem[3], {
+            32'hD100_0003, 32'hD000_0003,
+            32'hC100_0003, 32'hC000_0003,
+            32'hB100_0003, 32'hB000_0003,
+            32'hA100_0003, 32'hA000_0003
         });
         check32("adc status marker", {adc_status[31:24], 24'd0}, 32'hC4000000);
         if (!adc_status[19] || adc_status[18] || adc_status[15:0] != 16'd4) begin

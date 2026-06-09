@@ -19,6 +19,7 @@ module ads54j60_init #(
     input  wire        restart,
     input  wire        test_restart,
     input  wire [2:0]  test_mode,
+    input  wire [1:0]  test_chip_mask,
     input  wire        adc1_sdout,
     input  wire        adc2_sdout,
     output reg         busy,
@@ -77,6 +78,7 @@ module ads54j60_init #(
     reg [3:0]  state = ST_IDLE;
     reg        run_test = 1'b0;
     reg [2:0]  active_test_mode = 3'd0;
+    reg [1:0]  active_test_chip_mask = 2'b11;
     reg [31:0] delay_count = 32'd0;
     reg [31:0] spi_div_count = 32'd0;
     reg [23:0] spi_shift = 24'd0;
@@ -103,6 +105,8 @@ module ads54j60_init #(
     wire [7:0] seq_expected = run_test ? 8'h00 :
                                           verify_op_expected(verify_index);
     wire       active_sdout = chip_index ? adc2_sdout : adc1_sdout;
+    wire [1:0] normalized_test_chip_mask = (test_chip_mask == 2'b00) ?
+                                           2'b11 : test_chip_mask;
     wire [7:0] spi_cmd_hi = seq_is_read ? (seq_addr[15:8] | 8'h80) :
                                            seq_addr[15:8];
 
@@ -383,6 +387,7 @@ module ads54j60_init #(
             op_index <= 7'd0;
             run_test <= 1'b0;
             active_test_mode <= 3'd0;
+            active_test_chip_mask <= 2'b11;
             last_addr <= 16'd0;
             last_data <= 8'd0;
             clear_readback_words();
@@ -397,6 +402,7 @@ module ads54j60_init #(
             op_index <= 7'd0;
             run_test <= 1'b0;
             active_test_mode <= 3'd0;
+            active_test_chip_mask <= 2'b11;
             last_addr <= 16'd0;
             last_data <= 8'd0;
             clear_readback_words();
@@ -408,10 +414,11 @@ module ads54j60_init #(
             done <= 1'b0;
             adc1_reset <= 1'b0;
             adc2_reset <= 1'b0;
-            chip_index <= 1'b0;
+            chip_index <= normalized_test_chip_mask[0] ? 1'b0 : 1'b1;
             op_index <= 7'd0;
             run_test <= 1'b1;
             active_test_mode <= test_mode;
+            active_test_chip_mask <= normalized_test_chip_mask;
             last_addr <= 16'd0;
             last_data <= 8'd0;
             reset_spi_state();
@@ -580,12 +587,16 @@ module ads54j60_init #(
                                             (read_nonzero_or != 8'h00) &&
                                             (read_allones_and != 8'hff);
                         end
-                        chip_index <= 1'b1;
-                        op_index <= 7'd0;
-                        read_nonzero_or <= 8'd0;
-                        read_allones_and <= 8'hff;
-                        chip_ok_accum <= 1'b1;
-                        state <= ST_LOAD;
+                        if (!run_test || active_test_chip_mask[1]) begin
+                            chip_index <= 1'b1;
+                            op_index <= 7'd0;
+                            read_nonzero_or <= 8'd0;
+                            read_allones_and <= 8'hff;
+                            chip_ok_accum <= 1'b1;
+                            state <= ST_LOAD;
+                        end else begin
+                            state <= ST_DONE;
+                        end
                     end else begin
                         if (!run_test) begin
                             readback_done2 <= 1'b1;

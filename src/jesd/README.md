@@ -57,11 +57,13 @@ dac_channel_word[63:48] = sample 3
 ```
 
 No source is allowed to prearrange bytes, lanes, physical DAC outputs, or
-connector labels before this mux boundary. The live datapath feeds these four
-complete channel streams directly to LiteJESD `converter0..3`. Board lane
-correction is handled after LiteJESD by moving `TXDATA` and `TXCHARISK`
-together. Legacy remap calculations remain visible only as ILA diagnostics and
-do not drive the DAC output. The shell exports:
+connector labels before this mux boundary. After source selection, the live
+datapath feeds these four complete channel streams through
+`dac_source_to_converter_preimage`, a wiring-only module that creates the
+LiteJESD converter preimage. Board lane correction is still handled after
+LiteJESD by moving `TXDATA` and `TXCHARISK` together. Legacy remap calculations
+remain visible only as ILA diagnostics and do not drive the DAC output. The
+shell exports:
 
 ```verilog
 gth_txdata[255:0]    // {lane7, ..., lane0}, 32 bits per lane
@@ -75,15 +77,14 @@ stream pair at a time only for diagnostics. `map_mode[3:2]` is intentionally
 ignored so this mapper cannot silently reintroduce byte-lane preimage behavior.
 
 For the current DAC39J84 initialization, the firmware default remains
-native channel stream mode, TX lane mode 3, and `RW2=0x01000018`. The normal
-contract, assuming the DAC39J84 analog output mux remains at its identity
-default, is:
+source-preimage mode, TX lane mode 3, and `RW2=0x01000018`. The normal source
+contract, before the preimage module, is:
 
 ```text
-BRAM/DDS/neuron channel 0 -> physical DAC output 0
-BRAM/DDS/neuron channel 1 -> physical DAC output 1
-BRAM/DDS/neuron channel 2 -> physical DAC output 2
-BRAM/DDS/neuron channel 3 -> physical DAC output 3
+BRAM/DDS/neuron channel 0 -> source0[63:0] = {t3,t2,t1,t0}
+BRAM/DDS/neuron channel 1 -> source1[63:0] = {t3,t2,t1,t0}
+BRAM/DDS/neuron channel 2 -> source2[63:0] = {t3,t2,t1,t0}
+BRAM/DDS/neuron channel 3 -> source3[63:0] = {t3,t2,t1,t0}
 ```
 
 The legacy remap calculations are diagnostic probes only. Do not turn

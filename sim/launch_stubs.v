@@ -32,6 +32,10 @@ module microblaze_bd_wrapper (
     output reg  [31:0] RW_REG1_0,
     output reg  [31:0] RW_REG2_0,
     output reg  [31:0] RW_REG3_0,
+    output reg  [31:0] RW_REG4_0,
+    output reg  [31:0] RW_REG5_0,
+    output reg  [31:0] RW_REG6_0,
+    output reg  [31:0] RW_REG7_0,
     input  wire [31:0] RO_REG0_IN_0,
     input  wire        RO_REG0_WE_0,
     input  wire [31:0] RO_REG1_IN_0,
@@ -40,10 +44,22 @@ module microblaze_bd_wrapper (
     input  wire        RO_REG2_WE_0,
     input  wire [31:0] RO_REG3_IN_0,
     input  wire        RO_REG3_WE_0,
+    input  wire [31:0] RO_REG4_IN_0,
+    input  wire        RO_REG4_WE_0,
+    input  wire [31:0] RO_REG5_IN_0,
+    input  wire        RO_REG5_WE_0,
+    input  wire [31:0] RO_REG6_IN_0,
+    input  wire        RO_REG6_WE_0,
+    input  wire [31:0] RO_REG7_IN_0,
+    input  wire        RO_REG7_WE_0,
     output wire        RO_REG0_RDINT_0,
     output wire        RO_REG1_RDINT_0,
     output wire        RO_REG2_RDINT_0,
     output wire        RO_REG3_RDINT_0,
+    output wire        RO_REG4_RDINT_0,
+    output wire        RO_REG5_RDINT_0,
+    output wire        RO_REG6_RDINT_0,
+    output wire        RO_REG7_RDINT_0,
     output wire [31:0] DAC0_AXI_BRAM_PORTA_addr,
     output wire        DAC0_AXI_BRAM_PORTA_clk,
     output wire [31:0] DAC0_AXI_BRAM_PORTA_din,
@@ -85,6 +101,10 @@ module microblaze_bd_wrapper (
         RW_REG1_0 = 32'd0;
         RW_REG2_0 = 32'd0;
         RW_REG3_0 = 32'd0;
+        RW_REG4_0 = 32'd0;
+        RW_REG5_0 = 32'd0;
+        RW_REG6_0 = 32'd0;
+        RW_REG7_0 = 32'd0;
         #600 RW_REG1_0 = 32'd1;
         #600 RW_REG1_0 = 32'd2;
         #600 RW_REG1_0 = 32'd3;
@@ -95,6 +115,10 @@ module microblaze_bd_wrapper (
     assign RO_REG1_RDINT_0 = 1'b0;
     assign RO_REG2_RDINT_0 = 1'b0;
     assign RO_REG3_RDINT_0 = 1'b0;
+    assign RO_REG4_RDINT_0 = 1'b0;
+    assign RO_REG5_RDINT_0 = 1'b0;
+    assign RO_REG6_RDINT_0 = 1'b0;
+    assign RO_REG7_RDINT_0 = 1'b0;
     assign DAC0_AXI_BRAM_PORTA_addr = 32'd0;
     assign DAC0_AXI_BRAM_PORTA_clk = Clk;
     assign DAC0_AXI_BRAM_PORTA_din = 32'd0;
@@ -127,8 +151,10 @@ module microblaze_bd_wrapper (
     assign ADC_AXI_BRAM_PORTA_we = 4'd0;
 
     wire unused = Clk ^ reset ^ rs232_uart_rxd ^ RO_REG0_WE_0 ^ RO_REG1_WE_0 ^
-                  RO_REG2_WE_0 ^ RO_REG3_WE_0 ^ ^RO_REG0_IN_0 ^
+                  RO_REG2_WE_0 ^ RO_REG3_WE_0 ^ RO_REG4_WE_0 ^ RO_REG5_WE_0 ^
+                  RO_REG6_WE_0 ^ RO_REG7_WE_0 ^ ^RO_REG0_IN_0 ^
                   ^RO_REG1_IN_0 ^ ^RO_REG2_IN_0 ^ ^RO_REG3_IN_0 ^
+                  ^RO_REG4_IN_0 ^ ^RO_REG5_IN_0 ^ ^RO_REG6_IN_0 ^ ^RO_REG7_IN_0 ^
                   ^DAC0_AXI_BRAM_PORTA_dout ^ ^DAC1_AXI_BRAM_PORTA_dout ^
                   ^DAC2_AXI_BRAM_PORTA_dout ^ ^DAC3_AXI_BRAM_PORTA_dout ^
                   ^ADC_AXI_BRAM_PORTA_dout;
@@ -164,18 +190,18 @@ module adc_capture_bram (
     input  wire         clka,
     input  wire         ena,
     input  wire [3:0]   wea,
-    input  wire [13:0]  addra,
+    input  wire [14:0]  addra,
     input  wire [31:0]  dina,
     output wire [31:0]  douta,
     input  wire         clkb,
     input  wire         enb,
-    input  wire [15:0]  web,
+    input  wire [31:0]  web,
     input  wire [11:0]  addrb,
-    input  wire [127:0] dinb,
-    output wire [127:0] doutb
+    input  wire [255:0] dinb,
+    output wire [255:0] doutb
 );
     assign douta = 32'd0;
-    assign doutb = 128'd0;
+    assign doutb = 256'd0;
     wire unused = clka ^ ena ^ ^wea ^ ^addra ^ ^dina ^
                   clkb ^ enb ^ ^web ^ ^addrb ^ ^dinb;
 endmodule

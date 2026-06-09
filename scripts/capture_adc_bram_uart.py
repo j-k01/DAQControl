@@ -15,7 +15,7 @@ except ImportError:
 
 SYNC_WORD = b"\xFE\x10\xCA\xFE"
 DEFAULT_FRAMES = 4096
-ADC_WORDS_PER_FRAME = 4
+ADC_WORDS_PER_FRAME = 8
 MAX_PROGRAM_WORDS = 8192
 
 
@@ -222,15 +222,15 @@ def parse_program_channels(text):
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Capture ADC1 BRAM samples from the live loopback stream and write the "
+            "Capture logical adc_ch0..3 BRAM samples from the live loopback stream and write the "
             "capture to CSV. Optionally upload a DAC BRAM program and capture that "
             "programmed output instead."
         )
     )
     parser.add_argument("--port", default="COM10")
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--words", type=int, default=DEFAULT_FRAMES, help="ADC 128-bit frames to capture")
-    parser.add_argument("--source", type=int, default=0, choices=range(4), help="deprecated; capture now always records all four frame words")
+    parser.add_argument("--words", type=int, default=DEFAULT_FRAMES, help="ADC 256-bit frames to capture")
+    parser.add_argument("--source", type=int, default=0, choices=range(8), help="deprecated; capture now always records all eight frame words")
     parser.add_argument("--program", help="binary little-endian u32 or text/CSV DAC program")
     parser.add_argument("--program-words", type=int, default=MAX_PROGRAM_WORDS)
     parser.add_argument("--program-channel", default="all", help="DAC program channel: 0..3, comma list, or 'all'")

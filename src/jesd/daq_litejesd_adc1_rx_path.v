@@ -1,6 +1,9 @@
 `timescale 1ns/1ps
 
-module daq_litejesd_adc1_rx_path (
+module daq_litejesd_adc1_rx_path #(
+    parameter [7:0] STATUS_TAG = 8'hA1,
+    parameter       SWAP_CHANNEL_B_BYTES = 1'b1
+) (
     input  wire        jesd_clk,
     input  wire        jesd_rst,
     input  wire        enable,
@@ -210,7 +213,7 @@ module daq_litejesd_adc1_rx_path (
     end
 
     assign status = {
-        8'hA1,
+        STATUS_TAG,
         core_ready,
         adc_sync_n,
         jesd_rst,
@@ -265,18 +268,21 @@ module daq_litejesd_adc1_rx_path (
     // design rebuilds ADC samples from transport lane-byte regions; board
     // tests with distinct DAC0/DAC1 tones show the generated LiteJESD sample
     // order is already chronological for channel A, while channel B's 16-bit
-    // samples need byte swapping.
+    // samples need byte swapping on the validated ADC1 path.  Keep that as a
+    // per-chip parameter so ADC2 can be tested without disturbing ADC1.
     //
     // Published order, four chronological samples per jesd_clk:
     //   CH A: generated slots [0,1,2,3]
     //   CH B: generated slots [0,1,2,3], with sample bytes swapped
     wire [63:0] sample_a_lmfs4211 = sample_a;
-    wire [63:0] sample_b_lmfs4211 = {
+    wire [63:0] sample_b_swapped = {
         swap_sample_bytes16(sample_b3),
         swap_sample_bytes16(sample_b2),
         swap_sample_bytes16(sample_b1),
         swap_sample_bytes16(sample_b0)
     };
+    wire [63:0] sample_b_lmfs4211 =
+        SWAP_CHANNEL_B_BYTES ? sample_b_swapped : sample_b;
 
     adc1_sundance_halfbeat #(
         .REVERSE_BYTES (0),

@@ -119,6 +119,57 @@ proc validate_ips_unlocked {} {
     }
 }
 
+proc set_ipx_value_if_present {objects value label} {
+    if {[llength $objects] == 0} {
+        puts "WARNING: IP packager did not expose $label; leaving it unchanged."
+        return
+    }
+    foreach obj $objects {
+        set_property value $value $obj
+    }
+}
+
+proc refresh_axi_register_file_ip_metadata {script_dir} {
+    set ip_dir [file join $script_dir ip_repo AXI4_register_file_1_0]
+    set component_xml [file join $ip_dir component.xml]
+    if {![file exists $component_xml]} {
+        error "AXI4_register_file component.xml not found at $component_xml"
+    }
+
+    set edit_dir [file join $script_dir project .ipx_refresh_AXI4_register_file]
+    file delete -force $edit_dir
+
+    puts "Refreshing AXI4_register_file IP metadata from HDL via Vivado IP packager..."
+    ipx::edit_ip_in_project -upgrade true -name AXI4_register_file_refresh \
+        -directory $edit_dir $component_xml
+
+    set core [ipx::current_core]
+    ipx::merge_project_changes ports $core
+    ipx::merge_project_changes hdl_parameters $core
+
+    set_ipx_value_if_present \
+        [ipx::get_model_parameters C_S00_AXI_ADDR_WIDTH -of_objects $core] \
+        6 "model parameter C_S00_AXI_ADDR_WIDTH"
+    set_ipx_value_if_present \
+        [ipx::get_user_parameters C_S00_AXI_ADDR_WIDTH -of_objects $core] \
+        6 "user parameter C_S00_AXI_ADDR_WIDTH"
+
+    set s00_axi [ipx::get_bus_interfaces S00_AXI -of_objects $core]
+    if {[llength $s00_axi] > 0} {
+        set_ipx_value_if_present \
+            [ipx::get_bus_parameters WIZ_NUM_REG -of_objects $s00_axi] \
+            16 "S00_AXI WIZ_NUM_REG"
+    } else {
+        puts "WARNING: IP packager did not expose S00_AXI bus interface."
+    }
+
+    ipx::update_checksums $core
+    ipx::check_integrity $core
+    ipx::save_core $core
+    close_project
+    file delete -force $edit_dir
+}
+
 proc upgrade_validate_and_save_bd {bd_file} {
     open_bd_design $bd_file
 
@@ -220,9 +271,9 @@ proc verify_bram_dataplane_ips {} {
 
     require_ip_property adc_capture_bram CONFIG.Write_Width_A 32
     require_ip_property adc_capture_bram CONFIG.Read_Width_A 32
-    require_ip_property adc_capture_bram CONFIG.Write_Width_B 128
-    require_ip_property adc_capture_bram CONFIG.Read_Width_B 128
-    require_ip_property adc_capture_bram CONFIG.Write_Depth_A 16384
+    require_ip_property adc_capture_bram CONFIG.Write_Width_B 256
+    require_ip_property adc_capture_bram CONFIG.Read_Width_B 256
+    require_ip_property adc_capture_bram CONFIG.Write_Depth_A 32768
     require_ip_property adc_capture_bram CONFIG.Use_Byte_Write_Enable true
     require_ip_property adc_capture_bram CONFIG.Register_PortA_Output_of_Memory_Primitives false
     require_ip_property adc_capture_bram CONFIG.Register_PortA_Output_of_Memory_Core false
@@ -244,16 +295,16 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
 
     create_bd_intf_port -mode Master -vlnv xilinx.com:interface:uart_rtl:1.0 rs232_uart
 
-    foreach port_name {RW_REG0_0 RW_REG1_0 RW_REG2_0 RW_REG3_0} {
+    foreach port_name {RW_REG0_0 RW_REG1_0 RW_REG2_0 RW_REG3_0 RW_REG4_0 RW_REG5_0 RW_REG6_0 RW_REG7_0} {
         create_bd_port -dir O -from 31 -to 0 $port_name
     }
-    foreach port_name {RO_REG0_IN_0 RO_REG1_IN_0 RO_REG2_IN_0 RO_REG3_IN_0} {
+    foreach port_name {RO_REG0_IN_0 RO_REG1_IN_0 RO_REG2_IN_0 RO_REG3_IN_0 RO_REG4_IN_0 RO_REG5_IN_0 RO_REG6_IN_0 RO_REG7_IN_0} {
         create_bd_port -dir I -from 31 -to 0 $port_name
     }
-    foreach port_name {RO_REG0_WE_0 RO_REG1_WE_0 RO_REG2_WE_0 RO_REG3_WE_0} {
+    foreach port_name {RO_REG0_WE_0 RO_REG1_WE_0 RO_REG2_WE_0 RO_REG3_WE_0 RO_REG4_WE_0 RO_REG5_WE_0 RO_REG6_WE_0 RO_REG7_WE_0} {
         create_bd_port -dir I $port_name
     }
-    foreach port_name {RO_REG0_RDINT_0 RO_REG1_RDINT_0 RO_REG2_RDINT_0 RO_REG3_RDINT_0} {
+    foreach port_name {RO_REG0_RDINT_0 RO_REG1_RDINT_0 RO_REG2_RDINT_0 RO_REG3_RDINT_0 RO_REG4_RDINT_0 RO_REG5_RDINT_0 RO_REG6_RDINT_0 RO_REG7_RDINT_0} {
         create_bd_port -dir O $port_name
     }
     create_bd_cell -type ip -vlnv xilinx.com:ip:microblaze:* microblaze_0
@@ -382,7 +433,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
         safe_connect_bd_net $resetn_pin [get_bd_pins adc_capture_bram_ctrl/s_axi_aresetn]
     }
 
-    foreach idx {0 1 2 3} {
+    foreach idx {0 1 2 3 4 5 6 7} {
         safe_connect_bd_net [get_bd_pins AXI4_register_file_0/RW_REG${idx}] [get_bd_ports RW_REG${idx}_0]
         safe_connect_bd_net [get_bd_ports RO_REG${idx}_IN_0] [get_bd_pins AXI4_register_file_0/RO_REG${idx}_IN]
         safe_connect_bd_net [get_bd_ports RO_REG${idx}_WE_0] [get_bd_pins AXI4_register_file_0/RO_REG${idx}_WE]
@@ -396,7 +447,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
         assign_mb_addr_exact microblaze_0/Data dac1_program_bram_ctrl/S_AXI/Mem0 0xC0010000 0x00008000
         assign_mb_addr_exact microblaze_0/Data dac2_program_bram_ctrl/S_AXI/Mem0 0xC0020000 0x00008000
         assign_mb_addr_exact microblaze_0/Data dac3_program_bram_ctrl/S_AXI/Mem0 0xC0030000 0x00008000
-        assign_mb_addr_exact microblaze_0/Data adc_capture_bram_ctrl/S_AXI/Mem0 0xC0100000 0x00010000
+        assign_mb_addr_exact microblaze_0/Data adc_capture_bram_ctrl/S_AXI/Mem0 0xC0100000 0x00020000
     }
 
     validate_bd_design
@@ -443,6 +494,7 @@ if {$include_litejesd} {
 
 file mkdir $project_dir
 file mkdir $report_dir
+refresh_axi_register_file_ip_metadata $script_dir
 create_project $project_name $project_dir -part $part -force
 set_first_available_board_part $board_candidates
 set_property target_language Verilog [current_project]
@@ -574,9 +626,9 @@ if {$include_bram_dataplane} {
         CONFIG.Byte_Size              {8} \
         CONFIG.Write_Width_A          {32} \
         CONFIG.Read_Width_A           {32} \
-        CONFIG.Write_Width_B          {128} \
-        CONFIG.Read_Width_B           {128} \
-        CONFIG.Write_Depth_A          {16384} \
+        CONFIG.Write_Width_B          {256} \
+        CONFIG.Read_Width_B           {256} \
+        CONFIG.Write_Depth_A          {32768} \
         CONFIG.Assume_Synchronous_Clk {false} \
         CONFIG.Register_PortA_Output_of_Memory_Primitives {false} \
         CONFIG.Register_PortA_Output_of_Memory_Core {false} \

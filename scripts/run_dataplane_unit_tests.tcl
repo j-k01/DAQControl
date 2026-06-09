@@ -13,4 +13,11 @@ exec xvlog.bat -sv \
 exec xelab.bat dataplane_bram_tb -snapshot dataplane_bram_tb
 exec xsim.bat dataplane_bram_tb -runall
 
-puts "Dataplane BRAM unit tests passed."
+exec xvlog.bat -sv \
+    ../../src/jesd/dac_source_to_converter_preimage.v \
+    ../dac_source_to_converter_preimage_tb.sv
+
+exec xelab.bat dac_source_to_converter_preimage_tb -snapshot dac_source_to_converter_preimage_tb
+exec xsim.bat dac_source_to_converter_preimage_tb -runall
+
+puts "Dataplane/preimage unit tests passed."

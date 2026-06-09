@@ -55,16 +55,18 @@ set_property IOSTANDARD LVCMOS18 [get_ports {DAC_SCLK DAC_SDIN DAC_SDOUT DAC_CS_
 # ADC1_SYNC  -> LA11_N, active-low JESD SYNC request to ADC1
 # ADC1_SDOUT -> LA12_N
 # ADC2_SCS   -> LA13_P
+# ADC2_SYNC  -> LA06_N, active-low JESD SYNC request to ADC2
 set_property PACKAGE_PIN Y1 [get_ports ADC1_RESET]
 set_property PACKAGE_PIN AC3 [get_ports ADC2_RESET]
 set_property PACKAGE_PIN AB3 [get_ports ADC_SDIN]
 set_property PACKAGE_PIN AC2 [get_ports ADC_SCLK]
+set_property PACKAGE_PIN AC1 [get_ports ADC2_SYNC_N]
 set_property PACKAGE_PIN W4 [get_ports ADC2_SDOUT]
 set_property PACKAGE_PIN AB6 [get_ports ADC1_CS_N]
 set_property PACKAGE_PIN AB5 [get_ports ADC1_SYNC_N]
 set_property PACKAGE_PIN W6 [get_ports ADC1_SDOUT]
 set_property PACKAGE_PIN AB8 [get_ports ADC2_CS_N]
-set_property IOSTANDARD LVCMOS18 [get_ports {ADC1_RESET ADC2_RESET ADC_SDIN ADC_SCLK ADC2_SDOUT ADC1_CS_N ADC1_SYNC_N ADC1_SDOUT ADC2_CS_N}]
+set_property IOSTANDARD LVCMOS18 [get_ports {ADC1_RESET ADC2_RESET ADC_SDIN ADC_SCLK ADC2_SYNC_N ADC2_SDOUT ADC1_CS_N ADC1_SYNC_N ADC1_SDOUT ADC2_CS_N}]
 
 # ADC input AC/DC coupling controls. The FMC-ADC500-CD pulls these down, so
 # reset/default 0 is the safe AC-coupled state. Drive 1 only for intentional DC

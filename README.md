@@ -69,18 +69,40 @@ STAT
 RDRO n
 RDRW n
 WRTE n value
-ADCT mode
+ADCS [chip selector]
+ADCT [all|adc0|adc1] mode
 COUP [all|1..4] [ac|dc]
 ```
 
-`RO0` is packed status. `RO1` is the latest one-second `CLK_FMC` sampled-edge
-count. `RO2` is the latest one-second `SYSREF_FMC` sampled-edge count. `RO3`
+`RW0` through `RW7` and `RO0` through `RO7` are exposed through UART. `RO0` is
+packed status. `RO1` is the latest one-second `CLK_FMC` sampled-edge count.
+`RO2` is the latest one-second `SYSREF_FMC` sampled-edge count. `RO3`
 is selected by `RW1[4:0]`: `0=HMC7044 auto-init status`,
 `1=HMC7044 last auto write`, `2=raw pins`, `3=build ID`, `4=GTH status`,
 `5=GTH RX lane status`, `6=LiteJESD status`, `7=DAC waveform debug`,
 `8=HMC7044 readback summary`, `9=HMC7044 product ID`, `10=HMC7044 alarm
 readbacks`, `11=HMC7044 PLL1 status readbacks`, `12=HMC7044 PLL2/SYSREF
 status readbacks`, `13=HMC7044 scratchpad readback`.
+
+The dual-ADC frontend uses the extended registers so RW2 no longer needs more
+ADC overloads. `RW5[31]` enables the new ADC control fields, `RW5[1:0]` selects
+capture format, `RW5[3:2]` selects raw-lane debug, `RW5[4]` selects physical DP
+order for ADC chip 0, `RW5[5]` does the same for ADC chip 1, `RW5[8]` bypasses
+ILAS checking, `RW5[9]` enables STPL checking, and `RW5[23:16]` is the ADC RX
+polarity mask. Firmware defaults this to `0x80000100`.
+`RW5[25:24]` scopes ADC test-pattern writes: `0`/`3` means both chips, `1`
+means ADC chip 0 only, and `2` means ADC chip 1 only.
+
+`RO4` is the ADC frontend summary. `RO5` and `RO6` are chip-scoped ADC debug
+readbacks selected by `RW7[4:0]`: `0=status`, `1=lane status`, `2=events`,
+`3..6=sample halves`, `7=raw lane`. `RO7` reads a published logical channel;
+select `adc_chN` with `RW7[9:8]` and low/high half with `RW7[10]`. The `ADCS`
+UART command is the convenient wrapper for these fields.
+
+With the BRAM dataplane build, ADC capture frames are 256-bit fabric frames
+streamed as eight little-endian u32 words:
+`adc_ch0 low/high`, `adc_ch1 low/high`, `adc_ch2 low/high`, `adc_ch3 low/high`.
+The main plotting script reconstructs these as `adc_ch0` through `adc_ch3`.
 
 Selector `7` returns `{dac_sine_sample[15:0], triangle_debug_sample[15:0]}`.
 The sine sample is routed to all four DAC converters. The triangle value is a
@@ -188,7 +210,7 @@ These bits are only used by the `--with-staged-gt` build.
 | Bits | Function |
 | --- | --- |
 | 0 | Assert GTH reset-all while high |
-| 2:1 | DAC sample-map diagnostic mode for ILA only; live DAC path is always native LiteJESD converter streams |
+| 2:1 | DAC sample-map diagnostic tag for ILA only; live DAC path always uses the source-to-converter preimage module |
 | 4:3 | DAC TX lane mode: `0` identity, `1` FPGA board map for DAC identity crossbar, `2` inverse/check map, `3` DAC-crossbar inverse for `0x3021`/`0x7654` |
 | 7:5 | DAC debug/source probe select only; source selection is handled by `NSRC` and the four per-channel muxes |
 | 15:8 | Per-lane TX polarity invert |
@@ -211,6 +233,11 @@ These bits are only used by the `--with-staged-gt` build.
 | 13:12 | IZH channel select during `NEUR` |
 | 14 | IZH all-channel write during `NEUR` |
 | 31:8 | DAC sine DDS phase increment when BRAM mode is off; DAC BRAM loop frame count when BRAM mode is on, zero loops the full BRAM |
+
+When DAC BRAM playback is enabled (`RW3[6]=1`), the BRAM player interprets
+`RW3[31:8]` as the loop frame count. DDS channels that are mixed with BRAM
+channels use the hardware default DDS step (`0x19999A`) so the BRAM frame count
+cannot accidentally retune the DDS output.
 
 ## IZH Neuron DAC Source
 
@@ -342,12 +369,13 @@ CAPS
 CAPT 4096
 ```
 
-`CAPT [frames]` leaves the normal DAC generator running and writes ADC1
-128-bit frames into the ADC capture BRAM before streaming little-endian 32-bit
-words over UART after sync bytes `FE 10 CA FE`. Each frame is four words:
-`0=A low`, `1=A high`, `2=B low`, and `3=B high`. `PCAP [frames]` is the
-explicit variant that enables/restarts the DAC BRAM program players first; use
-it only after uploading channel program words with `PROG`.
+`CAPT [frames]` leaves the normal DAC generator running and writes 256-bit
+logical ADC frames into the ADC capture BRAM before streaming little-endian
+32-bit words over UART after sync bytes `FE 10 CA FE`. Each frame is eight
+words: `adc_ch0 low/high`, `adc_ch1 low/high`, `adc_ch2 low/high`,
+`adc_ch3 low/high`. `PCAP [frames]` is the explicit variant that
+enables/restarts the DAC BRAM program players first; use it only after
+uploading channel program words with `PROG`.
 
 The DAC BRAM dataplane has one independent 64-bit playback BRAM per DAC
 converter. The MicroBlaze sees each channel as 8192 little-endian 32-bit words,
@@ -357,7 +385,7 @@ must be even so every uploaded 64-bit frame is complete. Upload with:
 The generated Xilinx BMG IP is intentionally asymmetric: each DAC program RAM
 has Port A at 32-bit read/write width for the AXI BRAM controller and Port B at
 64-bit read width for fabric playback. The ADC capture RAM is Port A 32-bit for
-MicroBlaze readout and Port B 128-bit for fabric capture. Project generation
+MicroBlaze readout and Port B 256-bit for fabric capture. Project generation
 checks these generated IP widths and fails if Vivado collapses them.
 
 ```text
@@ -414,7 +442,7 @@ bitstream:
 python scripts/capture_plot_adc_uart.py --port COM10 --program-mode triangle --sample-format twos --triangle-frequency-mhz 50 --chunk-order 3,2,1,0 --program-channel all --sources 0,1 --prefix tri50_chunk_3210
 ```
 
-For the DAC ordering diagnostic, start with native LiteJESD converter streams
+For the DAC ordering diagnostic, start with the source-to-converter preimage
 and the DAC-crossbar TX lane mapping, then upload a frame-aligned trapezoid:
 
 ```text
@@ -507,20 +535,20 @@ bypasses ILAS checking for bring-up, `RW2[25]=1` enables the LiteJESD STPL
 checker, and `RW2[26]=1` switches ADC1 from Sundance signal order to physical
 DP0-DP3 order.
 The MicroBlaze firmware defaults `RW2` to `0x01000018`: ADS54J60 ILAS checking
-is bypassed for bring-up, the DAC sample path uses native LiteJESD converter
-streams, and the FPGA TX lane mux uses the
+is bypassed for bring-up, the DAC sample path uses the named
+source-to-converter preimage module, and the FPGA TX lane mux uses the
 `dac_xbar` lane order for the DAC-side `0x3021/0x7654` octetpath crossbar.
-In this mode BRAM/DDS/neuron channel N remains a complete 64-bit source stream;
-no byte-lane preimage is applied between the source mux and LiteJESD.
-The expected channel-to-connector identity assumes the DAC39J84 analog output
-mux registers remain in their default identity state.
+In this mode BRAM/DDS/neuron channel N remains a complete 64-bit source stream
+until after the per-channel mux. The preimage boundary is deliberately after
+source selection, so BRAM, DDS, and pulse/neuron sources all use the same
+`{t3,t2,t1,t0}` input contract.
 Clear bit 24 only when deliberately re-enabling ADC ILAS checking while
 debugging the expected ILAS fields.
 
 For the optional `--with-gth-tx-ila` diagnostic build, keep `RW2[15:8]=0`
 unless you are deliberately testing TX polarity. The TX ILA exposes the BRAM
-output, selected source, native stream path, whole-stream order path, legacy
-remap input/output, final LiteJESD converter inputs, raw LiteJESD lane data, and
+output, selected source, native stream path, source preimage path, legacy remap
+input/output, final LiteJESD converter inputs, raw LiteJESD lane data, and
 post-TX-lane-mux GTH user data without needing any RW2 bits above bit 7.
 
 The old sample-map control is retained as an ILA tag only. It does not select

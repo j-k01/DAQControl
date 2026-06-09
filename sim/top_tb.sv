@@ -38,6 +38,7 @@ module top_tb;
     wire ADC1_CS_N;
     wire ADC2_CS_N;
     wire ADC1_SYNC_N;
+    wire ADC2_SYNC_N;
 
     wire HMC_CLK_RESET;
     wire HMC_CLK_CS_N;
@@ -81,6 +82,7 @@ module top_tb;
         .ADC1_CS_N                 (ADC1_CS_N),
         .ADC2_CS_N                 (ADC2_CS_N),
         .ADC1_SYNC_N               (ADC1_SYNC_N),
+        .ADC2_SYNC_N               (ADC2_SYNC_N),
         .HMC_CLK_RESET             (HMC_CLK_RESET),
         .HMC_CLK_CS_N              (HMC_CLK_CS_N),
         .HMC_CLK_SCLK              (HMC_CLK_SCLK),

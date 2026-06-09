@@ -7,18 +7,22 @@ module adc_bram_capture #(
     input  wire        rst,
     input  wire        start,
     input  wire        data_valid,
-    input  wire [31:0] sample_a_low,
-    input  wire [31:0] sample_a_high,
-    input  wire [31:0] sample_b_low,
-    input  wire [31:0] sample_b_high,
+    input  wire [31:0] ch0_low,
+    input  wire [31:0] ch0_high,
+    input  wire [31:0] ch1_low,
+    input  wire [31:0] ch1_high,
+    input  wire [31:0] ch2_low,
+    input  wire [31:0] ch2_high,
+    input  wire [31:0] ch3_low,
+    input  wire [31:0] ch3_high,
 
     output wire [31:0] bram_addr,
     output wire        bram_clk,
-    output wire [127:0] bram_din,
-    input  wire [127:0] bram_dout,
+    output wire [255:0] bram_din,
+    input  wire [255:0] bram_dout,
     output wire        bram_en,
     output wire        bram_rst,
-    output wire [15:0] bram_we,
+    output wire [31:0] bram_we,
 
     output wire [31:0] status
 );
@@ -39,15 +43,19 @@ module adc_bram_capture #(
 
     assign bram_clk  = clk;
     assign bram_rst  = 1'b0;
-    assign bram_addr = {{(28-ADDR_W){1'b0}}, addr_count, 4'b0000};
+    assign bram_addr = {{(27-ADDR_W){1'b0}}, addr_count, 5'b00000};
     assign bram_din  = {
-        sample_b_high,
-        sample_b_low,
-        sample_a_high,
-        sample_a_low
+        ch3_high,
+        ch3_low,
+        ch2_high,
+        ch2_low,
+        ch1_high,
+        ch1_low,
+        ch0_high,
+        ch0_low
     };
     assign bram_en   = capture_write;
-    assign bram_we   = {16{capture_write}};
+    assign bram_we   = {32{capture_write}};
     wire [15:0] status_count = captured_count;
 
     always @(posedge clk) begin
