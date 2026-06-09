@@ -234,7 +234,10 @@ module adc_frontend (
 
     assign adc_ch0 = {adc0_ch_a_high, adc0_ch_a_low};
     assign adc_ch1 = {adc0_ch_b_high, adc0_ch_b_low};
-    assign adc_ch2 = {adc1_ch_a_high, adc1_ch_a_low};
-    assign adc_ch3 = {adc1_ch_b_high, adc1_ch_b_low};
+    // Front-panel ADC order.  With OUT1->IN4 and OUT2->IN3 cabled during
+    // validation, ADC chip1 stream A recovered OUT1 and stream B recovered
+    // OUT2.  Publish chip1 in physical connector order: IN3, then IN4.
+    assign adc_ch2 = {adc1_ch_b_high, adc1_ch_b_low};
+    assign adc_ch3 = {adc1_ch_a_high, adc1_ch_a_low};
 
 endmodule
