@@ -38,7 +38,9 @@ for {set i 0} {$i < [llength $::argv]} {incr i} {
 puts "=== DAQ_LAUNCH rebuild: create_project.tcl [join $create_args { }] ==="
 set ::argv $create_args
 source [file join $script_dir create_project.tcl]
-close_project
+if {[catch {current_project} project] == 0 && $project ne ""} {
+    close_project
+}
 
 puts "=== DAQ_LAUNCH rebuild: build.tcl [join $build_args { }] ==="
 set ::argv $build_args

@@ -129,6 +129,12 @@ proc set_ipx_value_if_present {objects value label} {
     }
 }
 
+proc close_project_if_open {} {
+    if {[catch {current_project} project] == 0 && $project ne ""} {
+        close_project
+    }
+}
+
 proc refresh_axi_register_file_ip_metadata {script_dir} {
     set ip_dir [file join $script_dir ip_repo AXI4_register_file_1_0]
     set component_xml [file join $ip_dir component.xml]
@@ -166,7 +172,7 @@ proc refresh_axi_register_file_ip_metadata {script_dir} {
     ipx::update_checksums $core
     ipx::check_integrity $core
     ipx::save_core $core
-    close_project
+    close_project_if_open
     file delete -force $edit_dir
 }
 
