@@ -119,16 +119,6 @@ proc validate_ips_unlocked {} {
     }
 }
 
-proc set_ipx_value_if_present {objects value label} {
-    if {[llength $objects] == 0} {
-        puts "WARNING: IP packager did not expose $label; leaving it unchanged."
-        return
-    }
-    foreach obj $objects {
-        set_property value $value $obj
-    }
-}
-
 proc close_project_if_open {} {
     if {[catch {current_project} project] == 0 && $project ne ""} {
         close_project
@@ -152,22 +142,6 @@ proc refresh_axi_register_file_ip_metadata {script_dir} {
     set core [ipx::current_core]
     ipx::merge_project_changes ports $core
     ipx::merge_project_changes hdl_parameters $core
-
-    set_ipx_value_if_present \
-        [ipx::get_model_parameters C_S00_AXI_ADDR_WIDTH -of_objects $core] \
-        6 "model parameter C_S00_AXI_ADDR_WIDTH"
-    set_ipx_value_if_present \
-        [ipx::get_user_parameters C_S00_AXI_ADDR_WIDTH -of_objects $core] \
-        6 "user parameter C_S00_AXI_ADDR_WIDTH"
-
-    set s00_axi [ipx::get_bus_interfaces S00_AXI -of_objects $core]
-    if {[llength $s00_axi] > 0} {
-        set_ipx_value_if_present \
-            [ipx::get_bus_parameters WIZ_NUM_REG -of_objects $s00_axi] \
-            16 "S00_AXI WIZ_NUM_REG"
-    } else {
-        puts "WARNING: IP packager did not expose S00_AXI bus interface."
-    }
 
     ipx::update_checksums $core
     ipx::check_integrity $core
