@@ -18,7 +18,14 @@ if {![catch {targets -set -nocase -filter {name =~ "*PSU*"}}]} {
         puts "rst -system failed: $err"
     }
 } elseif {![catch {targets -set -nocase -filter {name =~ "DAP*"}}]} {
-    puts "PSU missing; clearing sticky DAP error with rst -dap."
+    # rst -system works on the errored DAP target and resets the PS, which
+    # releases any hung AXI transaction; rst -dap then clears the sticky
+    # error so the PSU/APU targets re-enumerate.
+    puts "PSU missing; resetting system through DAP, then clearing DAP."
+    if {[catch {rst -system} err]} {
+        puts "rst -system failed: $err"
+    }
+    after 3000
     if {[catch {rst -dap} err]} {
         puts "rst -dap failed: $err"
     }

@@ -77,6 +77,22 @@
 #define MBOX_TX_PKTS        3u /* UDP packets sent */
 #define MBOX_WORDS          8u
 
+// Bring-up bisect aid: when DAQ_HALT_STAGE matches the low byte of a
+// progress code, spin forever right after writing it. The system staying
+// healthy (core haltable, mailbox readable) proves everything up to that
+// stage is innocent. Set to -1 for normal operation.
+#ifndef DAQ_HALT_STAGE
+#define DAQ_HALT_STAGE      (-1)
+#endif
+
+#define DAQ_BARRIER(stage) \
+    do { \
+        if ((DAQ_HALT_STAGE) == (stage)) { \
+            for (;;) { \
+            } \
+        } \
+    } while (0)
+
 #define DAQ_MB_MAIN_ENTERED 0xDA000001u
 #define DAQ_MB_GIC_READY    0xDA000002u
 #define DAQ_MB_LWIP_INIT    0xDA000003u
@@ -332,9 +348,11 @@ static int network_init(void)
 
     platform_setup_interrupts();
     mailbox_write(MBOX_PROGRESS, DAQ_MB_GIC_READY);
+    DAQ_BARRIER(2);
 
     lwip_init();
     mailbox_write(MBOX_PROGRESS, DAQ_MB_LWIP_INIT);
+    DAQ_BARRIER(3);
 
     IP4_ADDR(&ipaddr, DAQ_LOCAL_IP0, DAQ_LOCAL_IP1, DAQ_LOCAL_IP2, DAQ_LOCAL_IP3);
     IP4_ADDR(&netmask, DAQ_NETMASK0, DAQ_NETMASK1, DAQ_NETMASK2, DAQ_NETMASK3);
@@ -349,12 +367,14 @@ static int network_init(void)
         return -1;
     }
     mailbox_write(MBOX_PROGRESS, DAQ_MB_EMAC_ADDED);
+    DAQ_BARRIER(4);
 
     netif_set_default(&server_netif);
     netif_set_up(&server_netif);
 
     Xil_ExceptionEnable();
     mailbox_write(MBOX_PROGRESS, DAQ_MB_NETIF_UP);
+    DAQ_BARRIER(5);
 
     tx_pcb = udp_new();
     cmd_pcb = udp_new();
@@ -387,8 +407,10 @@ int main(void)
         mailbox_write(i, 0u);
     }
     mailbox_write(MBOX_PROGRESS, DAQ_MB_MAIN_ENTERED);
+    DAQ_BARRIER(1); /* after mailbox/DDR only */
 
     xil_printf("\r\nDAQ_LAUNCH PS Ethernet readout\r\n");
+    DAQ_BARRIER(7); /* after first PS UART0 access */
 
     if (network_init() != 0) {
         xil_printf("Network init failed; stopping.\r\n");
