@@ -2,7 +2,8 @@
 """Interactive matplotlib viewer for saved ADC capture CSVs.
 
 Auto-detects the three CSV formats this repo writes:
-  - trap_dac0_adc_in1_uart.py:  sample_index,time_ns,in1_counts
+  - trap_dac0_adc_in1_uart.py / sine_dac0_adc_in1_uart.py:
+    sample_index,time_ns,in<N>_counts
   - capture_plot_adc_uart.py combined: stream,sample_index,sample_signed
   - capture_plot_adc_uart.py raw sources: source,index,word_hex,lo16_signed,hi16_signed
 
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 import sys
 from pathlib import Path
 
@@ -34,10 +36,14 @@ def load_csv(path: Path) -> dict[str, tuple[list[float] | None, list[int]]]:
         header = next(reader)
         rows = [row for row in reader if row]
 
-    if header[:3] == ["sample_index", "time_ns", "in1_counts"]:
+    if (
+        len(header) >= 3
+        and header[:2] == ["sample_index", "time_ns"]
+        and re.fullmatch(r"in\d+_counts", header[2])
+    ):
         times = [float(row[1]) for row in rows]
         samples = [int(row[2]) for row in rows]
-        return {"in1": (times, samples)}
+        return {header[2][: -len("_counts")]: (times, samples)}
 
     if header[:3] == ["stream", "sample_index", "sample_signed"]:
         traces: dict[str, tuple[list[float] | None, list[int]]] = {}

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Program a configurable trapezoid pulse train on DAC0, then capture ADC IN1 over UART.
+"""Program a configurable trapezoid pulse train on a DAC, then capture an ADC input over UART.
+
+Defaults to DAC0 (OUT1) -> ADC IN1; pick other connectors with --dac-channel
+(OUT1-OUT4 = 0-3) and --adc-input (1-4), e.g. OUT4 -> IN2:
+
+  python scripts/trap_dac0_adc_in1_uart.py --port COMx --dac-channel 3 --adc-input 2
 
 One-shot bring-up for the DAC0 -> ADC IN1 cabled loopback on a freshly loaded
 board (run program_and_load.tcl first):
@@ -108,7 +113,13 @@ def build_words(args: argparse.Namespace) -> tuple[list[int], int, int]:
     return words, period_samples, width_samples
 
 
-def analyze_in1(samples: list[int], adc_rate_mhz: float, expected_mhz: float) -> list[str]:
+def analyze_in1(
+    samples: list[int],
+    adc_rate_mhz: float,
+    expected_mhz: float,
+    label: str = "in1",
+    dac_name: str = "DAC0",
+) -> list[str]:
     data = np.asarray(samples, dtype=np.float64)
     centered = data - np.mean(data)
     mag = np.abs(np.fft.rfft(centered * np.hanning(len(centered))))
@@ -117,24 +128,25 @@ def analyze_in1(samples: list[int], adc_rate_mhz: float, expected_mhz: float) ->
     peak_bin = int(np.argmax(mag))
     peak_mhz = peak_bin * adc_rate_mhz / len(centered)
     lines = [
-        f"in1_samples={len(samples)}",
-        f"in1_min={int(np.min(data))} in1_max={int(np.max(data))} "
-        f"in1_ptp={int(np.ptp(data))} in1_mean={float(np.mean(data)):.1f}",
-        f"in1_rms_counts={float(np.sqrt(np.mean(centered * centered))):.1f}",
+        f"{label}_samples={len(samples)}",
+        f"{label}_min={int(np.min(data))} {label}_max={int(np.max(data))} "
+        f"{label}_ptp={int(np.ptp(data))} {label}_mean={float(np.mean(data)):.1f}",
+        f"{label}_rms_counts={float(np.sqrt(np.mean(centered * centered))):.1f}",
         f"fft_peak_mhz={peak_mhz:.3f} expected_pulse_rate_mhz={expected_mhz:.3f}",
     ]
     if np.ptp(data) < 100:
         lines.append(
-            "WARNING: IN1 looks flat (<100 counts p-p). Check the DAC0 -> IN1 "
-            "cable and ADC init (STAT / ADCS), or try --reinit-adc."
+            f"WARNING: {label.upper()} looks flat (<100 counts p-p). Check the "
+            f"{dac_name} -> {label.upper()} cable and ADC init (STAT / ADCS), "
+            "or try --reinit-adc."
         )
     return lines
 
 
-def write_in1_csv(path: Path, samples: list[int], adc_rate_mhz: float) -> None:
+def write_in1_csv(path: Path, samples: list[int], adc_rate_mhz: float, column: str = "in1_counts") -> None:
     step_ns = 1.0e3 / adc_rate_mhz
     with path.open("w", newline="") as f:
-        f.write("sample_index,time_ns,in1_counts\n")
+        f.write(f"sample_index,time_ns,{column}\n")
         for index, value in enumerate(samples):
             f.write(f"{index},{index * step_ns:.3f},{value}\n")
 
@@ -147,6 +159,7 @@ def write_in1_plot(
     zoom_periods: int,
     max_points: int,
     show: bool,
+    channel_label: str = "ADC IN1",
 ) -> None:
     try:
         import matplotlib.pyplot as plt
@@ -159,14 +172,14 @@ def write_in1_plot(
     fig, axes = plt.subplots(2, 1, figsize=(14, 7), constrained_layout=True)
     zoom_t = [i * step_ns for i in range(zoom_count)]
     axes[0].plot(zoom_t, samples[:zoom_count], lw=1.0, marker=".", ms=3)
-    axes[0].set_title(f"ADC IN1, first {zoom_periods} pulse periods ({period_ns:g} ns each)")
+    axes[0].set_title(f"{channel_label}, first {zoom_periods} pulse periods ({period_ns:g} ns each)")
     axes[0].set_xlabel("time [ns]")
     axes[0].set_ylabel("signed16 counts")
     axes[0].grid(True, alpha=0.25)
 
     x_idx, full = cap.decimate(samples, max_points)
     axes[1].plot([i * step_ns * 1.0e-3 for i in x_idx], full, lw=0.7)
-    axes[1].set_title("ADC IN1, full capture")
+    axes[1].set_title(f"{channel_label}, full capture")
     axes[1].set_xlabel("time [us]")
     axes[1].set_ylabel("signed16 counts")
     axes[1].grid(True, alpha=0.25)
@@ -189,7 +202,21 @@ def main() -> None:
     parser.add_argument("--dac-sample-rate-mhz", type=float, default=1000.0)
     parser.add_argument("--amplitude", type=parse_int, default=0x6000, help="Signed DAC counts.")
     parser.add_argument("--offset", type=parse_int, default=0, help="Baseline in signed DAC counts.")
-    parser.add_argument("--coupling", choices=["ac", "dc"], default="ac", help="ADC IN1 input coupling.")
+    parser.add_argument(
+        "--dac-channel",
+        type=int,
+        default=0,
+        choices=[0, 1, 2, 3],
+        help="DAC channel to program; card outputs OUT1-OUT4 are channels 0-3.",
+    )
+    parser.add_argument(
+        "--adc-input",
+        type=int,
+        default=1,
+        choices=[1, 2, 3, 4],
+        help="ADC input connector to capture (IN1-IN4).",
+    )
+    parser.add_argument("--coupling", choices=["ac", "dc"], default="ac", help="ADC input coupling.")
     parser.add_argument(
         "--reinit-adc",
         action="store_true",
@@ -228,9 +255,12 @@ def main() -> None:
     prefix = args.prefix or f"trap{args.period_ns:g}ns"
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    converter = args.adc_input - 1
+    in_label = f"in{args.adc_input}"
+    dac_name = f"DAC{args.dac_channel}"
 
     print(
-        f"DAC0 trapezoid pulse train: period={args.period_ns:g} ns "
+        f"{dac_name} (OUT{args.dac_channel + 1}) trapezoid pulse train: period={args.period_ns:g} ns "
         f"({period_samples} samples), pulse={args.pulse_width_ns:g} ns "
         f"({width_samples} samples), gap={gap_ns:g} ns, "
         f"amp={args.amplitude} offset={args.offset}"
@@ -247,7 +277,7 @@ def main() -> None:
         if args.expect_build_id is not None:
             cap.check_build_id(port, args.expect_build_id)
         cap.set_rw2(port, args.rw2)
-        cap.uart_command_ok(port, f"COUP 1 {args.coupling}")
+        cap.uart_command_ok(port, f"COUP {args.adc_input} {args.coupling}")
         if not args.no_preflight:
             preflight_jesd(port)
         if args.reinit_adc:
@@ -256,15 +286,15 @@ def main() -> None:
             cap.uart_command_ok(port, "WRTE 3 0x00000000")
             time.sleep(1.0)
 
-        print(f"Uploading {len(words)} DAC program words to DAC channel 0...")
-        cap.upload_program(port, words, 0)
-        cap.verify_program_upload(port, words, 0, args.verify_upload_words)
+        print(f"Uploading {len(words)} DAC program words to DAC channel {args.dac_channel}...")
+        cap.upload_program(port, words, args.dac_channel)
+        cap.verify_program_upload(port, words, args.dac_channel, args.verify_upload_words)
 
-        # Other DACs stay on DDS; DAC0 plays the BRAM pulse train.
+        # Other DACs stay on DDS; the selected DAC plays the BRAM pulse train.
         port.write(b"NSRC all dds\n")
         port.flush()
         print(cap.wait_for_line_prefix(port, "DAC source"))
-        port.write(b"NSRC 0 bram\n")
+        port.write(f"NSRC {args.dac_channel} bram\n".encode("ascii"))
         port.flush()
         print(cap.wait_for_line_prefix(port, "DAC source"))
 
@@ -286,34 +316,38 @@ def main() -> None:
         cap.uart_command_ok(port, f"WRTE 3 0x{rw3_run:08X}")
 
     captures = cap.split_frame_captures(frame_words)
-    in1 = cap.build_converter_streams(captures, [0])["adc_ch0"]
+    in_samples = cap.build_converter_streams(captures, [converter])[f"adc_ch{converter}"]
 
     summary_lines = [
         f"period_ns={args.period_ns:g} pulse_width_ns={args.pulse_width_ns:g} gap_ns={gap_ns:g}",
         f"amplitude={args.amplitude} offset={args.offset} coupling={args.coupling}",
+        f"dac_channel={args.dac_channel} (OUT{args.dac_channel + 1}) adc_input=IN{args.adc_input}",
         f"program_words={len(words)} frame_count={frame_count} rw2=0x{args.rw2:08X}",
         f"capture_frames={args.frames} adc_sample_rate_mhz={args.adc_sample_rate_mhz:g}",
     ]
-    summary_lines.extend(analyze_in1(in1, args.adc_sample_rate_mhz, expected_mhz))
+    summary_lines.extend(
+        analyze_in1(in_samples, args.adc_sample_rate_mhz, expected_mhz, in_label, dac_name)
+    )
     summary = "\n".join(summary_lines)
     print(summary)
 
-    csv_path = outdir / f"{prefix}_in1.csv"
-    write_in1_csv(csv_path, in1, args.adc_sample_rate_mhz)
+    csv_path = outdir / f"{prefix}_{in_label}.csv"
+    write_in1_csv(csv_path, in_samples, args.adc_sample_rate_mhz, f"{in_label}_counts")
     print(f"Wrote {csv_path}")
-    (outdir / f"{prefix}_in1_summary.txt").write_text(summary + "\n")
-    print(f"Wrote {outdir / f'{prefix}_in1_summary.txt'}")
+    (outdir / f"{prefix}_{in_label}_summary.txt").write_text(summary + "\n")
+    print(f"Wrote {outdir / f'{prefix}_{in_label}_summary.txt'}")
     if not args.no_plot:
         write_in1_plot(
-            outdir / f"{prefix}_in1.png",
-            in1,
+            outdir / f"{prefix}_{in_label}.png",
+            in_samples,
             args.adc_sample_rate_mhz,
             args.period_ns,
             args.zoom_periods,
             args.max_points,
             args.show,
+            f"ADC {in_label.upper()}",
         )
-    print("DAC0 pulse train left running.")
+    print(f"{dac_name} pulse train left running.")
 
 
 if __name__ == "__main__":
