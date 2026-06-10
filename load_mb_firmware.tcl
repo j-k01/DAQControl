@@ -87,7 +87,7 @@ proc run_psu_init_if_available {script_dir} {
 
     puts "Running PS DDR init: $psu_init_file"
     catch {targets -set -filter {name =~ "*PSU*"}} target_result
-    if {[catch {source $psu_init_file} result]} {
+    if {[catch {uplevel #0 [list source $psu_init_file]} result]} {
         puts "WARNING: source psu_init.tcl failed: $result"
         return
     }
