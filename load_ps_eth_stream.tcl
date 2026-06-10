@@ -106,7 +106,7 @@ puts "Stopping A53..."
 catch {stop} stop_result
 
 puts "Resetting A53..."
-catch {rst -processor} rst_result
+catch {rst -processor -clear-registers} rst_result
 
 puts "Downloading ELF: $elf_file"
 dow $elf_file
