@@ -10,11 +10,15 @@
 
 #include "sleep.h"
 #include "xil_cache.h"
+#include "xil_exception.h"
 #include "xil_printf.h"
 #include "xil_types.h"
 #include "xparameters.h"
+#include "xscugic.h"
+#include "xtime_l.h"
 
 #include "lwip/init.h"
+#include "lwip/etharp.h"
 #include "lwip/ip_addr.h"
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
@@ -30,6 +34,8 @@
 #  error "No XEMACPS base address found in xparameters.h"
 # endif
 #endif
+
+#define INTC_DEVICE_ID      XPAR_SCUGIC_0_DEVICE_ID
 
 #define DAQ_LOCAL_IP0       192
 #define DAQ_LOCAL_IP1       168
@@ -59,6 +65,29 @@
 #define DAQ_HEADER_BYTES    32u
 #define DAQ_PAYLOAD_WORDS   320u
 
+// Debug mailbox in PS DDR, outside the app ELF window (which ends at
+// 0x0EFFFFFF) and below the ADC DMA buffers at 0x10000000. Read it from XSCT
+// while the app runs, e.g.:
+//   targets -set -filter {name =~ "*PSU*"}; mrd 0x0F000000 8
+#define DAQ_MAILBOX_BASE    0x0F000000u
+
+#define MBOX_PROGRESS       0u /* DAQ_MB_* progress or error code */
+#define MBOX_HEARTBEAT      1u /* increments ~4 Hz while the main loop is alive */
+#define MBOX_RX_CMDS        2u /* UDP commands received */
+#define MBOX_TX_PKTS        3u /* UDP packets sent */
+#define MBOX_WORDS          8u
+
+#define DAQ_MB_MAIN_ENTERED 0xDA000001u
+#define DAQ_MB_GIC_READY    0xDA000002u
+#define DAQ_MB_LWIP_INIT    0xDA000003u
+#define DAQ_MB_EMAC_ADDED   0xDA000004u
+#define DAQ_MB_NETIF_UP     0xDA000005u
+#define DAQ_MB_UDP_READY    0xDA000006u
+#define DAQ_MB_LOOP_RUNNING 0xDA0000FFu
+#define DAQ_MB_ERR_EMAC_ADD 0xDAE00001u
+#define DAQ_MB_ERR_UDP_NEW  0xDAE00002u
+#define DAQ_MB_ERR_UDP_BIND 0xDAE00003u
+
 static struct netif server_netif;
 static struct udp_pcb *cmd_pcb;
 static struct udp_pcb *tx_pcb;
@@ -69,6 +98,42 @@ static u16 pending_port = DAQ_DEFAULT_DST_PORT;
 static u32 pending_chip_mask = 0x3u;
 static u32 pending_frames = ADC_DMA_FRAMES;
 static u32 sequence = 0;
+
+static void mailbox_write(u32 index, u32 value)
+{
+    volatile u32 *mbox = (volatile u32 *)(UINTPTR)DAQ_MAILBOX_BASE;
+
+    mbox[index] = value;
+    Xil_DCacheFlushRange((UINTPTR)&mbox[index], sizeof(u32));
+}
+
+static u32 mailbox_read(u32 index)
+{
+    volatile u32 *mbox = (volatile u32 *)(UINTPTR)DAQ_MAILBOX_BASE;
+
+    return mbox[index];
+}
+
+static void mailbox_increment(u32 index)
+{
+    mailbox_write(index, mailbox_read(index) + 1u);
+}
+
+// The lwIP emacps adapter is interrupt driven even in RAW API mode: the GEM
+// ISR moves RX frames into a queue that xemacif_input() drains. xemac_add()
+// registers and enables the GEM IRQ in the GIC distributor, but initializing
+// the GIC and unmasking IRQs at the CPU is the application's job (see the
+// lwIP echo server template's platform_setup_interrupts). Without this the
+// board never sees ARP or UDP, even with PHY link up.
+static void platform_setup_interrupts(void)
+{
+    Xil_ExceptionInit();
+    XScuGic_DeviceInitialize(INTC_DEVICE_ID);
+
+    Xil_ExceptionRegisterHandler(XIL_EXCEPTION_ID_IRQ_INT,
+            (Xil_ExceptionHandler)XScuGic_DeviceInterruptHandler,
+            (void *)(UINTPTR)INTC_DEVICE_ID);
+}
 
 static void put_u16_le(u8 *p, u16 value)
 {
@@ -102,6 +167,7 @@ static void send_status_packet(const ip_addr_t *addr, u16 port, const char *text
     memcpy(p->payload, text, len);
     udp_sendto(tx_pcb, p, addr, port);
     pbuf_free(p);
+    mailbox_increment(MBOX_TX_PKTS);
 }
 
 static void send_data_packet(u32 chip, u32 word_offset, u32 word_count,
@@ -135,6 +201,7 @@ static void send_data_packet(u32 chip, u32 word_offset, u32 word_count,
 
     udp_sendto(tx_pcb, p, addr, port);
     pbuf_free(p);
+    mailbox_increment(MBOX_TX_PKTS);
 }
 
 static void stream_chip(u32 chip, u32 frames, const ip_addr_t *addr, u16 port)
@@ -249,6 +316,7 @@ static void udp_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     cmd[copy_len] = '\0';
     pbuf_free(p);
 
+    mailbox_increment(MBOX_RX_CMDS);
     parse_command(cmd, addr, port);
 }
 
@@ -262,32 +330,46 @@ static int network_init(void)
     Xil_ICacheEnable();
     Xil_DCacheEnable();
 
+    platform_setup_interrupts();
+    mailbox_write(MBOX_PROGRESS, DAQ_MB_GIC_READY);
+
     lwip_init();
+    mailbox_write(MBOX_PROGRESS, DAQ_MB_LWIP_INIT);
 
     IP4_ADDR(&ipaddr, DAQ_LOCAL_IP0, DAQ_LOCAL_IP1, DAQ_LOCAL_IP2, DAQ_LOCAL_IP3);
     IP4_ADDR(&netmask, DAQ_NETMASK0, DAQ_NETMASK1, DAQ_NETMASK2, DAQ_NETMASK3);
     IP4_ADDR(&gateway, DAQ_GATEWAY0, DAQ_GATEWAY1, DAQ_GATEWAY2, DAQ_GATEWAY3);
 
+    // xemac_add() also runs PHY autonegotiation; a hang between LWIP_INIT and
+    // EMAC_ADDED in the mailbox means no PHY link.
     if (!xemac_add(&server_netif, &ipaddr, &netmask, &gateway, mac,
                    PLATFORM_EMAC_BASEADDR)) {
         xil_printf("ERROR: xemac_add failed\r\n");
+        mailbox_write(MBOX_PROGRESS, DAQ_MB_ERR_EMAC_ADD);
         return -1;
     }
+    mailbox_write(MBOX_PROGRESS, DAQ_MB_EMAC_ADDED);
 
     netif_set_default(&server_netif);
     netif_set_up(&server_netif);
+
+    Xil_ExceptionEnable();
+    mailbox_write(MBOX_PROGRESS, DAQ_MB_NETIF_UP);
 
     tx_pcb = udp_new();
     cmd_pcb = udp_new();
     if (tx_pcb == NULL || cmd_pcb == NULL) {
         xil_printf("ERROR: udp_new failed\r\n");
+        mailbox_write(MBOX_PROGRESS, DAQ_MB_ERR_UDP_NEW);
         return -1;
     }
     if (udp_bind(cmd_pcb, IP_ADDR_ANY, DAQ_CMD_PORT) != ERR_OK) {
         xil_printf("ERROR: udp_bind failed\r\n");
+        mailbox_write(MBOX_PROGRESS, DAQ_MB_ERR_UDP_BIND);
         return -1;
     }
     udp_recv(cmd_pcb, udp_recv_callback, NULL);
+    mailbox_write(MBOX_PROGRESS, DAQ_MB_UDP_READY);
 
     xil_printf("DAQ PS Ethernet streamer ready at %d.%d.%d.%d:%d\r\n",
                DAQ_LOCAL_IP0, DAQ_LOCAL_IP1, DAQ_LOCAL_IP2, DAQ_LOCAL_IP3,
@@ -297,6 +379,15 @@ static int network_init(void)
 
 int main(void)
 {
+    XTime tick_start;
+    u32 arp_elapsed_ms = 0;
+    u32 i;
+
+    for (i = 0; i < MBOX_WORDS; i++) {
+        mailbox_write(i, 0u);
+    }
+    mailbox_write(MBOX_PROGRESS, DAQ_MB_MAIN_ENTERED);
+
     xil_printf("\r\nDAQ_LAUNCH PS Ethernet readout\r\n");
 
     if (network_init() != 0) {
@@ -306,11 +397,29 @@ int main(void)
         }
     }
 
+    mailbox_write(MBOX_PROGRESS, DAQ_MB_LOOP_RUNNING);
+    XTime_GetTime(&tick_start);
+
     while (1) {
+        XTime now;
+
         xemacif_input(&server_netif);
 
         if (pending_send != 0u) {
             handle_pending_send();
+        }
+
+        /* ~4 Hz housekeeping: mailbox heartbeat plus the lwIP ARP timer. */
+        XTime_GetTime(&now);
+        if ((now - tick_start) >= (COUNTS_PER_SECOND / 4u)) {
+            tick_start = now;
+            mailbox_increment(MBOX_HEARTBEAT);
+
+            arp_elapsed_ms += 250u;
+            if (arp_elapsed_ms >= ARP_TMR_INTERVAL) {
+                arp_elapsed_ms = 0;
+                etharp_tmr();
+            }
         }
     }
 }
