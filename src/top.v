@@ -204,7 +204,6 @@ module top #(
     wire         adc1_dma_axis_tlast;
     wire         adc1_dma_axis_tvalid;
     wire         adc1_dma_axis_tready;
-    wire [31:0]  adc_dma_frame_count_rx;
     wire [31:0]  adc0_dma_status_async;
     wire [31:0]  adc1_dma_status_async;
 `endif
@@ -635,7 +634,6 @@ module top #(
     reg  adc_test_req_d = 1'b0;
     reg  adc_capture_req_d = 1'b0;
     reg  adc_capture_req_toggle = 1'b0;
-    reg [31:0] adc_capture_frame_count_fabric = 32'd0;
     always @(posedge clk_200) begin
         if (fabric_rst) begin
             hmc_restart_req_d <= 1'b0;
@@ -644,7 +642,6 @@ module top #(
             adc_test_req_d <= 1'b0;
             adc_capture_req_d <= 1'b0;
             adc_capture_req_toggle <= 1'b0;
-            adc_capture_frame_count_fabric <= 32'd0;
         end else begin
             hmc_restart_req_d <= rw_reg3[0];
             dac_restart_req_d <= rw_reg3[1];
@@ -652,7 +649,6 @@ module top #(
             adc_test_req_d <= rw_reg0[29];
             adc_capture_req_d <= rw_reg3[3];
             if (rw_reg3[3] & ~adc_capture_req_d) begin
-                adc_capture_frame_count_fabric <= rw_reg6;
                 adc_capture_req_toggle <= ~adc_capture_req_toggle;
             end
         end
@@ -1596,24 +1592,11 @@ module top #(
     );
 
 `ifdef DAQ_WITH_PS_DDR_DMA
-    // Snapshot RW6 at the capture request boundary in clk_200, then carry that
-    // stable request into the RX clock. The AXIS streamers latch it on start
-    // and ignore later RW6 changes until the next packet.
-    cdc_vector_sync #(
-        .WIDTH(32)
-    ) u_adc_dma_frame_count_sync (
-        .dest_clk (gth_rx_usrclk2),
-        .dest_rst (adc_rx_reset),
-        .src      (adc_capture_frame_count_fabric),
-        .dest     (adc_dma_frame_count_rx)
-    );
-
     adc_axis_capture_streamer u_adc0_dma_streamer (
         .clk           (gth_rx_usrclk2),
         .rst           (adc_rx_reset),
         .start         (adc_capture_start),
         .data_valid    (adc1_litejesd_ready_async),
-        .frame_count   (adc_dma_frame_count_rx),
         .frame_data    ({adc_ch1_capture, adc_ch0_capture}),
         .m_axis_tdata  (adc0_dma_axis_tdata),
         .m_axis_tkeep  (adc0_dma_axis_tkeep),
@@ -1628,7 +1611,6 @@ module top #(
         .rst           (adc_rx_reset),
         .start         (adc_capture_start),
         .data_valid    (adc2_litejesd_ready_async),
-        .frame_count   (adc_dma_frame_count_rx),
         .frame_data    ({adc_ch3_capture, adc_ch2_capture}),
         .m_axis_tdata  (adc1_dma_axis_tdata),
         .m_axis_tkeep  (adc1_dma_axis_tkeep),

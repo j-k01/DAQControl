@@ -1610,7 +1610,6 @@ static void cmd_dma_capture(u32 frames)
     }
     bytes = frames * ADC_DMA_FRAME_BYTES;
 
-    Xil_Out32(RW_REG6, frames);
     dma_arm_s2mm(0u, ADC_DMA0_DDR_BASE, bytes);
     dma_arm_s2mm(1u, ADC_DMA1_DDR_BASE, bytes);
     trigger_capture(0);
@@ -1699,7 +1698,7 @@ static void cmd_help(void)
     send_str("  PROG/CAPS/CAPT/PCAP unavailable; rebuild with --with-bram-dataplane\r\n");
 #endif
 #if HAS_PS_DDR_DMA
-    send_str("  DMAC [frames]    arm ADC0/ADC1 DMA; frames also sets AXIS TLAST length\r\n");
+    send_str("  DMAC [frames]    arm ADC0/ADC1 S2MM DMA to PS DDR, then pulse ADC capture\r\n");
     send_str("  DSTA             print AXI DMA S2MM status registers\r\n");
     send_str("  DDRD chip [start] [n] read PS DDR DMA buffer as u32 words; chip=0|1\r\n");
 #else
