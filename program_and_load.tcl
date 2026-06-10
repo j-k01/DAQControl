@@ -19,6 +19,15 @@ if {![file exists $bit_file]} {
     error "Bitstream not found: $bit_file\nRun 'vivado.bat -mode batch -source build.tcl' first, or pass a bitstream path."
 }
 
+if {![file exists $elf_file] && [llength $argv] <= 1} {
+    # Fresh clones have no Vitis workspace; fall back to the tracked prebuilt ELF.
+    set prebuilt_elf [file join $script_dir prebuilt firmware.elf]
+    if {[file exists $prebuilt_elf]} {
+        puts "Workspace ELF not found; using prebuilt MicroBlaze ELF: $prebuilt_elf"
+        set elf_file $prebuilt_elf
+    }
+}
+
 if {![file exists $elf_file]} {
     error "MicroBlaze ELF not found: $elf_file\nRun 'xsct.bat build_sw.tcl' first, or pass an ELF path as the second argument."
 }
