@@ -2,6 +2,7 @@
 
 This app runs on `psu_cortexa53_0` and reads the ADC DMA buffers from PS DDR:
 
+- app DDR window: `0x01000000` through `0x0EFFFFFF`
 - chip0 buffer: `0x10000000`
 - chip1 buffer: `0x10020000`
 - frame size per chip: 16 bytes
