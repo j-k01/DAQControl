@@ -18,7 +18,6 @@
 #include "lwip/ip_addr.h"
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
-#include "lwip/timeouts.h"
 #include "lwip/udp.h"
 #include "netif/xadapter.h"
 
@@ -160,7 +159,6 @@ static void stream_chip(u32 chip, u32 frames, const ip_addr_t *addr, u16 port)
 
         /* Service RX/ARP between TX bursts. */
         xemacif_input(&server_netif);
-        sys_check_timeouts();
     }
 }
 
@@ -310,7 +308,6 @@ int main(void)
 
     while (1) {
         xemacif_input(&server_netif);
-        sys_check_timeouts();
 
         if (pending_send != 0u) {
             handle_pending_send();
