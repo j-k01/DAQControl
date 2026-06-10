@@ -67,6 +67,7 @@ proc validate_microblaze_bd_contract {} {
     set bd_files [get_files -quiet microblaze_bd.bd]
     set defines [get_property verilog_define [current_fileset]]
     set expect_bram_dataplane [expr {[lsearch -glob $defines "DAQ_WITH_BRAM_DATAPLANE*"] >= 0}]
+    set expect_ps_ddr_dma [expr {[lsearch -glob $defines "DAQ_WITH_PS_DDR_DMA*"] >= 0}]
 
     if {[llength $bd_files] == 0} {
         error "MicroBlaze BD contract failure: microblaze_bd.bd was not found in the project. Re-run create_project.tcl."
@@ -116,6 +117,34 @@ proc validate_microblaze_bd_contract {} {
         }
     }
 
+    set ps_ddr_dma_cells {
+        zynq_ultra_ps_e_0
+        axi_dma_0
+        axi_dma_1
+        axi_clock_converter_0
+        axi_clock_converter_1
+        rst_gt_rx_usrclk2
+    }
+    foreach cell_name $ps_ddr_dma_cells {
+        set count [llength [get_bd_cells -quiet $cell_name]]
+        if {$expect_ps_ddr_dma && $count != 1} {
+            error "MicroBlaze BD contract failure: missing expected PS DDR DMA cell '$cell_name'. Re-run create_project.tcl --with-ps-ddr-dma."
+        }
+        if {!$expect_ps_ddr_dma && $count != 0} {
+            error "MicroBlaze BD contract failure: stale PS DDR DMA cell '$cell_name' exists in a non-DMA build. Re-run create_project.tcl without --with-ps-ddr-dma."
+        }
+    }
+
+    foreach port_name {S_AXIS_S2MM_0 S_AXIS_S2MM_1} {
+        set count [llength [get_bd_intf_ports -quiet $port_name]]
+        if {$expect_ps_ddr_dma && $count != 1} {
+            error "MicroBlaze BD contract failure: missing expected PS DDR DMA AXIS port '$port_name'. Re-run create_project.tcl --with-ps-ddr-dma."
+        }
+        if {!$expect_ps_ddr_dma && $count != 0} {
+            error "MicroBlaze BD contract failure: stale PS DDR DMA AXIS port '$port_name' exists in a non-DMA build. Re-run create_project.tcl without --with-ps-ddr-dma."
+        }
+    }
+
     set bram_dataplane_ips {
         dac0_program_bram
         dac1_program_bram
@@ -140,6 +169,23 @@ proc validate_microblaze_bd_contract {} {
             require_ip_property $ip_name CONFIG.Register_PortA_Output_of_Memory_Core false
             require_ip_property $ip_name CONFIG.Register_PortB_Output_of_Memory_Primitives false
             require_ip_property $ip_name CONFIG.Register_PortB_Output_of_Memory_Core false
+        }
+    }
+
+    if {$expect_ps_ddr_dma} {
+        foreach dma_name {axi_dma_0 axi_dma_1} {
+            if {[get_property CONFIG.c_include_mm2s [get_bd_cells $dma_name]] ne "0"} {
+                error "MicroBlaze BD contract failure: $dma_name MM2S is enabled; expected S2MM-only."
+            }
+            if {[get_property CONFIG.c_include_sg [get_bd_cells $dma_name]] ne "0"} {
+                error "MicroBlaze BD contract failure: $dma_name scatter-gather is enabled; expected simple mode."
+            }
+            if {[get_property CONFIG.c_m_axi_s2mm_data_width [get_bd_cells $dma_name]] ne "128"} {
+                error "MicroBlaze BD contract failure: $dma_name M_AXI_S2MM width is not 128."
+            }
+            if {[get_property CONFIG.c_s_axis_s2mm_tdata_width [get_bd_cells $dma_name]] ne "128"} {
+                error "MicroBlaze BD contract failure: $dma_name S_AXIS_S2MM width is not 128."
+            }
         }
     }
 }

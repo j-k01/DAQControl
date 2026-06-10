@@ -15,6 +15,7 @@ set include_staged_gt 0
 set include_litejesd 0
 set include_gth_tx_ila 0
 set include_bram_dataplane 0
+set include_ps_ddr_dma 0
 set izh_neuron_file_override ""
 
 for {set i 0} {$i < [llength $::argv]} {incr i} {
@@ -32,6 +33,9 @@ for {set i 0} {$i < [llength $::argv]} {incr i} {
         "--with-bram-dataplane" {
             set include_bram_dataplane 1
         }
+        "--with-ps-ddr-dma" {
+            set include_ps_ddr_dma 1
+        }
         "--izh-neuron-file" {
             incr i
             if {$i >= [llength $::argv]} {
@@ -40,7 +44,7 @@ for {set i 0} {$i < [llength $::argv]} {incr i} {
             set izh_neuron_file_override [lindex $::argv $i]
         }
         default {
-            error "Unknown create_project.tcl argument '$arg'. Supported arguments: --with-staged-gt, --with-litejesd, --with-gth-tx-ila, --with-bram-dataplane, --izh-neuron-file <path>."
+            error "Unknown create_project.tcl argument '$arg'. Supported arguments: --with-staged-gt, --with-litejesd, --with-gth-tx-ila, --with-bram-dataplane, --with-ps-ddr-dma, --izh-neuron-file <path>."
         }
     }
 }
@@ -218,6 +222,77 @@ proc assign_mb_addr_exact {space_path seg_path offset range} {
     puts "Assigned $seg_path at $offset range $range"
 }
 
+proc assign_bd_addr_if_exists {space_path seg_path offset range} {
+    set space [get_bd_addr_spaces -quiet $space_path]
+    set seg [get_bd_addr_segs -quiet $seg_path]
+    if {[llength $space] != 1 || [llength $seg] != 1} {
+        puts "INFO: address assignment skipped for '$space_path' -> '$seg_path' (space [llength $space], segment [llength $seg])."
+        return
+    }
+
+    if {[catch {
+        assign_bd_address -offset $offset -range $range \
+            -target_address_space [lindex $space 0] [lindex $seg 0] -force
+    } result]} {
+        puts "INFO: address assignment skipped for '$space_path' -> '$seg_path': $result"
+    } else {
+        puts "Assigned $seg_path at $offset range $range"
+    }
+}
+
+proc exclude_bd_addr_seg_if_exists {space_path seg_path {offset ""} {range ""}} {
+    set space [get_bd_addr_spaces -quiet $space_path]
+    set seg [get_bd_addr_segs -quiet $seg_path]
+    if {[llength $space] != 1 || [llength $seg] != 1} {
+        puts "INFO: address exclusion skipped for '$space_path' -> '$seg_path' (space [llength $space], segment [llength $seg])."
+        return
+    }
+
+    set args [list -target_address_space [lindex $space 0]]
+    if {$offset ne ""} {
+        lappend args -offset $offset
+    }
+    if {$range ne ""} {
+        lappend args -range $range
+    }
+    lappend args [lindex $seg 0]
+
+    if {[catch {exclude_bd_addr_seg {*}$args} result]} {
+        puts "INFO: address exclusion skipped for '$space_path' -> '$seg_path': $result"
+    }
+}
+
+proc set_cell_properties_if_present {cell_name prop_values} {
+    set cell [get_bd_cells -quiet $cell_name]
+    if {[llength $cell] != 1} {
+        puts "INFO: property assignment skipped for missing cell '$cell_name'."
+        return
+    }
+
+    foreach {prop value} $prop_values {
+        if {[catch {set_property $prop $value $cell} result]} {
+            puts "INFO: property $prop on $cell_name skipped: $result"
+        }
+    }
+}
+
+proc create_axis_s2mm_port {port_name freq_hz} {
+    create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:axis_rtl:1.0 $port_name
+    set_property -dict [list \
+        CONFIG.FREQ_HZ $freq_hz \
+        CONFIG.CLK_DOMAIN {gt_rx_usrclk_2} \
+        CONFIG.HAS_TKEEP {1} \
+        CONFIG.HAS_TLAST {1} \
+        CONFIG.HAS_TREADY {1} \
+        CONFIG.HAS_TSTRB {0} \
+        CONFIG.LAYERED_METADATA {undef} \
+        CONFIG.TDATA_NUM_BYTES {16} \
+        CONFIG.TDEST_WIDTH {0} \
+        CONFIG.TID_WIDTH {0} \
+        CONFIG.TUSER_WIDTH {0} \
+    ] [get_bd_intf_ports $port_name]
+}
+
 proc require_cell_property {cell prop expected} {
     set actual [get_property $prop [get_bd_cells $cell]]
     if {$actual ne "$expected"} {
@@ -264,8 +339,9 @@ proc verify_bram_dataplane_ips {} {
     }
 }
 
-proc create_microblaze_bd {bd_name include_bram_dataplane} {
+proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
     set fabric_clk_hz 200000000
+    set adc_dma_clk_hz 250000000
 
     create_bd_design $bd_name
     current_bd_design $bd_name
@@ -275,6 +351,21 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
 
     create_bd_port -dir I -type rst reset
     set_property CONFIG.POLARITY ACTIVE_HIGH [get_bd_ports reset]
+
+    if {$include_ps_ddr_dma} {
+        create_bd_port -dir I -type clk gt_rx_usrclk_2
+        set_property -dict [list \
+            CONFIG.FREQ_HZ $adc_dma_clk_hz \
+            CONFIG.CLK_DOMAIN {gt_rx_usrclk_2} \
+            CONFIG.ASSOCIATED_BUSIF {S_AXIS_S2MM_0:S_AXIS_S2MM_1} \
+        ] [get_bd_ports gt_rx_usrclk_2]
+
+        create_bd_port -dir I -type rst reset_rtl
+        set_property CONFIG.POLARITY ACTIVE_HIGH [get_bd_ports reset_rtl]
+
+        create_axis_s2mm_port S_AXIS_S2MM_0 $adc_dma_clk_hz
+        create_axis_s2mm_port S_AXIS_S2MM_1 $adc_dma_clk_hz
+    }
 
     create_bd_intf_port -mode Master -vlnv xilinx.com:interface:uart_rtl:1.0 rs232_uart
 
@@ -360,6 +451,50 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
         export_bram_ctrl_port adc0_capture_bram_ctrl/BRAM_PORTA ADC0_AXI_BRAM_PORTA
         export_bram_ctrl_port adc1_capture_bram_ctrl/BRAM_PORTA ADC1_AXI_BRAM_PORTA
     }
+    if {$include_ps_ddr_dma} {
+        create_bd_cell -type ip -vlnv xilinx.com:ip:zynq_ultra_ps_e:* zynq_ultra_ps_e_0
+        if {[catch {
+            apply_bd_automation -rule xilinx.com:bd_rule:zynq_ultra_ps_e \
+                -config [list apply_board_preset {1}] [get_bd_cells zynq_ultra_ps_e_0]
+        } result]} {
+            puts "INFO: zynq_ultra_ps_e board automation skipped: $result"
+        }
+
+        set_cell_properties_if_present zynq_ultra_ps_e_0 [list \
+            CONFIG.PSU__USE__M_AXI_GP0 {0} \
+            CONFIG.PSU__USE__M_AXI_GP1 {0} \
+            CONFIG.PSU__USE__M_AXI_GP2 {0} \
+            CONFIG.PSU__USE__S_AXI_GP0 {0} \
+            CONFIG.PSU__USE__S_AXI_GP2 {1} \
+            CONFIG.PSU__USE__S_AXI_GP3 {1} \
+            CONFIG.PSU__USE__S_AXI_GP4 {1} \
+            CONFIG.PSU__SAXIGP2__DATA_WIDTH {128} \
+            CONFIG.PSU__SAXIGP3__DATA_WIDTH {128} \
+            CONFIG.PSU__SAXIGP4__DATA_WIDTH {32} \
+            CONFIG.PSU__ENET3__PERIPHERAL__ENABLE {1} \
+            CONFIG.PSU__ENET3__PERIPHERAL__IO {MIO 64 .. 75} \
+            CONFIG.PSU__ENET3__GRP_MDIO__ENABLE {1} \
+            CONFIG.PSU__ENET3__GRP_MDIO__IO {MIO 76 .. 77} \
+        ]
+
+        foreach dma {0 1} {
+            create_bd_cell -type ip -vlnv xilinx.com:ip:axi_dma:* axi_dma_${dma}
+            set_property -dict [list \
+                CONFIG.c_addr_width {32} \
+                CONFIG.c_include_mm2s {0} \
+                CONFIG.c_include_sg {0} \
+                CONFIG.c_m_axi_s2mm_data_width {128} \
+                CONFIG.c_s_axis_s2mm_tdata_width {128} \
+                CONFIG.c_sg_length_width {26} \
+            ] [get_bd_cells axi_dma_${dma}]
+
+            create_bd_cell -type ip -vlnv xilinx.com:ip:axi_clock_converter:* axi_clock_converter_${dma}
+        }
+
+        create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:* rst_gt_rx_usrclk2
+        safe_connect_bd_intf_net [get_bd_intf_ports S_AXIS_S2MM_0] [get_bd_intf_pins axi_dma_0/S_AXIS_S2MM]
+        safe_connect_bd_intf_net [get_bd_intf_ports S_AXIS_S2MM_1] [get_bd_intf_pins axi_dma_1/S_AXIS_S2MM]
+    }
 
     if {[llength [get_bd_cells -quiet microblaze_0_axi_periph]] == 0} {
         create_bd_cell -type ip -vlnv xilinx.com:ip:axi_interconnect:* microblaze_0_axi_periph
@@ -368,6 +503,9 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
     set axi_masters 2
     if {$include_bram_dataplane} {
         set axi_masters 8
+    }
+    if {$include_ps_ddr_dma} {
+        set axi_masters 11
     }
     set_property CONFIG.NUM_MI $axi_masters [get_bd_cells microblaze_0_axi_periph]
 
@@ -381,10 +519,22 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
         safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M06_AXI] [get_bd_intf_pins adc0_capture_bram_ctrl/S_AXI]
         safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M07_AXI] [get_bd_intf_pins adc1_capture_bram_ctrl/S_AXI]
     }
+    if {$include_ps_ddr_dma} {
+        safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M08_AXI] [get_bd_intf_pins axi_clock_converter_0/S_AXI]
+        safe_connect_bd_intf_net [get_bd_intf_pins axi_clock_converter_0/M_AXI] [get_bd_intf_pins axi_dma_0/S_AXI_LITE]
+        safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M09_AXI] [get_bd_intf_pins axi_clock_converter_1/S_AXI]
+        safe_connect_bd_intf_net [get_bd_intf_pins axi_clock_converter_1/M_AXI] [get_bd_intf_pins axi_dma_1/S_AXI_LITE]
+        safe_connect_bd_intf_net [get_bd_intf_pins axi_dma_0/M_AXI_S2MM] [get_bd_intf_pins zynq_ultra_ps_e_0/S_AXI_HP0_FPD]
+        safe_connect_bd_intf_net [get_bd_intf_pins axi_dma_1/M_AXI_S2MM] [get_bd_intf_pins zynq_ultra_ps_e_0/S_AXI_HP1_FPD]
+        safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M10_AXI] [get_bd_intf_pins zynq_ultra_ps_e_0/S_AXI_HP2_FPD]
+    }
 
     set axi_clk_pins {ACLK S00_ACLK M00_ACLK M01_ACLK}
     if {$include_bram_dataplane} {
         lappend axi_clk_pins M02_ACLK M03_ACLK M04_ACLK M05_ACLK M06_ACLK M07_ACLK
+    }
+    if {$include_ps_ddr_dma} {
+        lappend axi_clk_pins M08_ACLK M09_ACLK M10_ACLK
     }
     foreach pin_name $axi_clk_pins {
         safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins microblaze_0_axi_periph/$pin_name]
@@ -400,15 +550,33 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
         safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins adc0_capture_bram_ctrl/s_axi_aclk]
         safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins adc1_capture_bram_ctrl/s_axi_aclk]
     }
+    if {$include_ps_ddr_dma} {
+        foreach dma {0 1} {
+            safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins axi_clock_converter_${dma}/s_axi_aclk]
+            safe_connect_bd_net [get_bd_ports gt_rx_usrclk_2] [get_bd_pins axi_clock_converter_${dma}/m_axi_aclk]
+            safe_connect_bd_net [get_bd_ports gt_rx_usrclk_2] [get_bd_pins axi_dma_${dma}/s_axi_lite_aclk]
+            safe_connect_bd_net [get_bd_ports gt_rx_usrclk_2] [get_bd_pins axi_dma_${dma}/m_axi_s2mm_aclk]
+        }
+        safe_connect_bd_net [get_bd_ports gt_rx_usrclk_2] [get_bd_pins zynq_ultra_ps_e_0/saxihp0_fpd_aclk]
+        safe_connect_bd_net [get_bd_ports gt_rx_usrclk_2] [get_bd_pins zynq_ultra_ps_e_0/saxihp1_fpd_aclk]
+        safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins zynq_ultra_ps_e_0/saxihp2_fpd_aclk]
+        safe_connect_bd_net [get_bd_ports gt_rx_usrclk_2] [get_bd_pins rst_gt_rx_usrclk2/slowest_sync_clk]
+    }
 
-    set resetn_pin [get_bd_pins -quiet */peripheral_aresetn]
+    set resetn_pin [get_bd_pins -quiet rst_Clk_200M/peripheral_aresetn]
     if {[llength $resetn_pin] == 0} {
-        error "MicroBlaze automation did not create a peripheral_aresetn reset output."
+        set resetn_pin [get_bd_pins -quiet */peripheral_aresetn]
+    }
+    if {[llength $resetn_pin] == 0} {
+        error "MicroBlaze automation did not create a 200 MHz peripheral_aresetn reset output."
     }
     set resetn_pin [lindex $resetn_pin 0]
     set axi_rst_pins {ARESETN S00_ARESETN M00_ARESETN M01_ARESETN}
     if {$include_bram_dataplane} {
         lappend axi_rst_pins M02_ARESETN M03_ARESETN M04_ARESETN M05_ARESETN M06_ARESETN M07_ARESETN
+    }
+    if {$include_ps_ddr_dma} {
+        lappend axi_rst_pins M08_ARESETN M09_ARESETN M10_ARESETN
     }
     foreach pin_name $axi_rst_pins {
         safe_connect_bd_net $resetn_pin [get_bd_pins microblaze_0_axi_periph/$pin_name]
@@ -421,6 +589,18 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
         }
         safe_connect_bd_net $resetn_pin [get_bd_pins adc0_capture_bram_ctrl/s_axi_aresetn]
         safe_connect_bd_net $resetn_pin [get_bd_pins adc1_capture_bram_ctrl/s_axi_aresetn]
+    }
+    if {$include_ps_ddr_dma} {
+        safe_connect_bd_net [get_bd_ports reset_rtl] [get_bd_pins rst_gt_rx_usrclk2/ext_reset_in]
+        set gt_resetn_pin [get_bd_pins -quiet rst_gt_rx_usrclk2/peripheral_aresetn]
+        if {[llength $gt_resetn_pin] != 1} {
+            error "PS DDR DMA reset failure: rst_gt_rx_usrclk2 did not expose one peripheral_aresetn pin."
+        }
+        foreach dma {0 1} {
+            safe_connect_bd_net $resetn_pin [get_bd_pins axi_clock_converter_${dma}/s_axi_aresetn]
+            safe_connect_bd_net [lindex $gt_resetn_pin 0] [get_bd_pins axi_clock_converter_${dma}/m_axi_aresetn]
+            safe_connect_bd_net [lindex $gt_resetn_pin 0] [get_bd_pins axi_dma_${dma}/axi_resetn]
+        }
     }
 
     foreach idx {0 1 2 3 4 5 6 7} {
@@ -439,6 +619,22 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
         assign_mb_addr_exact microblaze_0/Data dac3_program_bram_ctrl/S_AXI/Mem0 0xC0030000 0x00008000
         assign_mb_addr_exact microblaze_0/Data adc0_capture_bram_ctrl/S_AXI/Mem0 0xC0100000 0x00010000
         assign_mb_addr_exact microblaze_0/Data adc1_capture_bram_ctrl/S_AXI/Mem0 0xC0110000 0x00010000
+    }
+    if {$include_ps_ddr_dma} {
+        assign_mb_addr_exact microblaze_0/Data axi_dma_0/S_AXI_LITE/Reg 0x41E00000 0x00010000
+        assign_mb_addr_exact microblaze_0/Data axi_dma_1/S_AXI_LITE/Reg 0x41E10000 0x00010000
+        assign_bd_addr_if_exists axi_dma_0/Data_S2MM zynq_ultra_ps_e_0/SAXIGP2/HP0_DDR_LOW 0x00000000 0x80000000
+        assign_bd_addr_if_exists axi_dma_1/Data_S2MM zynq_ultra_ps_e_0/SAXIGP3/HP1_DDR_LOW 0x00000000 0x80000000
+        assign_bd_addr_if_exists microblaze_0/Data zynq_ultra_ps_e_0/SAXIGP4/HP2_DDR_LOW 0x00000000 0x80000000
+
+        exclude_bd_addr_seg_if_exists axi_dma_0/Data_S2MM zynq_ultra_ps_e_0/SAXIGP2/HP0_DDR_HIGH
+        exclude_bd_addr_seg_if_exists axi_dma_0/Data_S2MM zynq_ultra_ps_e_0/SAXIGP2/HP0_LPS_OCM 0xFF000000 0x01000000
+        exclude_bd_addr_seg_if_exists axi_dma_0/Data_S2MM zynq_ultra_ps_e_0/SAXIGP2/HP0_PCIE_LOW 0xE0000000 0x10000000
+        exclude_bd_addr_seg_if_exists axi_dma_0/Data_S2MM zynq_ultra_ps_e_0/SAXIGP2/HP0_QSPI 0xC0000000 0x20000000
+        exclude_bd_addr_seg_if_exists axi_dma_1/Data_S2MM zynq_ultra_ps_e_0/SAXIGP3/HP1_DDR_HIGH 0x000800000000 0x000800000000
+        exclude_bd_addr_seg_if_exists axi_dma_1/Data_S2MM zynq_ultra_ps_e_0/SAXIGP3/HP1_LPS_OCM 0xFF000000 0x01000000
+        exclude_bd_addr_seg_if_exists axi_dma_1/Data_S2MM zynq_ultra_ps_e_0/SAXIGP3/HP1_PCIE_LOW 0xE0000000 0x10000000
+        exclude_bd_addr_seg_if_exists axi_dma_1/Data_S2MM zynq_ultra_ps_e_0/SAXIGP3/HP1_QSPI 0xC0000000 0x20000000
     }
 
     validate_bd_design
@@ -459,12 +655,26 @@ proc create_microblaze_bd {bd_name include_bram_dataplane} {
             require_cell_property $bram_ctrl CONFIG.SINGLE_PORT_BRAM 1
         }
     }
+    if {$include_ps_ddr_dma} {
+        foreach dma {0 1} {
+            require_cell_property axi_dma_${dma} CONFIG.c_include_mm2s 0
+            require_cell_property axi_dma_${dma} CONFIG.c_include_sg 0
+            require_cell_property axi_dma_${dma} CONFIG.c_m_axi_s2mm_data_width 128
+            require_cell_property axi_dma_${dma} CONFIG.c_s_axis_s2mm_tdata_width 128
+            require_cell_property axi_dma_${dma} CONFIG.c_addr_width 32
+        }
+    }
 
     save_bd_design
 }
 
 require_vivado_version $required_vivado
 if {$include_staged_gt} {
+    set include_litejesd 1
+}
+if {$include_ps_ddr_dma} {
+    set include_bram_dataplane 1
+    set include_staged_gt 1
     set include_litejesd 1
 }
 if {$include_bram_dataplane} {
@@ -507,6 +717,9 @@ if {$include_gth_tx_ila} {
 }
 if {$include_bram_dataplane} {
     lappend verilog_defines DAQ_WITH_BRAM_DATAPLANE=1
+}
+if {$include_ps_ddr_dma} {
+    lappend verilog_defines DAQ_WITH_PS_DDR_DMA=1
 }
 if {[llength $verilog_defines] > 0} {
     set_property verilog_define $verilog_defines [current_fileset]
@@ -647,7 +860,7 @@ if {$include_bram_dataplane} {
 }
 
 set bd_name microblaze_bd
-create_microblaze_bd $bd_name $include_bram_dataplane
+create_microblaze_bd $bd_name $include_bram_dataplane $include_ps_ddr_dma
 set bd_file [get_files ${bd_name}.bd]
 generate_target all $bd_file
 make_wrapper -files $bd_file -top

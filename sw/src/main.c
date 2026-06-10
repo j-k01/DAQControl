@@ -31,6 +31,18 @@
 #else
 #define HAS_BRAM_DATAPLANE 0
 #endif
+
+#if defined(XPAR_AXI_DMA_0_BASEADDR) && defined(XPAR_AXI_DMA_1_BASEADDR)
+#define HAS_PS_DDR_DMA 1
+#define ADC_DMA_CHIPS 2u
+#define ADC_DMA0_BASE XPAR_AXI_DMA_0_BASEADDR
+#define ADC_DMA1_BASE XPAR_AXI_DMA_1_BASEADDR
+#define ADC_DMA0_DDR_BASE 0x10000000u
+#define ADC_DMA1_DDR_BASE 0x10020000u
+#define ADC_DMA_FRAME_BYTES 16u
+#else
+#define HAS_PS_DDR_DMA 0
+#endif
 #define RW_REG0   (REG_BASE + 0x00)
 #define RW_REG1   (REG_BASE + 0x04)
 #define RW_REG2   (REG_BASE + 0x08)
@@ -149,11 +161,65 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
 };
 #endif
 
+#if HAS_PS_DDR_DMA
+#define DMA_S2MM_DMACR       0x30u
+#define DMA_S2MM_DMASR       0x34u
+#define DMA_S2MM_DA          0x48u
+#define DMA_S2MM_DA_MSB      0x4Cu
+#define DMA_S2MM_LENGTH      0x58u
+#define DMA_DMACR_RS         (1u << 0)
+#define DMA_DMACR_RESET      (1u << 2)
+#define DMA_DMASR_HALTED     (1u << 0)
+#define DMA_DMASR_IDLE       (1u << 1)
+#define DMA_DMASR_ERR_MASK   ((1u << 4) | (1u << 5) | (1u << 6))
+#define DMA_DMASR_IRQ_MASK   ((1u << 12) | (1u << 13) | (1u << 14))
+
+static const u32 adc_dma_base[ADC_DMA_CHIPS] = {
+    ADC_DMA0_BASE,
+    ADC_DMA1_BASE
+};
+
+static const u32 adc_dma_ddr_base[ADC_DMA_CHIPS] = {
+    ADC_DMA0_DDR_BASE,
+    ADC_DMA1_DDR_BASE
+};
+#endif
+
 static XUartNs550 uart;
 static char cmd[96];
 static int cmd_idx = 0;
 
 static void pulse_neuron_config(u32 channel, u32 all_channels, u32 param, u32 value);
+
+struct neuron_profile {
+    const char *name;
+    const char *alias;
+    u32 a;
+    u32 b;
+    u32 c;
+    u32 d;
+    u32 iconst;
+};
+
+#define Q16_16_POS(integer, frac_hex) (((u32)(integer) << 16) | (u32)(frac_hex))
+#define Q16_16_NEG(integer)          ((u32)(0u - ((u32)(integer) << 16)))
+
+static const struct neuron_profile neuron_profiles[] = {
+    /* Standard Izhikevich profile names. I input is kept at 0; iconst supplies drive. */
+    {"regular",    "rs",  0x0000051Fu, 0x00003333u, Q16_16_NEG(65), Q16_16_POS(8, 0),    Q16_16_POS(10, 0)},
+    {"bursting",   "ib",  0x0000051Fu, 0x00003333u, Q16_16_NEG(55), Q16_16_POS(4, 0),    Q16_16_POS(10, 0)},
+    {"chattering", "ch",  0x0000051Fu, 0x00003333u, Q16_16_NEG(50), Q16_16_POS(2, 0),    Q16_16_POS(10, 0)},
+    {"fast",       "fs",  0x0000199Au, 0x00003333u, Q16_16_NEG(65), Q16_16_POS(2, 0),    Q16_16_POS(10, 0)},
+    {"lts",        "lts", 0x0000051Fu, 0x00004000u, Q16_16_NEG(65), Q16_16_POS(2, 0),    Q16_16_POS(10, 0)},
+    {"tc",         "tc",  0x0000051Fu, 0x00004000u, Q16_16_NEG(65), Q16_16_POS(0, 0x0CCDu), Q16_16_POS(10, 0)},
+    {"resonator",  "rz",  0x0000199Au, 0x0000428Fu, Q16_16_NEG(65), Q16_16_POS(2, 0),    Q16_16_POS(10, 0)},
+    {"rebound",    "rb",  0x000007AEu, 0x00004000u, Q16_16_NEG(60), Q16_16_POS(4, 0),    Q16_16_POS(10, 0)}
+};
+
+#define NEURON_PROFILE_COUNT (sizeof(neuron_profiles) / sizeof(neuron_profiles[0]))
+#define NEURON_DEFAULT_DT     0x00001000u
+#define NEURON_DEFAULT_I      0x00000000u
+#define NEURON_DEFAULT_PERIOD 1024u
 
 static void firmware_marker(u32 stage)
 {
@@ -876,6 +942,48 @@ static void pulse_neuron_config(u32 channel, u32 all_channels, u32 param, u32 va
     Xil_Out32(RW_REG1, old_rw1);
 }
 
+static const struct neuron_profile *find_neuron_profile(const char *token)
+{
+    unsigned int i;
+
+    for (i = 0; i < NEURON_PROFILE_COUNT; i++) {
+        if (token_eq_ci(token, neuron_profiles[i].name) ||
+            token_eq_ci(token, neuron_profiles[i].alias)) {
+            return &neuron_profiles[i];
+        }
+    }
+
+    return NULL;
+}
+
+static void print_neuron_profiles(void)
+{
+    unsigned int i;
+
+    send_str("Neuron profiles:");
+    for (i = 0; i < NEURON_PROFILE_COUNT; i++) {
+        send_str(" ");
+        send_str(neuron_profiles[i].name);
+        send_str("/");
+        send_str(neuron_profiles[i].alias);
+    }
+    send_str("\r\n");
+}
+
+static void apply_neuron_profile(u32 channel, u32 all_channels,
+                                 const struct neuron_profile *profile)
+{
+    pulse_neuron_config(channel, all_channels, 0u, profile->a);
+    pulse_neuron_config(channel, all_channels, 1u, profile->b);
+    pulse_neuron_config(channel, all_channels, 2u, profile->c);
+    pulse_neuron_config(channel, all_channels, 3u, profile->d);
+    pulse_neuron_config(channel, all_channels, 4u, NEURON_DEFAULT_I);
+    pulse_neuron_config(channel, all_channels, 5u, NEURON_DEFAULT_DT);
+    pulse_neuron_config(channel, all_channels, 6u, profile->iconst);
+    pulse_neuron_config(channel, all_channels, 9u, NEURON_DEFAULT_PERIOD);
+    pulse_neuron_config(channel, all_channels, 15u, 0u);
+}
+
 static void cmd_neur(void)
 {
     char *p = &cmd[4];
@@ -884,9 +992,15 @@ static void cmd_neur(void)
     u32 param;
     u32 value = 0;
     int needs_value;
+    const struct neuron_profile *profile;
 
     while (*p == ' ' || *p == '\t')
         p++;
+
+    if (token_eq_ci(p, "profiles") || token_eq_ci(p, "list")) {
+        print_neuron_profiles();
+        return;
+    }
 
     if (token_eq_ci(p, "all")) {
         all_channels = 1u;
@@ -897,8 +1011,62 @@ static void cmd_neur(void)
         return;
     }
 
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (token_eq_ci(p, "profile") || token_eq_ci(p, "type")) {
+        advance_token(&p);
+
+        while (*p == ' ' || *p == '\t')
+            p++;
+
+        profile = find_neuron_profile(p);
+        if (profile == NULL) {
+            send_str("ERR NEUR profile expects one of: regular/rs, bursting/ib, chattering/ch, fast/fs, lts, tc, resonator/rz, rebound/rb\r\n");
+            return;
+        }
+
+        apply_neuron_profile(channel, all_channels, profile);
+        send_str("OK NEUR ");
+        send_str(all_channels ? "all" : "ch");
+        if (!all_channels) {
+            send_uint(channel);
+        }
+        send_str(" profile=");
+        send_str(profile->name);
+        send_str(" iconst=");
+        send_hex(profile->iconst);
+        send_str(" period=");
+        send_uint(NEURON_DEFAULT_PERIOD);
+        send_str("\r\n");
+        return;
+    }
+
+    profile = find_neuron_profile(p);
+    if (profile != NULL) {
+        apply_neuron_profile(channel, all_channels, profile);
+        send_str("OK NEUR ");
+        send_str(all_channels ? "all" : "ch");
+        if (!all_channels) {
+            send_uint(channel);
+        }
+        send_str(" profile=");
+        send_str(profile->name);
+        send_str(" iconst=");
+        send_hex(profile->iconst);
+        send_str(" period=");
+        send_uint(NEURON_DEFAULT_PERIOD);
+        send_str("\r\n");
+        return;
+    }
+
+    if (token_eq_ci(p, "profiles") || token_eq_ci(p, "list")) {
+        print_neuron_profiles();
+        return;
+    }
+
     if (!parse_neuron_param(&p, &param, &needs_value)) {
-        send_str("ERR NEUR expects param a,b,c,d,i,dt,iconst,offset,period,source,output,reset,default\r\n");
+        send_str("ERR NEUR expects profile or param a,b,c,d,i,dt,iconst,offset,period,source,output,reset,default\r\n");
         return;
     }
 
@@ -1352,6 +1520,154 @@ static void cmd_capture(u32 frames, int use_dac_program)
 }
 #endif
 
+#if HAS_PS_DDR_DMA
+static u32 dma_status(u32 chip)
+{
+    if (chip >= ADC_DMA_CHIPS) {
+        return 0xFFFFFFFFu;
+    }
+    return Xil_In32(adc_dma_base[chip] + DMA_S2MM_DMASR);
+}
+
+static void dma_reset(u32 chip)
+{
+    u32 timeout;
+    u32 base;
+
+    if (chip >= ADC_DMA_CHIPS) {
+        return;
+    }
+    base = adc_dma_base[chip];
+    Xil_Out32(base + DMA_S2MM_DMACR, DMA_DMACR_RESET);
+    for (timeout = 0; timeout < 100000u; timeout++) {
+        if ((Xil_In32(base + DMA_S2MM_DMACR) & DMA_DMACR_RESET) == 0u) {
+            return;
+        }
+    }
+}
+
+static void dma_arm_s2mm(u32 chip, u32 dest_addr, u32 bytes)
+{
+    u32 base = adc_dma_base[chip];
+
+    dma_reset(chip);
+    Xil_Out32(base + DMA_S2MM_DMASR, DMA_DMASR_IRQ_MASK | DMA_DMASR_ERR_MASK);
+    Xil_Out32(base + DMA_S2MM_DMACR, DMA_DMACR_RS);
+    Xil_Out32(base + DMA_S2MM_DA, dest_addr);
+    Xil_Out32(base + DMA_S2MM_DA_MSB, 0u);
+    Xil_Out32(base + DMA_S2MM_LENGTH, bytes);
+}
+
+static int wait_dma_done(u32 *s0, u32 *s1)
+{
+    u32 timeout;
+
+    for (timeout = 0; timeout < 10000000u; timeout++) {
+        *s0 = dma_status(0u);
+        *s1 = dma_status(1u);
+        if (((*s0 | *s1) & DMA_DMASR_ERR_MASK) != 0u) {
+            return 0;
+        }
+        if (((*s0 & DMA_DMASR_IDLE) != 0u) &&
+            ((*s1 & DMA_DMASR_IDLE) != 0u)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static void print_dma_status(void)
+{
+    u32 i;
+
+    for (i = 0; i < ADC_DMA_CHIPS; i++) {
+        u32 s = dma_status(i);
+        send_str("DMA");
+        send_uint(i);
+        send_str(" S2MM ");
+        print_named_hex("DMASR", s);
+        send_str(" halted=");
+        send_uint((s & DMA_DMASR_HALTED) ? 1u : 0u);
+        send_str(" idle=");
+        send_uint((s & DMA_DMASR_IDLE) ? 1u : 0u);
+        send_str(" err=");
+        send_uint((s & DMA_DMASR_ERR_MASK) ? 1u : 0u);
+        send_str(" ddr=");
+        send_hex(adc_dma_ddr_base[i]);
+        send_str("\r\n");
+    }
+}
+
+static void cmd_dma_capture(u32 frames)
+{
+    u32 bytes;
+    u32 s0 = 0;
+    u32 s1 = 0;
+
+    if (frames == 0u || frames > ADC_CAPTURE_FRAMES) {
+        frames = ADC_CAPTURE_FRAMES;
+    }
+    bytes = frames * ADC_DMA_FRAME_BYTES;
+
+    dma_arm_s2mm(0u, ADC_DMA0_DDR_BASE, bytes);
+    dma_arm_s2mm(1u, ADC_DMA1_DDR_BASE, bytes);
+    trigger_capture(0);
+
+    if (!wait_dma_done(&s0, &s1)) {
+        send_str("ERR DMAC timeout/error ");
+        print_named_hex("dma0", s0);
+        send_str(" ");
+        print_named_hex("dma1", s1);
+        send_str("\r\n");
+        return;
+    }
+
+    send_str("OK DMAC frames=");
+    send_uint(frames);
+    send_str(" bytes_per_chip=");
+    send_uint(bytes);
+    send_str(" ");
+    print_named_hex("dma0", s0);
+    send_str(" ");
+    print_named_hex("dma1", s1);
+    send_str("\r\n");
+}
+
+static void cmd_ddr_read(u32 chip, u32 start_word, u32 words)
+{
+    u32 i;
+    u32 base;
+
+    if (chip >= ADC_DMA_CHIPS) {
+        send_str("ERR DDRD chip must be 0 or 1\r\n");
+        return;
+    }
+    if (words == 0u) {
+        words = 16u;
+    }
+
+    base = adc_dma_ddr_base[chip];
+    send_str("DDRD chip=");
+    send_uint(chip);
+    send_str(" base=");
+    send_hex(base);
+    send_str(" start=");
+    send_uint(start_word);
+    send_str(" words=");
+    send_uint(words);
+    send_str("\r\n");
+
+    for (i = 0; i < words; i++) {
+        u32 index = start_word + i;
+        send_uint(index);
+        send_str(": ");
+        send_hex(Xil_In32(base + index * 4u));
+        send_str("\r\n");
+    }
+}
+#endif
+
 static void cmd_help(void)
 {
     send_str("DAQ_LAUNCH commands:\r\n");
@@ -1366,6 +1682,8 @@ static void cmd_help(void)
     send_str("  NSRC [ch|all] mode DAC source: auto,dds,bram,izh,vout\r\n");
     send_str("  NEUR ch param value  program IZH Q16.16 param on ch=0..3 or all\r\n");
     send_str("                 params: a,b,c,d,i/current,dt,iconst/bias,offset,period,source,output,reset,default\r\n");
+    send_str("  NEUR [ch|all] profile name  profiles: regular/rs, bursting/ib, chattering/ch, fast/fs, lts, tc, resonator/rz, rebound/rb\r\n");
+    send_str("  NEUR profiles       list built-in neuron profiles\r\n");
     send_str("  RDRO n           read RO register 0..7\r\n");
     send_str("  RDRW n           read RW register 0..7\r\n");
     send_str("  WRTE n value     write RW register 0..7; use 0x prefix for hex masks\r\n");
@@ -1378,6 +1696,13 @@ static void cmd_help(void)
     send_str("  PCAP [frames]    restart DAC BRAM program, then capture ADC frames\r\n");
 #else
     send_str("  PROG/CAPS/CAPT/PCAP unavailable; rebuild with --with-bram-dataplane\r\n");
+#endif
+#if HAS_PS_DDR_DMA
+    send_str("  DMAC [frames]    arm ADC0/ADC1 S2MM DMA to PS DDR, then pulse ADC capture\r\n");
+    send_str("  DSTA             print AXI DMA S2MM status registers\r\n");
+    send_str("  DDRD chip [start] [n] read PS DDR DMA buffer as u32 words; chip=0|1\r\n");
+#else
+    send_str("  DMAC/DSTA/DDRD unavailable; rebuild with --with-ps-ddr-dma\r\n");
 #endif
     send_str("\r\n");
     send_str("RW0 control bits:\r\n");
@@ -1412,6 +1737,9 @@ static void cmd_help(void)
     send_str("RO4=ADC frontend summary, RO5=ADC0 selected debug, RO6=ADC1 selected debug, RO7=adc_chN half\r\n");
     send_str("RW7 ADC debug: [4:0] chip selector 0=status,1=lane,2=events,3..6=samples,7=raw\r\n");
     send_str("               [9:8] logical channel for RO7, [10] high half\r\n");
+#if HAS_PS_DDR_DMA
+    send_str("PS DDR DMA buffers: chip0 base=0x10000000, chip1 base=0x10020000, 16 bytes/frame/chip\r\n");
+#endif
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
     send_str("    [5:4] DAC source: 0=auto legacy, 1=DDS, 2=BRAM, 3=IZH neuron/vout\r\n");
     send_str("    NEUR uses RW3[7] pulse, [11:8] param, [13:12] channel, [14] all\r\n");
@@ -1480,6 +1808,9 @@ static void cmd_status(void)
     send_str(" capture_format=");
     send_uint((Xil_In32(RW_REG5) & RW5_ADC_CAPTURE_FORMAT_MASK) >> RW5_ADC_CAPTURE_FORMAT_SHIFT);
     send_str("\r\n");
+#if HAS_PS_DDR_DMA
+    print_dma_status();
+#endif
     print_adc_coupling();
     print_uart_config();
 }
@@ -1607,6 +1938,32 @@ static void process_cmd(void)
                strncmp(cmd, "CAPT", 4) == 0 ||
                strncmp(cmd, "PCAP", 4) == 0) {
         send_str("ERR BRAM dataplane not built; rebuild with --with-bram-dataplane\r\n");
+#endif
+#if HAS_PS_DDR_DMA
+    } else if (strncmp(cmd, "DMAC", 4) == 0) {
+        char *p = &cmd[4];
+        u32 frames = ADC_CAPTURE_FRAMES;
+        parse_u32_arg(&p, &frames);
+        cmd_dma_capture(frames);
+    } else if (strncmp(cmd, "DSTA", 4) == 0) {
+        print_dma_status();
+    } else if (strncmp(cmd, "DDRD", 4) == 0) {
+        char *p = &cmd[4];
+        u32 chip = 0;
+        u32 start_word = 0;
+        u32 words = 16;
+        if (!parse_u32_arg(&p, &chip)) {
+            send_str("ERR DDRD expects chip 0|1, optional start, optional word count\r\n");
+            return;
+        }
+        parse_u32_arg(&p, &start_word);
+        parse_u32_arg(&p, &words);
+        cmd_ddr_read(chip, start_word, words);
+#else
+    } else if (strncmp(cmd, "DMAC", 4) == 0 ||
+               strncmp(cmd, "DSTA", 4) == 0 ||
+               strncmp(cmd, "DDRD", 4) == 0) {
+        send_str("ERR PS DDR DMA not built; rebuild with --with-ps-ddr-dma\r\n");
 #endif
     } else {
         send_str("ERR unknown command; try HELP\r\n");

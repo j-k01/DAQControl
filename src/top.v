@@ -94,6 +94,13 @@ module top #(
     wire ro_reg6_rdint;
     wire ro_reg7_rdint;
 
+`ifdef DAQ_WITH_GTH
+    wire        gth_tx_usrclk;
+    wire        gth_tx_usrclk2;
+    wire        gth_rx_usrclk;
+    wire        gth_rx_usrclk2;
+`endif
+
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     wire [31:0] dac0_axi_bram_addr;
     wire        dac0_axi_bram_clk;
@@ -186,6 +193,21 @@ module top #(
     wire [15:0] adc_bram_we;
 `endif
 
+`ifdef DAQ_WITH_PS_DDR_DMA
+    wire [127:0] adc0_dma_axis_tdata;
+    wire [15:0]  adc0_dma_axis_tkeep;
+    wire         adc0_dma_axis_tlast;
+    wire         adc0_dma_axis_tvalid;
+    wire         adc0_dma_axis_tready;
+    wire [127:0] adc1_dma_axis_tdata;
+    wire [15:0]  adc1_dma_axis_tkeep;
+    wire         adc1_dma_axis_tlast;
+    wire         adc1_dma_axis_tvalid;
+    wire         adc1_dma_axis_tready;
+    wire [31:0]  adc0_dma_status_async;
+    wire [31:0]  adc1_dma_status_async;
+`endif
+
     wire [31:0] status_reg;
     wire [31:0] clk_fmc_count;
     wire [31:0] sysref_count;
@@ -238,6 +260,21 @@ module top #(
         .RO_REG5_RDINT_0      (ro_reg5_rdint),
         .RO_REG6_RDINT_0      (ro_reg6_rdint),
         .RO_REG7_RDINT_0      (ro_reg7_rdint)
+`ifdef DAQ_WITH_PS_DDR_DMA
+        ,
+        .gt_rx_usrclk_2       (gth_rx_usrclk2),
+        .reset_rtl            (fabric_rst),
+        .S_AXIS_S2MM_0_tdata  (adc0_dma_axis_tdata),
+        .S_AXIS_S2MM_0_tkeep  (adc0_dma_axis_tkeep),
+        .S_AXIS_S2MM_0_tlast  (adc0_dma_axis_tlast),
+        .S_AXIS_S2MM_0_tready (adc0_dma_axis_tready),
+        .S_AXIS_S2MM_0_tvalid (adc0_dma_axis_tvalid),
+        .S_AXIS_S2MM_1_tdata  (adc1_dma_axis_tdata),
+        .S_AXIS_S2MM_1_tkeep  (adc1_dma_axis_tkeep),
+        .S_AXIS_S2MM_1_tlast  (adc1_dma_axis_tlast),
+        .S_AXIS_S2MM_1_tready (adc1_dma_axis_tready),
+        .S_AXIS_S2MM_1_tvalid (adc1_dma_axis_tvalid)
+`endif
 `ifdef DAQ_WITH_BRAM_DATAPLANE
         ,
         .DAC0_AXI_BRAM_PORTA_addr (dac0_axi_bram_addr),
@@ -896,10 +933,6 @@ module top #(
     wire        gth_reset_all = fabric_rst | rw_reg2[0] | ~hmc_auto_done;
     wire        gth_tx_userclk_active;
     wire        gth_rx_userclk_active;
-    wire        gth_tx_usrclk;
-    wire        gth_tx_usrclk2;
-    wire        gth_rx_usrclk;
-    wire        gth_rx_usrclk2;
     wire        gth_reset_rx_cdr_stable;
     wire        gth_reset_tx_done;
     wire        gth_reset_rx_done;
@@ -1557,8 +1590,50 @@ module top #(
         .bram_we       (adc_bram_we),
         .status        (adc_capture_status_async)
     );
+
+`ifdef DAQ_WITH_PS_DDR_DMA
+    adc_axis_capture_streamer u_adc0_dma_streamer (
+        .clk           (gth_rx_usrclk2),
+        .rst           (adc_rx_reset),
+        .start         (adc_capture_start),
+        .data_valid    (adc1_litejesd_ready_async),
+        .frame_data    ({adc_ch1_capture, adc_ch0_capture}),
+        .m_axis_tdata  (adc0_dma_axis_tdata),
+        .m_axis_tkeep  (adc0_dma_axis_tkeep),
+        .m_axis_tlast  (adc0_dma_axis_tlast),
+        .m_axis_tvalid (adc0_dma_axis_tvalid),
+        .m_axis_tready (adc0_dma_axis_tready),
+        .status        (adc0_dma_status_async)
+    );
+
+    adc_axis_capture_streamer u_adc1_dma_streamer (
+        .clk           (gth_rx_usrclk2),
+        .rst           (adc_rx_reset),
+        .start         (adc_capture_start),
+        .data_valid    (adc2_litejesd_ready_async),
+        .frame_data    ({adc_ch3_capture, adc_ch2_capture}),
+        .m_axis_tdata  (adc1_dma_axis_tdata),
+        .m_axis_tkeep  (adc1_dma_axis_tkeep),
+        .m_axis_tlast  (adc1_dma_axis_tlast),
+        .m_axis_tvalid (adc1_dma_axis_tvalid),
+        .m_axis_tready (adc1_dma_axis_tready),
+        .status        (adc1_dma_status_async)
+    );
+`endif
 `else
     assign adc_capture_status_async = 32'd0;
+`ifdef DAQ_WITH_PS_DDR_DMA
+    assign adc0_dma_axis_tdata = 128'd0;
+    assign adc0_dma_axis_tkeep = 16'd0;
+    assign adc0_dma_axis_tlast = 1'b0;
+    assign adc0_dma_axis_tvalid = 1'b0;
+    assign adc1_dma_axis_tdata = 128'd0;
+    assign adc1_dma_axis_tkeep = 16'd0;
+    assign adc1_dma_axis_tlast = 1'b0;
+    assign adc1_dma_axis_tvalid = 1'b0;
+    assign adc0_dma_status_async = 32'd0;
+    assign adc1_dma_status_async = 32'd0;
+`endif
 `endif
 `else
     assign adc1_sync_n_async = 1'b0;
@@ -1586,6 +1661,18 @@ module top #(
     assign adc_ch2_async = 64'd0;
     assign adc_ch3_async = 64'd0;
     assign adc_capture_status_async = 32'd0;
+`ifdef DAQ_WITH_PS_DDR_DMA
+    assign adc0_dma_axis_tdata = 128'd0;
+    assign adc0_dma_axis_tkeep = 16'd0;
+    assign adc0_dma_axis_tlast = 1'b0;
+    assign adc0_dma_axis_tvalid = 1'b0;
+    assign adc1_dma_axis_tdata = 128'd0;
+    assign adc1_dma_axis_tkeep = 16'd0;
+    assign adc1_dma_axis_tlast = 1'b0;
+    assign adc1_dma_axis_tvalid = 1'b0;
+    assign adc0_dma_status_async = 32'd0;
+    assign adc1_dma_status_async = 32'd0;
+`endif
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     assign adc_bram_addr = 32'd0;
     assign adc_bram_clk = clk_200;

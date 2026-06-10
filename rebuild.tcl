@@ -9,7 +9,8 @@ for {set i 0} {$i < [llength $::argv]} {incr i} {
         "--with-staged-gt" -
         "--with-litejesd" -
         "--with-gth-tx-ila" -
-        "--with-bram-dataplane" {
+        "--with-bram-dataplane" -
+        "--with-ps-ddr-dma" {
             lappend create_args $arg
         }
         "--izh-neuron-file" {
@@ -30,7 +31,7 @@ for {set i 0} {$i < [llength $::argv]} {incr i} {
             lappend build_args --jobs [lindex $::argv $i]
         }
         default {
-            error "Unknown rebuild.tcl argument '$arg'. Supported arguments: --with-staged-gt, --with-litejesd, --with-gth-tx-ila, --with-bram-dataplane, --izh-neuron-file <path>, --bake, --jobs <n>."
+            error "Unknown rebuild.tcl argument '$arg'. Supported arguments: --with-staged-gt, --with-litejesd, --with-gth-tx-ila, --with-bram-dataplane, --with-ps-ddr-dma, --izh-neuron-file <path>, --bake, --jobs <n>."
         }
     }
 }

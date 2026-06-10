@@ -45,8 +45,65 @@ proc select_microblaze_target {} {
     error "No MicroBlaze target found. Program the FPGA bitstream first, then rerun this script."
 }
 
+proc find_first_named_file {root file_name} {
+    if {![file isdirectory $root]} {
+        return ""
+    }
+
+    foreach candidate [glob -nocomplain -directory $root $file_name] {
+        if {[file exists $candidate]} {
+            return [file normalize $candidate]
+        }
+    }
+
+    foreach child [glob -nocomplain -type d -directory $root *] {
+        set found [find_first_named_file $child $file_name]
+        if {$found ne ""} {
+            return $found
+        }
+    }
+
+    return ""
+}
+
+proc run_psu_init_if_available {script_dir} {
+    set search_roots [list \
+        [file join $script_dir hw] \
+        [file join $script_dir sw workspace] \
+    ]
+
+    set psu_init_file ""
+    foreach root $search_roots {
+        set psu_init_file [find_first_named_file $root psu_init.tcl]
+        if {$psu_init_file ne ""} {
+            break
+        }
+    }
+
+    if {$psu_init_file eq ""} {
+        puts "INFO: no psu_init.tcl found; skipping PS DDR initialization."
+        return
+    }
+
+    puts "Running PS DDR init: $psu_init_file"
+    catch {targets -set -filter {name =~ "*PSU*"}} target_result
+    if {[catch {source $psu_init_file} result]} {
+        puts "WARNING: source psu_init.tcl failed: $result"
+        return
+    }
+    foreach proc_name {psu_init psu_ps_pl_isolation_removal psu_ps_pl_reset_config} {
+        if {[llength [info commands $proc_name]] > 0} {
+            if {[catch {$proc_name} proc_result]} {
+                puts "WARNING: $proc_name failed: $proc_result"
+            }
+        }
+    }
+}
+
 puts "Connecting to hw_server..."
 connect
+
+run_psu_init_if_available $script_dir
 
 set target_id [select_microblaze_target]
 puts "Selected MicroBlaze target: $target_id"
