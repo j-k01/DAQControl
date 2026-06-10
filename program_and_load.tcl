@@ -76,14 +76,22 @@ proc find_xsct_command {} {
                 return [list $candidate]
             }
         }
+        # Vivado-only installs have no Vitis/XSCT; xsdb ships with Vivado and
+        # supports everything load_mb_firmware.tcl uses (connect/targets/dow/con).
+        foreach name {xsdb.bat xsdb} {
+            set candidate [file join $::env(XILINX_VIVADO) bin $name]
+            if {[file exists $candidate]} {
+                return [list $candidate]
+            }
+        }
     }
 
-    set resolved [first_existing_command {xsct.bat xsct}]
+    set resolved [first_existing_command {xsct.bat xsct xsdb.bat xsdb}]
     if {$resolved ne ""} {
         return $resolved
     }
 
-    error "Could not find XSCT. Run this from a Xilinx/Vitis command shell, or set XSCT to the full path of xsct.bat."
+    error "Could not find XSCT or XSDB. Run this from a Xilinx command shell, or set XSCT to the full path of xsct.bat/xsdb.bat."
 }
 
 proc find_vivado_command {} {
