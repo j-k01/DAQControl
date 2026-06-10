@@ -77,6 +77,8 @@ Knobs:
 | `--reinit-adc` | off | pulse ADS54J60 auto-init restart first |
 | `--expect-build-id 0xDA01003C` | off | fail fast on gateware mismatch |
 
+Pure sine + capture: `python scripts/sine_dac0_adc_in1_uart.py --port COMx --frequency-mhz 10`
+(frequency quantized to a seamless BRAM loop; programmed value is printed).
 DAC-only (no capture): `python scripts/program_dac0_trap_pulse_uart.py --port COMx`
 Capture-only / other waveforms: `scripts/capture_plot_adc_uart.py` (see README).
 
