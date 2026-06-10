@@ -1,41 +1,31 @@
 # Read the PS Ethernet app debug mailbox (see sw/ps_eth_stream/README.md).
 # Mailbox base: 0x0F000000, 8 u32 words.
 #
-# Prefers the PSU/DAP target so the read works even when the A53 is hung on
-# a bus transaction (halt timeout). Falls back to stopping the A53 core.
+# IMPORTANT: never read memory through the PSU/DAP target in this setup. The
+# DAP AXI-AP path to DDR times out, sets a sticky DAP error (0x30000021), and
+# poisons the JTAG view until rst -system + rst -dap (which wipes the PL).
+# Memory access only works through a halted A53 core, so this script stops
+# the core briefly, dumps the mailbox, and resumes it.
 connect
 after 1000
 
-set done 0
-if {![catch {targets -set -filter {name =~ "*PSU*"}}]} {
-    puts "Reading via PSU/DAP target:"
-    if {![catch {mrd 0x0F000000 8} words]} {
-        puts $words
-        set done 1
-    } else {
-        puts "PSU mrd failed: $words"
-    }
+targets -set -filter {name =~ "Cortex-A53 #0"}
+set was_running 0
+if {[catch {stop} stop_err]} {
+    puts "stop: $stop_err"
+} else {
+    set was_running 1
 }
-
-if {!$done} {
-    puts "Falling back to A53 core read (stop/mrd/continue):"
-    targets -set -filter {name =~ "Cortex-A53 #0"}
-    set was_running 0
-    if {[catch {stop} stop_err]} {
-        puts "stop: $stop_err"
-    } else {
-        set was_running 1
-    }
-    after 200
-    if {![catch {mrd 0x0F000000 8} words]} {
-        puts $words
-    } else {
-        puts "A53 mrd failed: $words"
-    }
-    catch {puts "PC: [rrd pc]"}
-    if {$was_running} {
-        catch {con}
-    }
+after 200
+puts "PS Ethernet mailbox at 0x0F000000:"
+if {[catch {mrd 0x0F000000 8} words]} {
+    puts "core mrd failed: $words"
+} else {
+    puts $words
+}
+catch {puts "PC: [rrd pc]"}
+if {$was_running} {
+    catch {con}
 }
 
 puts "progress legend: DA000001 main, DA000002 gic, DA000003 lwip_init,"
