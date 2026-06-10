@@ -33,7 +33,7 @@
 
 #define DAQ_LOCAL_IP0       192
 #define DAQ_LOCAL_IP1       168
-#define DAQ_LOCAL_IP2       1
+#define DAQ_LOCAL_IP2       2
 #define DAQ_LOCAL_IP3       10
 
 #define DAQ_NETMASK0        255
@@ -43,7 +43,7 @@
 
 #define DAQ_GATEWAY0        192
 #define DAQ_GATEWAY1        168
-#define DAQ_GATEWAY2        1
+#define DAQ_GATEWAY2        2
 #define DAQ_GATEWAY3        1
 
 #define DAQ_CMD_PORT        5006

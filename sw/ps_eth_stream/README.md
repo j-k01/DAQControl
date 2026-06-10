@@ -36,16 +36,16 @@ Use `--init-ps` only if the PS/DDR has not already been initialized:
 xsct load_ps_eth_stream.tcl --init-ps
 ```
 
-The app uses static IP `192.168.1.10/24`, listens on UDP port `5006`, and sends
+The app uses static IP `192.168.2.10/24`, listens on UDP port `5006`, and sends
 responses to the source UDP port of the request.
 
 ## Host Receive
 
 Set the host Ethernet interface to the same subnet, for example
-`192.168.1.100/24`, then run:
+`192.168.2.1/24`, then run:
 
 ```powershell
-python scripts\receive_ps_eth_stream.py --board-ip 192.168.1.10 --local-port 5005 --chip all --frames 4096
+python scripts\receive_ps_eth_stream.py --board-ip 192.168.2.10 --local-port 5005 --chip all --frames 4096
 ```
 
 The app sends binary captures to:

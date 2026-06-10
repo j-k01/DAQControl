@@ -28,7 +28,7 @@ def parse_packet(data: bytes):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--board-ip", default="192.168.1.10")
+    parser.add_argument("--board-ip", default="192.168.2.10")
     parser.add_argument("--cmd-port", type=int, default=5006)
     parser.add_argument("--local-port", type=int, default=5005)
     parser.add_argument("--chip", default="all", choices=["all", "0", "1"])
