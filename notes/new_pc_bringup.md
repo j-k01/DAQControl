@@ -75,7 +75,7 @@ Knobs:
 | `--coupling ac\|dc` | `ac` | ADC IN1 input coupling (DC only with known-safe amplitude) |
 | `--frames` | 4096 | capture length, 4 IN1 samples per frame |
 | `--reinit-adc` | off | pulse ADS54J60 auto-init restart first |
-| `--expect-build-id 0xDA010034` | off | fail fast on firmware mismatch |
+| `--expect-build-id 0xDA01003C` | off | fail fast on gateware mismatch |
 
 DAC-only (no capture): `python scripts/program_dac0_trap_pulse_uart.py --port COMx`
 Capture-only / other waveforms: `scripts/capture_plot_adc_uart.py` (see README).
