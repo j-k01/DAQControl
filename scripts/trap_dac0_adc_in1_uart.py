@@ -44,6 +44,54 @@ def parse_int(text: str) -> int:
     return int(text, 0)
 
 
+# STAT "gth_gate:" tokens that must all be present before a capture can finish:
+# without an active JESD RX link the capture engine never sees ADC beats and
+# the firmware reports "ERR capture timeout".
+GTH_REQUIRED = ("hmc_done", "qpll_locked", "tx_ready", "rx_ready", "litejesd_active", "litejesd_ready")
+
+
+def read_gth_gate(port: serial.Serial) -> set[str]:
+    port.reset_input_buffer()
+    port.write(b"STAT\n")
+    port.flush()
+    line = cap.wait_for_line_prefix(port, "gth_gate:")
+    time.sleep(0.2)
+    port.reset_input_buffer()  # drop the rest of the STAT report
+    return set(line.split()[1:])
+
+
+def jesd_missing(tokens: set[str]) -> list[str]:
+    return [flag for flag in GTH_REQUIRED if flag not in tokens]
+
+
+def preflight_jesd(port: serial.Serial) -> None:
+    missing = jesd_missing(read_gth_gate(port))
+    if not missing:
+        print("JESD link OK: " + " ".join(GTH_REQUIRED))
+        return
+
+    print(f"JESD link down (missing: {' '.join(missing)}); restarting GTH/LiteJESD (TXRS)...")
+    cap.uart_command_ok(port, "TXRS")
+    time.sleep(1.0)
+    missing = jesd_missing(read_gth_gate(port))
+
+    if missing:
+        print(f"Still missing {' '.join(missing)}; pulsing ADS54J60 auto-init restart (RW3[2])...")
+        cap.uart_command_ok(port, "WRTE 3 0x00000004")
+        cap.uart_command_ok(port, "WRTE 3 0x00000000")
+        time.sleep(1.5)
+        missing = jesd_missing(read_gth_gate(port))
+
+    if missing:
+        raise SystemExit(
+            f"JESD link did not come up (missing: {' '.join(missing)}). "
+            "Power-cycle the board, rerun program_and_load.tcl, and check the "
+            "FMC card seating and SSMC cables. Inspect with: "
+            "python scripts/uart_cmds.py --port <port> STAT CAPS ADCS"
+        )
+    print("JESD link recovered: " + " ".join(GTH_REQUIRED))
+
+
 def build_words(args: argparse.Namespace) -> tuple[list[int], int, int]:
     sample_rate_hz = args.dac_sample_rate_mhz * 1.0e6
     period_samples = trap.ns_to_samples("period", args.period_ns, sample_rate_hz)
@@ -147,6 +195,11 @@ def main() -> None:
         action="store_true",
         help="Pulse the ADS54J60 auto-init restart (RW3[2]) before uploading.",
     )
+    parser.add_argument(
+        "--no-preflight",
+        action="store_true",
+        help="Skip the STAT gth_gate JESD-link check/auto-recovery before capturing.",
+    )
     parser.add_argument("--frames", type=int, default=4096, help="ADC capture frames (4 IN1 samples each).")
     parser.add_argument("--adc-sample-rate-mhz", type=float, default=500.0)
     parser.add_argument("--rw2", type=parse_int, default=trap.DAC_NORMAL_RW2)
@@ -195,6 +248,8 @@ def main() -> None:
             cap.check_build_id(port, args.expect_build_id)
         cap.set_rw2(port, args.rw2)
         cap.uart_command_ok(port, f"COUP 1 {args.coupling}")
+        if not args.no_preflight:
+            preflight_jesd(port)
         if args.reinit_adc:
             print("Pulsing ADS54J60 auto-init restart (RW3[2])...")
             cap.uart_command_ok(port, "WRTE 3 0x00000004")
@@ -214,7 +269,15 @@ def main() -> None:
         print(cap.wait_for_line_prefix(port, "DAC source"))
 
         print(f"Capturing {args.frames} ADC frames with PCAP...")
-        presync, frame_words = cap.capture_frames(port, "PCAP", args.frames)
+        try:
+            presync, frame_words = cap.capture_frames(port, "PCAP", args.frames)
+        except (RuntimeError, TimeoutError) as exc:
+            raise SystemExit(
+                f"capture failed: {exc}\n"
+                "The capture engine saw no ADC data (JESD RX/ADS54J60 likely "
+                "not initialized). Inspect with: python scripts/uart_cmds.py "
+                f"--port {args.port} STAT CAPS ADCS, then retry with --reinit-adc."
+            ) from exc
         presync_text = presync.decode("ascii", errors="replace").replace("\r", "").strip()
         if presync_text:
             print(f"presync: {presync_text!r}")

@@ -492,6 +492,7 @@ def read_exact(port, count):
 def wait_for_sync(port):
     window = bytearray()
     presync = bytearray()
+    line = bytearray()
 
     while True:
         byte = port.read(1)
@@ -504,6 +505,15 @@ def wait_for_sync(port):
             del window[0]
         if bytes(window) == SYNC_WORD:
             return bytes(presync[:-len(SYNC_WORD)])
+        # The firmware reports capture failures as an ASCII "ERR ..." line
+        # instead of the sync word; fail fast rather than waiting out the
+        # full serial timeout.
+        line.extend(byte)
+        if byte == b"\n":
+            text = bytes(line).decode("ascii", errors="replace").strip()
+            line.clear()
+            if text.startswith("ERR"):
+                raise RuntimeError(f"firmware reported: {text}")
 
 
 def capture_frames(port, command_name, frames):
