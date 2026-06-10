@@ -625,7 +625,10 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
         assign_mb_addr_exact microblaze_0/Data axi_dma_1/S_AXI_LITE/Reg 0x41E10000 0x00010000
         assign_bd_addr_if_exists axi_dma_0/Data_S2MM zynq_ultra_ps_e_0/SAXIGP2/HP0_DDR_LOW 0x00000000 0x80000000
         assign_bd_addr_if_exists axi_dma_1/Data_S2MM zynq_ultra_ps_e_0/SAXIGP3/HP1_DDR_LOW 0x00000000 0x80000000
-        assign_bd_addr_if_exists microblaze_0/Data zynq_ultra_ps_e_0/SAXIGP4/HP2_DDR_LOW 0x00000000 0x80000000
+        # MicroBlaze only needs a small DDR readback aperture over the DMA
+        # capture buffers. Mapping all DDR_LOW at zero collides with local
+        # memory and every existing peripheral in the MB address space.
+        assign_bd_addr_if_exists microblaze_0/Data zynq_ultra_ps_e_0/SAXIGP4/HP2_DDR_LOW 0x10000000 0x00040000
 
         exclude_bd_addr_seg_if_exists axi_dma_0/Data_S2MM zynq_ultra_ps_e_0/SAXIGP2/HP0_DDR_HIGH
         exclude_bd_addr_seg_if_exists axi_dma_0/Data_S2MM zynq_ultra_ps_e_0/SAXIGP2/HP0_LPS_OCM 0xFF000000 0x01000000
