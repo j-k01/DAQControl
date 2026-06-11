@@ -34,6 +34,10 @@ except ImportError as exc:  # pragma: no cover
 MAX_PROGRAM_WORDS = 8192
 DAC_NORMAL_RW2 = 0x01000018  # sample_map=0, tx_lane=3; source selection is NSRC.
 
+# Default baseline: keeps the whole programmed trapezoid purely positive with
+# ~3% of full scale to spare so it never touches or crosses zero.
+POSITIVE_BASELINE = 0x0400
+
 # 7-sample trapezoid used by the hardware IZH spike pulse shaper at 1 GSPS.
 IZH_7NS_PROFILE = (0.25, 0.5, 1.0, 1.0, 1.0, 0.5, 0.25)
 
@@ -78,6 +82,22 @@ def pulse_profile(width_samples: int) -> tuple[float, ...]:
         else:
             profile.append((1.0 - normalized) / 0.25)
     return tuple(profile)
+
+
+def check_waveform_range(amplitude: int, offset: int) -> None:
+    """Fail on signed16 clipping; warn if the trapezoid would go negative."""
+    lo = min(offset, offset + amplitude)
+    hi = max(offset, offset + amplitude)
+    if hi > 32767 or lo < -32768:
+        raise SystemExit(
+            f"waveform clips signed16: baseline {offset} / peak {offset + amplitude} "
+            "must stay within -32768..32767 (lower --amplitude or --offset)"
+        )
+    if lo < 0:
+        print(
+            f"warning: waveform dips to {lo} counts (not purely positive); "
+            f"use --offset >= {max(0, -amplitude)} to keep it above zero"
+        )
 
 
 def make_period(period_samples: int, width_samples: int, amplitude: int, offset: int) -> list[int]:
@@ -141,7 +161,13 @@ def main() -> None:
     parser.add_argument("--pulse-width-ns", type=float, default=7.0, help="Trapezoid width.")
     parser.add_argument("--sample-rate-mhz", type=float, default=1000.0, help="DAC sample rate.")
     parser.add_argument("--amplitude", type=parse_int, default=0x6000, help="Signed DAC counts.")
-    parser.add_argument("--offset", type=parse_int, default=0, help="Baseline in signed DAC counts.")
+    parser.add_argument(
+        "--offset",
+        type=parse_int,
+        default=POSITIVE_BASELINE,
+        help="Baseline in signed DAC counts. The default keeps the programmed "
+        "trapezoid purely positive with headroom; 0 puts the gap at mid-scale.",
+    )
     parser.add_argument("--timeout", type=float, default=5.0)
     args = parser.parse_args()
 
@@ -155,6 +181,7 @@ def main() -> None:
         )
     gap_ns = (period_samples - width_samples) * 1.0e9 / sample_rate_hz
 
+    check_waveform_range(args.amplitude, args.offset)
     word_count = seamless_word_count(period_samples, MAX_PROGRAM_WORDS)
     period = make_period(period_samples, width_samples, args.amplitude, args.offset)
     samples = period * (2 * word_count // period_samples)

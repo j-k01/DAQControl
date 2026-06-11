@@ -106,6 +106,7 @@ def build_words(args: argparse.Namespace) -> tuple[list[int], int, int]:
             f"pulse width ({width_samples} samples) must be shorter than the "
             f"period ({period_samples} samples)"
         )
+    trap.check_waveform_range(args.amplitude, args.offset)
     word_count = trap.seamless_word_count(period_samples, trap.MAX_PROGRAM_WORDS)
     period = trap.make_period(period_samples, width_samples, args.amplitude, args.offset)
     samples = period * (2 * word_count // period_samples)
@@ -201,7 +202,13 @@ def main() -> None:
     parser.add_argument("--pulse-width-ns", type=float, default=7.0, help="Trapezoid width.")
     parser.add_argument("--dac-sample-rate-mhz", type=float, default=1000.0)
     parser.add_argument("--amplitude", type=parse_int, default=0x6000, help="Signed DAC counts.")
-    parser.add_argument("--offset", type=parse_int, default=0, help="Baseline in signed DAC counts.")
+    parser.add_argument(
+        "--offset",
+        type=parse_int,
+        default=trap.POSITIVE_BASELINE,
+        help="Baseline in signed DAC counts. The default keeps the programmed "
+        "trapezoid purely positive with headroom; 0 puts the gap at mid-scale.",
+    )
     parser.add_argument(
         "--dac-channel",
         type=int,

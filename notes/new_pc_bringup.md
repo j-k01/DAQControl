@@ -71,7 +71,7 @@ Knobs:
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--period-ns` / `--pulse-width-ns` | 35 / 7 | any whole-sample combo at 1 GSPS |
-| `--amplitude` / `--offset` | `0x6000` / 0 | signed DAC counts |
+| `--amplitude` / `--offset` | `0x6000` / `0x0400` | signed DAC counts; default baseline keeps the program purely positive |
 | `--coupling ac\|dc` | `ac` | ADC IN1 input coupling (DC only with known-safe amplitude) |
 | `--frames` | 4096 | capture length, 4 IN1 samples per frame |
 | `--reinit-adc` | off | pulse ADS54J60 auto-init restart first |
