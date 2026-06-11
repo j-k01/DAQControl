@@ -277,7 +277,7 @@ def write_stacked_plot(path, per_input, step_us, model_ms_per_us, max_points, sh
     axes[-1].set_xlabel(f"simulation time [model ms] ({model_ms_per_us:g} ms/us)")
     axes[0].secondary_xaxis(
         "top", functions=(lambda m: m / model_ms_per_us, lambda t: t * model_ms_per_us),
-    ).set_xlabel("real time [us]")
+    ).set_xlabel("hardware time [us]")
     fig.suptitle("Izhikevich profiles captured on ADC (in loopback)", fontsize=13)
     fig.savefig(path, dpi=150)
     print(f"Wrote {path}")

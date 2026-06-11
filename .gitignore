@@ -34,6 +34,10 @@ hw/*
 sw/workspace/
 boot/
 
+# Capture artifacts (ADC PNG/CSV/summaries) - regenerated on demand, not tracked
+captures/
+**/captures/
+
 # OS/editor noise
 .DS_Store
 Thumbs.db
