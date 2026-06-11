@@ -50,6 +50,9 @@ except ImportError as exc:  # pragma: no cover
 PROFILES = ("regular", "rs", "bursting", "ib", "chattering", "ch",
             "fast", "fs", "lts", "tc", "resonator", "rz", "rebound", "rb")
 
+NEURON_CLK_MHZ = 50.0  # clk_out4; one dynamics step every --period cycles
+DEFAULT_DT = 0x1000    # Q16.16 profile default = 0.0625 model-ms per step
+
 
 def parse_int(text: str) -> int:
     return int(text, 0)
@@ -122,7 +125,8 @@ def judge_input(label: str, samples: list[int], adc_rate_mhz: float, args: argpa
 
 
 def write_spike_plot(path: Path, samples: list[int], spikes: list[int],
-                     adc_rate_mhz: float, max_points: int, show: bool, label: str) -> None:
+                     adc_rate_mhz: float, max_points: int, show: bool, label: str,
+                     model_ms_per_us: float | None = None) -> None:
     try:
         import matplotlib.pyplot as plt
     except ImportError as exc:
@@ -141,6 +145,11 @@ def write_spike_plot(path: Path, samples: list[int], spikes: list[int],
     ax.secondary_yaxis(
         "right", functions=(combo.counts_to_volts, combo.volts_to_counts)
     ).set_ylabel(f"volts ({combo.ADC_FULL_SCALE_VPP:g} Vpp FS, ADC-pin referred)")
+    if model_ms_per_us:
+        ax.secondary_xaxis(
+            "top", functions=(lambda t: t * model_ms_per_us,
+                              lambda m: m / model_ms_per_us),
+        ).set_xlabel(f"simulation time [model ms] ({model_ms_per_us:g} ms/us)")
     fig.savefig(path, dpi=150)
     print(f"Wrote {path}")
     if show:
@@ -248,9 +257,14 @@ def main() -> None:
     converters = [adc_input - 1 for adc_input in args.inputs]
     streams = cap.build_converter_streams(captures, converters)
 
+    dt_value = DEFAULT_DT if args.dt is None else args.dt
+    model_ms_per_us = (dt_value / 65536.0) * NEURON_CLK_MHZ / args.period
     summary_lines = [
         f"profile={args.profile} period={args.period} (neuron-clock cycles)"
         + ("" if args.dt is None else f" dt=0x{args.dt:X}"),
+        f"sim timebase: {model_ms_per_us:g} model-ms per wall-us "
+        f"(dt {dt_value / 65536.0:g} model-ms/step, one step per "
+        f"{args.period * 1000.0 / NEURON_CLK_MHZ:g} ns at {NEURON_CLK_MHZ:g} MHz)",
         f"inputs={','.join(str(i) for i in args.inputs)} coupling={args.coupling} "
         f"frames={args.frames} command={args.command}",
         f"threshold_frac={args.threshold_frac:g} min_gap_samples={args.min_gap_samples} "
@@ -273,6 +287,7 @@ def main() -> None:
                 outdir / f"{args.prefix}_{tag}.png",
                 samples, spikes, args.adc_sample_rate_mhz,
                 args.max_points, args.show, f"ADC {label} ({args.profile}, period {args.period})",
+                model_ms_per_us=model_ms_per_us,
             )
 
     summary_lines.append(f"overall: {'PASS' if overall else 'FAIL'}")
