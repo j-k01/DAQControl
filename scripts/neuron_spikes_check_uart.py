@@ -159,6 +159,11 @@ def main() -> None:
     parser.add_argument("--period", type=int, default=1,
                         help="Update divider in neuron-clock cycles (NEUR all period N). "
                         "1 = step the dynamics every neuron-clock cycle.")
+    parser.add_argument("--dt", type=parse_int, default=None,
+                        help="Override the integration timestep (NEUR all dt N, Q16.16; "
+                        "profiles default to 0x1000 = 0.0625). With the period divider "
+                        "already at its floor, raising dt packs more model time into "
+                        "each 20 ns step and compresses the spike spacing on the chart.")
     parser.add_argument("--inputs", type=parse_inputs, default=[1, 2],
                         help="Comma-separated ADC inputs to check, e.g. 1,2 (IN1..IN4).")
     parser.add_argument("--coupling", choices=["ac", "dc"], default="ac")
@@ -212,11 +217,15 @@ def main() -> None:
             cap.uart_command_ok(port, "WRTE 3 0x00000000")
             time.sleep(1.0)
 
-        # Profile first (it also resets v/u and restores the default period),
-        # then override the update divider for a visible in-window spike rate.
-        print(f"Programming all neurons: profile={args.profile}, period={args.period}")
+        # Profile first (it also resets v/u and restores the default period
+        # and dt), then override the update divider / timestep for a visible
+        # in-window spike rate.
+        dt_note = "" if args.dt is None else f", dt=0x{args.dt:X}"
+        print(f"Programming all neurons: profile={args.profile}, period={args.period}{dt_note}")
         cap.uart_command_ok(port, f"NEUR all {args.profile}")
         cap.uart_command_ok(port, f"NEUR all period {args.period}")
+        if args.dt is not None:
+            cap.uart_command_ok(port, f"NEUR all dt 0x{args.dt:X}")
         port.write(b"NSRC all izh\n")
         port.flush()
         print(cap.wait_for_line_prefix(port, "DAC source"))
@@ -240,7 +249,8 @@ def main() -> None:
     streams = cap.build_converter_streams(captures, converters)
 
     summary_lines = [
-        f"profile={args.profile} period={args.period} (neuron-clock cycles)",
+        f"profile={args.profile} period={args.period} (neuron-clock cycles)"
+        + ("" if args.dt is None else f" dt=0x{args.dt:X}"),
         f"inputs={','.join(str(i) for i in args.inputs)} coupling={args.coupling} "
         f"frames={args.frames} command={args.command}",
         f"threshold_frac={args.threshold_frac:g} min_gap_samples={args.min_gap_samples} "
