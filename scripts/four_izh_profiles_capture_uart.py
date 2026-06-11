@@ -22,6 +22,12 @@ Requires the quad loopback cable (OUT1->IN1 ... OUT4->IN4).
 
   python scripts/four_izh_profiles_capture_uart.py --port COM10
 
+The eight firmware profiles don't all fit on four DACs at once, so --profiles
+picks which four to load (DAC0..DAC3). The other four:
+
+  python scripts/four_izh_profiles_capture_uart.py --port COM10 \
+      --profiles lts,tc,resonator,rebound --prefix four_izh_set2
+
 Writes captures/<prefix>_in{1..4}.csv, a stacked <prefix>.png, and a summary.
 The neurons are left spiking on all four DACs.
 """
@@ -43,13 +49,23 @@ import program_dac0_trap_pulse_uart as trap  # noqa: E402
 import trap_dac0_adc_in1_uart as combo  # noqa: E402
 import neuron_spikes_check_uart as nspk  # noqa: E402
 
-# ch -> (profile token, short tag, human label) in DAC/IN order.
-PROFILE_PLAN = [
-    (0, "regular",    "RS", "Regular spiking (RS)"),
-    (1, "bursting",   "IB", "Intrinsically bursting (IB)"),
-    (2, "chattering", "CH", "Chattering (CH)"),
-    (3, "fast",       "FS", "Fast spiking (FS)"),
-]
+# Canonical firmware name -> (short tag, human label) for every IZH profile.
+PROFILE_LABELS = {
+    "regular":    ("RS",  "Regular spiking (RS)"),
+    "bursting":   ("IB",  "Intrinsically bursting (IB)"),
+    "chattering": ("CH",  "Chattering (CH)"),
+    "fast":       ("FS",  "Fast spiking (FS)"),
+    "lts":        ("LTS", "Low-threshold spiking (LTS)"),
+    "tc":         ("TC",  "Thalamo-cortical (TC)"),
+    "resonator":  ("RZ",  "Resonator (RZ)"),
+    "rebound":    ("RB",  "Rebound burst (RB)"),
+}
+# Firmware aliases accepted on the command line.
+PROFILE_ALIASES = {
+    "rs": "regular", "ib": "bursting", "ch": "chattering", "fs": "fast",
+    "rz": "resonator", "rb": "rebound",
+}
+DEFAULT_PROFILES = "regular,bursting,chattering,fast"
 
 NEURON_CLK_MHZ = 50.0
 
@@ -58,12 +74,38 @@ def parse_int(text: str) -> int:
     return int(text, 0)
 
 
+def to_q16_16(value: float) -> int:
+    """Model units -> signed Q16.16 word (e.g. 10.0 -> 0x000A0000)."""
+    return round(value * 65536.0) & 0xFFFFFFFF
+
+
+def parse_profiles(text: str) -> list[tuple[int, str, str, str]]:
+    """Parse --profiles into a [(ch, token, tag, label), ...] plan (DAC0..)."""
+    plan = []
+    tokens = [t.strip() for t in text.split(",") if t.strip()]
+    for ch, raw in enumerate(tokens):
+        token = PROFILE_ALIASES.get(raw.lower(), raw.lower())
+        if token not in PROFILE_LABELS:
+            raise SystemExit(
+                f"--profiles: unknown profile {raw!r}; choose from "
+                + ", ".join(PROFILE_LABELS) + " (aliases rs/ib/ch/fs/rz/rb)")
+        tag, label = PROFILE_LABELS[token]
+        plan.append((ch, token, tag, label))
+    if not 1 <= len(plan) <= 4:
+        raise SystemExit("--profiles must name 1..4 profiles (one per DAC)")
+    return plan
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", default="COM10", help="PL UART port (CP2108 channel MI_02).")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--profiles", default=DEFAULT_PROFILES,
+                        help="Comma-separated profiles for DAC0..DAC3 (default "
+                        + DEFAULT_PROFILES + "). Names: " + ", ".join(PROFILE_LABELS)
+                        + "; aliases rs/ib/ch/fs/rz/rb.")
     parser.add_argument("--dt", type=parse_int, default=0x8000,
                         help="Integration timestep (NEUR all dt N, Q16.16). Default 0x8000 = "
                         "0.5 model-ms/step (the paper's step). Raise for more model time per "
@@ -71,6 +113,13 @@ def main() -> None:
     parser.add_argument("--period", type=int, default=1,
                         help="Update divider in neuron-clock cycles (NEUR all period N). "
                         "1 = the 20 ns floor on the 50 MHz neuron clock.")
+    parser.add_argument("--iconst", type=float, default=None,
+                        help="Override the constant drive current iconst (NEUR all iconst, "
+                        "model units -> Q16.16; profiles default to 10.0). Lowering it parks "
+                        "IB/CH nearer their bursting threshold so the bursts stand out.")
+    parser.add_argument("--i-input", type=float, default=None, dest="i_input",
+                        help="Override the instantaneous I input (NEUR all i, model units -> "
+                        "Q16.16; profiles default to 0).")
     parser.add_argument("--coupling", choices=["ac", "dc"], default="ac")
     parser.add_argument("--frames", type=int, default=4096)
     parser.add_argument("--adc-sample-rate-mhz", type=float, default=1000.0,
@@ -90,6 +139,7 @@ def main() -> None:
     parser.add_argument("--show", action="store_true")
     parser.add_argument("--max-points", type=int, default=8000)
     args = parser.parse_args()
+    plan = parse_profiles(args.profiles)
 
     if args.frames <= 0 or args.frames > cap.MAX_CAPTURE_FRAMES:
         raise SystemExit(f"--frames must be 1..{cap.MAX_CAPTURE_FRAMES}")
@@ -106,7 +156,7 @@ def main() -> None:
         if args.expect_build_id is not None:
             cap.check_build_id(port, args.expect_build_id)
         cap.set_rw2(port, args.rw2)
-        for ch, _, _, _ in PROFILE_PLAN:
+        for ch, _, _, _ in plan:
             cap.uart_command_ok(port, f"COUP {ch + 1} {args.coupling}")
         if not args.no_preflight:
             combo.preflight_jesd(port)
@@ -119,11 +169,15 @@ def main() -> None:
         # Program each profile (this also resets v/u and restores the default
         # period 256 / dt 0x1000), then override period + dt on all four so the
         # patterns fit the capture window.
-        for ch, token, tag, _ in PROFILE_PLAN:
+        for ch, token, tag, _ in plan:
             cap.uart_command_ok(port, f"NEUR {ch} {token}")
             print(f"  DAC{ch} <- {token} ({tag})")
         cap.uart_command_ok(port, f"NEUR all period {args.period}")
         cap.uart_command_ok(port, f"NEUR all dt 0x{args.dt:X}")
+        if args.iconst is not None:
+            cap.uart_command_ok(port, f"NEUR all iconst 0x{to_q16_16(args.iconst):X}")
+        if args.i_input is not None:
+            cap.uart_command_ok(port, f"NEUR all i 0x{to_q16_16(args.i_input):X}")
         port.write(b"NSRC all izh\n")
         port.flush()
         print(cap.wait_for_line_prefix(port, "DAC source"))
@@ -156,9 +210,16 @@ def main() -> None:
         f"-> {window_us * model_ms_per_us:.1f} model-ms in the {window_us:.3f} us window",
         f"coupling={args.coupling} frames={args.frames} command={args.command}",
     ]
+    drive = []
+    if args.iconst is not None:
+        drive.append(f"iconst={args.iconst:g} (0x{to_q16_16(args.iconst):X})")
+    if args.i_input is not None:
+        drive.append(f"i={args.i_input:g} (0x{to_q16_16(args.i_input):X})")
+    if drive:
+        summary_lines.append("drive override: " + ", ".join(drive))
 
     per_input = []
-    for ch, token, tag, label in PROFILE_PLAN:
+    for ch, token, tag, label in plan:
         samples = streams[f"adc_ch{ch}"]
         spikes, threshold, ptp = nspk.detect_spikes(
             samples, args.threshold_frac, args.min_gap_samples, args.min_ptp)
@@ -195,8 +256,11 @@ def write_stacked_plot(path, per_input, step_us, model_ms_per_us, max_points, sh
     except ImportError as exc:
         raise SystemExit("matplotlib is required for plotting: python -m pip install matplotlib") from exc
 
-    fig, axes = plt.subplots(len(per_input), 1, figsize=(14, 11),
+    fig, axes = plt.subplots(len(per_input), 1,
+                             figsize=(14, max(3.0, 2.75 * len(per_input))),
                              sharex=True, constrained_layout=True)
+    if len(per_input) == 1:
+        axes = [axes]
     for ax, (ch, token, tag, label, samples, spikes) in zip(axes, per_input):
         x_idx, decimated = cap.decimate(samples, max_points)
         ax.plot([i * step_us for i in x_idx], decimated, lw=0.7)
