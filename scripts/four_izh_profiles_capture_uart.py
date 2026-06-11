@@ -263,21 +263,22 @@ def write_stacked_plot(path, per_input, step_us, model_ms_per_us, max_points, sh
         axes = [axes]
     for ax, (ch, token, tag, label, samples, spikes) in zip(axes, per_input):
         x_idx, decimated = cap.decimate(samples, max_points)
-        ax.plot([i * step_us for i in x_idx], decimated, lw=0.7)
+        model_ms = [i * step_us * model_ms_per_us for i in x_idx]
+        volts = [combo.counts_to_volts(c) for c in decimated]
+        ax.plot(model_ms, volts, lw=0.7)
         for index in spikes:
-            ax.axvline(index * step_us, color="r", alpha=0.3, lw=0.6)
-        ax.set_title(f"DAC{ch} -> IN{ch + 1}   {label}   ({len(spikes)} spikes)",
-                     loc="left", fontsize=11)
-        ax.set_ylabel("signed16 counts")
+            ax.axvline(index * step_us * model_ms_per_us, color="r", alpha=0.3, lw=0.6)
+        ax.set_title(label, loc="left", fontsize=11)
+        ax.set_ylabel("volts")
         ax.grid(True, alpha=0.25)
         ax.secondary_yaxis(
-            "right", functions=(combo.counts_to_volts, combo.volts_to_counts)
-        ).set_ylabel(f"volts ({combo.ADC_FULL_SCALE_VPP:g} Vpp FS)")
-    axes[-1].set_xlabel("wall time [us]")
+            "right", functions=(combo.volts_to_counts, combo.counts_to_volts)
+        ).set_ylabel("signed16 counts")
+    axes[-1].set_xlabel(f"simulation time [model ms] ({model_ms_per_us:g} ms/us)")
     axes[0].secondary_xaxis(
-        "top", functions=(lambda t: t * model_ms_per_us, lambda m: m / model_ms_per_us),
-    ).set_xlabel(f"simulation time [model ms] ({model_ms_per_us:g} ms/us)")
-    fig.suptitle("Four Izhikevich profiles on DAC0-3, loopback to IN1-4", fontsize=13)
+        "top", functions=(lambda m: m / model_ms_per_us, lambda t: t * model_ms_per_us),
+    ).set_xlabel("real time [us]")
+    fig.suptitle("Izhikevich profiles captured on ADC (in loopback)", fontsize=13)
     fig.savefig(path, dpi=150)
     print(f"Wrote {path}")
     if show:
