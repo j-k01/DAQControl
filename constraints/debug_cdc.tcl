@@ -1,6 +1,15 @@
+# Unmanaged Tcl constraints.  This file MUST stay .tcl: managed .xdc rejects
+# proc/if (Designutils 20-1307), which silently disabled every constraint here
+# while it was named debug_cdc.xdc.
+#
 # Debug and status CDC paths intentionally terminate at explicit two-flop
 # synchronizers.  Collect pins by object property rather than by name-filtered
 # get_pins calls; Vivado can rename vector flops and leave the old filter empty.
+#
+# Note: the IZH neuron bank runs on clk_out4 (50 MHz).  The clk_out[0-9]+
+# regexp below already folds it into the fabric clock group, so its
+# crossings into the GT user clocks are cut here like the rest; the
+# clk_out1<->clk_out4 config crossings stay timed (same MMCM, related).
 proc daq_get_clocks_by_regexp {pattern} {
     return [get_clocks -quiet -regexp $pattern]
 }

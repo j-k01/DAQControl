@@ -25,7 +25,10 @@ module izh_dac_bank (
     localparam signed [31:0] DEFAULT_DT     = 32'sh0000_1000; // 0.0625
     localparam signed [31:0] DEFAULT_ICONST = 32'sh000A_0000; // constant drive 10
     localparam signed [31:0] DEFAULT_OFFSET = 32'sh0000_0000;
-    localparam [23:0] DEFAULT_UPDATE_PERIOD = 24'd1024;
+    // update_period counts neuron-clock cycles.  The bank now runs on the
+    // 50 MHz neuron clock (was 200 MHz), so 256 keeps the same ~5.12 us
+    // default step rate the firmware and host scripts were tuned against.
+    localparam [23:0] DEFAULT_UPDATE_PERIOD = 24'd256;
 
     reg signed [31:0] a_param [0:3];
     reg signed [31:0] b_param [0:3];

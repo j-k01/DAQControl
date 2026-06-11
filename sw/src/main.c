@@ -219,7 +219,10 @@ static const struct neuron_profile neuron_profiles[] = {
 #define NEURON_PROFILE_COUNT (sizeof(neuron_profiles) / sizeof(neuron_profiles[0]))
 #define NEURON_DEFAULT_DT     0x00001000u
 #define NEURON_DEFAULT_I      0x00000000u
-#define NEURON_DEFAULT_PERIOD 1024u
+/* update_period counts neuron-clock cycles; the neurons moved from the
+ * 200 MHz fabric clock to a dedicated 50 MHz clock, so 256 preserves the
+ * original ~5.12 us default step rate. */
+#define NEURON_DEFAULT_PERIOD 256u
 
 static void firmware_marker(u32 stage)
 {
