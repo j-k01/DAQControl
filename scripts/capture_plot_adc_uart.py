@@ -19,6 +19,12 @@ ADC_WORDS_PER_FRAME = 8
 MAX_CAPTURE_FRAMES = 4096
 MAX_PROGRAM_WORDS = 8192
 
+# ADS54J60 full-scale input is 1.9 Vpp differential at the ADC pins, mapped
+# onto the signed 16-bit code range. Volts derived with this are ADC-pin
+# referred; the card's front-end network sits between the SSMC and the ADC.
+ADC_FULL_SCALE_VPP = 1.9
+ADC_VOLTS_PER_COUNT = ADC_FULL_SCALE_VPP / 65536.0
+
 
 def signed16(value):
     value &= 0xFFFF
@@ -685,6 +691,10 @@ def write_plot(path, captures, plot_words, max_points, show, plot_raw_sources, a
             ax.set_ylabel("signed 16-bit")
             ax.grid(True, alpha=0.25)
             ax.legend(loc="best")
+            ax.secondary_yaxis(
+                "right",
+                functions=(lambda c: c * ADC_VOLTS_PER_COUNT, lambda v: v / ADC_VOLTS_PER_COUNT),
+            ).set_ylabel(f"volts ({ADC_FULL_SCALE_VPP:g} Vpp FS)")
 
         axes[-1].set_xlabel("ADC sample index")
         fig.savefig(path, dpi=150)

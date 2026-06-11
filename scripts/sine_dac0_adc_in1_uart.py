@@ -11,7 +11,7 @@ Sine companion to trap_dac0_adc_in1_uart.py:
   3. uploads it to the DAC0 BRAM and selects the BRAM source on DAC0 only
   4. PCAP-captures both ADC chip BRAMs and streams the frames back
   5. reconstructs IN1, checks the FFT peak against the programmed tone
-     (folding through the 500 MS/s Nyquist if needed), writes
+     (folding through the 1 GS/s Nyquist if needed), writes
      CSV/PNG/summary, and leaves the sine free-running
 
 With the full 16384-sample program at 1 GSPS the frequency grid is
@@ -96,7 +96,8 @@ def main() -> None:
         help="Skip the STAT gth_gate JESD-link check/auto-recovery before capturing.",
     )
     parser.add_argument("--frames", type=int, default=4096, help="ADC capture frames (4 IN1 samples each).")
-    parser.add_argument("--adc-sample-rate-mhz", type=float, default=500.0)
+    parser.add_argument("--adc-sample-rate-mhz", type=float, default=1000.0,
+                        help="ADS54J60 LMFS=4211 on 10G lanes = 1 GS/s per input.")
     parser.add_argument("--rw2", type=combo.parse_int, default=trap.DAC_NORMAL_RW2)
     parser.add_argument(
         "--expect-build-id",

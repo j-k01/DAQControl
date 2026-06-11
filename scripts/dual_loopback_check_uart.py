@@ -95,7 +95,8 @@ def judge_input(label: str, samples: list[int], adc_rate_mhz: float, expected_mh
     peak_mhz = fft_peak_mhz(samples, adc_rate_mhz)
     ok = True
     lines = [
-        f"{label}: ptp={ptp} counts, fft_peak={peak_mhz:.3f} MHz, "
+        f"{label}: ptp={ptp} counts ({combo.counts_to_volts(ptp):.4f} Vpp), "
+        f"fft_peak={peak_mhz:.3f} MHz, "
         f"expected={expected_mhz:.3f} MHz (tol +/-{tol_mhz:g})"
     ]
     if ptp < min_ptp:
@@ -138,7 +139,8 @@ def main() -> None:
     )
     parser.add_argument("--coupling", choices=["ac", "dc"], default="ac")
     parser.add_argument("--frames", type=int, default=4096)
-    parser.add_argument("--adc-sample-rate-mhz", type=float, default=500.0)
+    parser.add_argument("--adc-sample-rate-mhz", type=float, default=1000.0,
+                        help="ADS54J60 LMFS=4211 on 10G lanes = 1 GS/s per input.")
     parser.add_argument("--rw2", type=parse_int, default=trap.DAC_NORMAL_RW2)
     parser.add_argument("--expect-build-id", type=parse_int,
                         help="Fail unless selector 3 reports this build ID.")

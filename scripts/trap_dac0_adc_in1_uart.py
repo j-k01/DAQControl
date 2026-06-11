@@ -19,9 +19,11 @@ board (run program_and_load.tcl first):
   5. reconstructs the ADC IN1 stream (adc_ch0 = raw sources 0+1), writes
      CSV/PNG/summary, and leaves the DAC0 pulse train free-running
 
-ADC IN1 samples at 500 MS/s, so the 35 ns default period is 17.5 ADC samples
-and the expected pulse rate is 1000/35 = 28.571 MHz. The card's DAC output and
-ADC input are AC-coupled, so the captured train rides around a zero mean.
+The ADS54J60s run LMFS=4211 (no decimation) on 10 Gbps lanes, so each ADC
+input samples at 1 GS/s (4 samples per 250 MHz JESD beat); the 35 ns default
+period is 35 ADC samples and the expected pulse rate is 1000/35 = 28.571 MHz.
+The card's DAC output and ADC input are AC-coupled, so the captured train
+rides around a zero mean.
 """
 
 from __future__ import annotations
@@ -47,6 +49,21 @@ except ImportError as exc:  # pragma: no cover
 
 def parse_int(text: str) -> int:
     return int(text, 0)
+
+
+# ADS54J60 full-scale input is 1.9 Vpp differential at the ADC pins, mapped
+# onto the signed 16-bit code range. Volts here are ADC-pin referred; the
+# card's front-end network sits between the SSMC connector and the ADC.
+ADC_FULL_SCALE_VPP = cap.ADC_FULL_SCALE_VPP
+ADC_VOLTS_PER_COUNT = cap.ADC_VOLTS_PER_COUNT
+
+
+def counts_to_volts(value: float) -> float:
+    return value * ADC_VOLTS_PER_COUNT
+
+
+def volts_to_counts(value: float) -> float:
+    return value / ADC_VOLTS_PER_COUNT
 
 
 # STAT "gth_gate:" tokens that must all be present before a capture can finish:
@@ -132,6 +149,8 @@ def analyze_in1(
         f"{label}_samples={len(samples)}",
         f"{label}_min={int(np.min(data))} {label}_max={int(np.max(data))} "
         f"{label}_ptp={int(np.ptp(data))} {label}_mean={float(np.mean(data)):.1f}",
+        f"{label}_ptp_volts={counts_to_volts(float(np.ptp(data))):.4f} "
+        f"(ADC-pin referred, {ADC_FULL_SCALE_VPP:g} Vpp full scale)",
         f"{label}_rms_counts={float(np.sqrt(np.mean(centered * centered))):.1f}",
         f"fft_peak_mhz={peak_mhz:.3f} expected_pulse_rate_mhz={expected_mhz:.3f}",
     ]
@@ -146,10 +165,11 @@ def analyze_in1(
 
 def write_in1_csv(path: Path, samples: list[int], adc_rate_mhz: float, column: str = "in1_counts") -> None:
     step_ns = 1.0e3 / adc_rate_mhz
+    volts_column = column.replace("_counts", "") + "_volts"
     with path.open("w", newline="") as f:
-        f.write(f"sample_index,time_ns,{column}\n")
+        f.write(f"sample_index,time_ns,{column},{volts_column}\n")
         for index, value in enumerate(samples):
-            f.write(f"{index},{index * step_ns:.3f},{value}\n")
+            f.write(f"{index},{index * step_ns:.3f},{value},{counts_to_volts(value):.6f}\n")
 
 
 def write_in1_plot(
@@ -169,6 +189,7 @@ def write_in1_plot(
 
     step_ns = 1.0e3 / adc_rate_mhz
     zoom_count = min(len(samples), max(8, int(round(zoom_periods * period_ns / step_ns))))
+    volts_label = f"volts ({ADC_FULL_SCALE_VPP:g} Vpp FS, ADC-pin referred)"
 
     fig, axes = plt.subplots(2, 1, figsize=(14, 7), constrained_layout=True)
     zoom_t = [i * step_ns for i in range(zoom_count)]
@@ -177,6 +198,7 @@ def write_in1_plot(
     axes[0].set_xlabel("time [ns]")
     axes[0].set_ylabel("signed16 counts")
     axes[0].grid(True, alpha=0.25)
+    axes[0].secondary_yaxis("right", functions=(counts_to_volts, volts_to_counts)).set_ylabel(volts_label)
 
     x_idx, full = cap.decimate(samples, max_points)
     axes[1].plot([i * step_ns * 1.0e-3 for i in x_idx], full, lw=0.7)
@@ -184,6 +206,7 @@ def write_in1_plot(
     axes[1].set_xlabel("time [us]")
     axes[1].set_ylabel("signed16 counts")
     axes[1].grid(True, alpha=0.25)
+    axes[1].secondary_yaxis("right", functions=(counts_to_volts, volts_to_counts)).set_ylabel(volts_label)
 
     fig.savefig(path, dpi=150)
     print(f"Wrote {path}")
@@ -235,7 +258,8 @@ def main() -> None:
         help="Skip the STAT gth_gate JESD-link check/auto-recovery before capturing.",
     )
     parser.add_argument("--frames", type=int, default=4096, help="ADC capture frames (4 IN1 samples each).")
-    parser.add_argument("--adc-sample-rate-mhz", type=float, default=500.0)
+    parser.add_argument("--adc-sample-rate-mhz", type=float, default=1000.0,
+                        help="ADS54J60 LMFS=4211 on 10G lanes = 1 GS/s per input.")
     parser.add_argument("--rw2", type=parse_int, default=trap.DAC_NORMAL_RW2)
     parser.add_argument(
         "--expect-build-id",

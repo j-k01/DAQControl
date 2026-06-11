@@ -9,13 +9,14 @@ Sequence (after program_and_load.tcl):
   4. capture both ADC chips, reconstruct the requested inputs, and count
      spike pulses on each (threshold crossing with a refractory gap)
 
-The capture window is 4096 frames = 32.768 us at 500 MS/s. The neuron bank
-runs on its own 50 MHz clock, so the default period of 1 steps the dynamics
-every 20 ns; the regular-spiking profile then fires every few tens of us -
-at least one spike lands in the window. (With the power-on default period of
-256 a step is 5.12 us and the first spike would take milliseconds, far
-outside one capture.) Each spike is a 7 ns trapezoid from the pulse shaper,
-about 3.5 samples wide at 500 MS/s, riding on the AC-coupled baseline.
+The capture window is 4096 frames = 16384 samples = 16.384 us at 1 GS/s
+(ADS54J60 LMFS=4211 on 10G lanes). The neuron bank runs on its own 50 MHz
+clock, so the default period of 1 steps the dynamics every 20 ns; the
+regular-spiking profile then fires every few tens of us - at least one spike
+lands in the window. (With the power-on default period of 256 a step is
+5.12 us and the first spike would take milliseconds, far outside one
+capture.) Each spike is a 7 ns trapezoid from the pulse shaper, about 7
+samples wide at 1 GS/s, riding on the AC-coupled baseline.
 
 Typical run:
 
@@ -96,7 +97,8 @@ def judge_input(label: str, samples: list[int], adc_rate_mhz: float, args: argpa
         samples, args.threshold_frac, args.min_gap_samples, args.min_ptp)
     step_us = 1.0 / adc_rate_mhz
     window_us = len(samples) * step_us
-    lines = [f"{label}: ptp={ptp} counts, threshold={threshold:.0f}, "
+    lines = [f"{label}: ptp={ptp} counts ({combo.counts_to_volts(ptp):.4f} Vpp), "
+             f"threshold={threshold:.0f}, "
              f"spikes={len(spikes)} in {window_us:.3f} us"]
     if spikes:
         times = [f"{i * step_us:.3f}" for i in spikes[:12]]
@@ -136,6 +138,9 @@ def write_spike_plot(path: Path, samples: list[int], spikes: list[int],
     ax.set_xlabel("time [us]")
     ax.set_ylabel("signed16 counts")
     ax.grid(True, alpha=0.25)
+    ax.secondary_yaxis(
+        "right", functions=(combo.counts_to_volts, combo.volts_to_counts)
+    ).set_ylabel(f"volts ({combo.ADC_FULL_SCALE_VPP:g} Vpp FS, ADC-pin referred)")
     fig.savefig(path, dpi=150)
     print(f"Wrote {path}")
     if show:
@@ -158,7 +163,8 @@ def main() -> None:
                         help="Comma-separated ADC inputs to check, e.g. 1,2 (IN1..IN4).")
     parser.add_argument("--coupling", choices=["ac", "dc"], default="ac")
     parser.add_argument("--frames", type=int, default=4096)
-    parser.add_argument("--adc-sample-rate-mhz", type=float, default=500.0)
+    parser.add_argument("--adc-sample-rate-mhz", type=float, default=1000.0,
+                        help="ADS54J60 LMFS=4211 on 10G lanes = 1 GS/s per input.")
     parser.add_argument("--command", choices=["CAPT", "PCAP"], default="CAPT",
                         help="Capture command; CAPT leaves the DAC program players alone.")
     parser.add_argument("--rw2", type=parse_int, default=trap.DAC_NORMAL_RW2)
@@ -171,7 +177,7 @@ def main() -> None:
     parser.add_argument("--threshold-frac", type=float, default=0.5,
                         help="Spike threshold as a fraction of the peak above the median.")
     parser.add_argument("--min-gap-samples", type=int, default=50,
-                        help="Refractory gap between detected spikes (50 = 100 ns at 500 MS/s).")
+                        help="Refractory gap between detected spikes (50 = 50 ns at 1 GS/s).")
     parser.add_argument("--reinit-adc", action="store_true")
     parser.add_argument("--no-preflight", action="store_true")
     parser.add_argument("--outdir", default="captures")
