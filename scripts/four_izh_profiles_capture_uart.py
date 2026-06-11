@@ -35,6 +35,7 @@ The neurons are left spiking on all four DACs.
 from __future__ import annotations
 
 import argparse
+import struct
 import sys
 import time
 from pathlib import Path
@@ -77,6 +78,18 @@ def parse_int(text: str) -> int:
 def to_q16_16(value: float) -> int:
     """Model units -> signed Q16.16 word (e.g. 10.0 -> 0x000A0000)."""
     return round(value * 65536.0) & 0xFFFFFFFF
+
+
+def capture_step(port, value: int, frames: int, predelay: int):
+    """Issue the firmware CSTP command (rest -> iconst step synced to capture
+    start) and read back the same SYNC + frame stream that CAPT produces."""
+    port.reset_input_buffer()
+    port.write(f"CSTP 0x{value:X} {frames} {predelay}\n".encode("ascii"))
+    port.flush()
+    presync = cap.wait_for_sync(port)
+    word_count = frames * cap.ADC_WORDS_PER_FRAME
+    raw = cap.read_exact(port, word_count * 4)
+    return presync, list(struct.unpack(f"<{word_count}I", raw))
 
 
 def parse_profiles(text: str) -> list[tuple[int, str, str, str]]:
@@ -125,6 +138,17 @@ def main() -> None:
     parser.add_argument("--adc-sample-rate-mhz", type=float, default=1000.0,
                         help="ADS54J60 LMFS=4211 on 10G lanes = 1 GS/s per input.")
     parser.add_argument("--command", choices=["CAPT", "PCAP"], default="CAPT")
+    parser.add_argument("--step", action="store_true",
+                        help="Step-from-rest capture (firmware CSTP): park every neuron at "
+                        "rest (iconst=0 + reset), open the window flat, then step iconst to "
+                        "--step-iconst synchronized to the capture start - reproduces the "
+                        "paper's current-step onset. Pair with a small --dt to zoom in.")
+    parser.add_argument("--step-iconst", type=float, default=10.0, dest="step_iconst",
+                        help="iconst the step rises to in --step mode (model units -> Q16.16, "
+                        "default 10.0).")
+    parser.add_argument("--predelay", type=int, default=150,
+                        help="Firmware tight-loop iterations of flat I=0 baseline before the "
+                        "step (~tens of ns each; tune so the step sits early in the window).")
     parser.add_argument("--rw2", type=parse_int, default=trap.DAC_NORMAL_RW2)
     parser.add_argument("--expect-build-id", type=parse_int)
     parser.add_argument("--settle-s", type=float, default=0.5)
@@ -183,15 +207,25 @@ def main() -> None:
         print(cap.wait_for_line_prefix(port, "DAC source"))
         time.sleep(args.settle_s)
 
-        print(f"Capturing {args.frames} ADC frames with {args.command}...")
-        try:
-            presync, frame_words = cap.capture_frames(port, args.command, args.frames)
-        except (RuntimeError, TimeoutError) as exc:
-            raise SystemExit(
-                f"capture failed: {exc}\n"
-                "Inspect with: python scripts/uart_cmds.py "
-                f"--port {args.port} STAT CAPS ADCS, then retry with --reinit-adc."
-            ) from exc
+        if args.step:
+            print(f"Step-from-rest capture (CSTP): iconst 0 -> {args.step_iconst:g} "
+                  f"(0x{to_q16_16(args.step_iconst):X}), {args.frames} frames, "
+                  f"predelay={args.predelay}...")
+            try:
+                presync, frame_words = capture_step(
+                    port, to_q16_16(args.step_iconst), args.frames, args.predelay)
+            except (RuntimeError, TimeoutError) as exc:
+                raise SystemExit(f"step capture failed: {exc}") from exc
+        else:
+            print(f"Capturing {args.frames} ADC frames with {args.command}...")
+            try:
+                presync, frame_words = cap.capture_frames(port, args.command, args.frames)
+            except (RuntimeError, TimeoutError) as exc:
+                raise SystemExit(
+                    f"capture failed: {exc}\n"
+                    "Inspect with: python scripts/uart_cmds.py "
+                    f"--port {args.port} STAT CAPS ADCS, then retry with --reinit-adc."
+                ) from exc
         presync_text = presync.decode("ascii", errors="replace").replace("\r", "").strip()
         if presync_text:
             print(f"presync: {presync_text!r}")
