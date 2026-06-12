@@ -6,13 +6,15 @@ Prerequisite: arm the stream on the MicroBlaze first (UART):
 
 Then run:
     python scripts/live_stream_scope.py            # 4-channel time view
-    python scripts/live_stream_scope.py --fft      # + live spectrum per chip
+    python scripts/live_stream_scope.py --fft      # + spectrum per CHANNEL
 
 Closing the window sends STOP to the board.
 
-Packets are 'DAQS' (see receive_ps_eth_stream_continuous.py). Each 16-byte
-frame carries 4 samples of the even channel + 4 of the odd channel; sample
-period is decim ns (1 GS/s / decim per channel).
+Display stability: packets arriving out of order are discarded (this is a
+monitor, not a recorder) so the rolling buffers stay phase-continuous, and
+spectra are Welch-averaged within each frame plus exponentially smoothed
+across frames on a fixed dBFS scale. For lossless capture use
+receive_ps_eth_stream_continuous.py instead.
 """
 
 from __future__ import annotations
@@ -31,15 +33,21 @@ VOLTS_PER_COUNT = 1.9 / 65536.0
 
 
 class StreamTap:
-    """Receives the UDP stream and keeps the latest N samples per channel."""
+    """Receives the UDP stream and keeps the latest N samples per channel.
+
+    Only in-order packets are appended (late ones are dropped) so the
+    window never contains phase discontinuities from reordering; a lost
+    packet just shortens history by one packet's worth of samples.
+    """
 
     def __init__(self, args, window):
         self.window = window
         self.chans = {i: np.zeros(window, dtype=np.int16) for i in range(4)}
+        self.expected = {0: None, 1: None}
         self.lock = threading.Lock()
         self.decim = None
         self.pkts = 0
-        self.bytes = 0
+        self.discarded = 0
         self.running = True
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -62,10 +70,17 @@ class StreamTap:
                 break
             if len(data) < HDR.size:
                 continue
-            magic, _v, hdr, _seq, chip, _off, count, _drops, dec = \
+            magic, _v, hdr, seq, chip, _off, count, _drops, dec = \
                 HDR.unpack_from(data)
             if magic != MAGIC or chip > 1:
                 continue
+
+            exp = self.expected[chip]
+            if exp is not None and seq < exp:
+                self.discarded += 1   # late/reordered: keep buffers continuous
+                continue
+            self.expected[chip] = seq + 1
+
             self.decim = dec
             payload = data[hdr:hdr + count]
             if len(payload) % 16:
@@ -84,7 +99,6 @@ class StreamTap:
                         buf[:-n] = buf[n:]
                         buf[-n:] = new
             self.pkts += 1
-            self.bytes += len(payload)
 
     def snapshot(self):
         with self.lock:
@@ -99,41 +113,67 @@ class StreamTap:
         self.sock.close()
 
 
+def welch_db(x, nseg):
+    """Welch periodogram in dBFS (0 dB = full-scale sine), Hann segments."""
+    seg = len(x) // nseg
+    win = np.hanning(seg)
+    # full-scale sine amplitude 32768 -> coherent-gain-corrected peak
+    fs_peak = 32768.0 * win.sum() / 2.0
+    acc = None
+    for k in range(nseg):
+        s = x[k * seg:(k + 1) * seg].astype(np.float64)
+        s -= s.mean()
+        p = np.abs(np.fft.rfft(s * win)) ** 2
+        acc = p if acc is None else acc + p
+    acc /= nseg
+    return 10.0 * np.log10(acc / (fs_peak ** 2) + 1e-20)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--board-ip", default="192.168.2.10")
     parser.add_argument("--cmd-port", type=int, default=5006)
     parser.add_argument("--local-ip", default="192.168.2.1")
     parser.add_argument("--local-port", type=int, default=5005)
-    parser.add_argument("--window", type=int, default=4096,
-                        help="samples per channel shown")
+    parser.add_argument("--window", type=int, default=8192,
+                        help="samples per channel kept/shown")
     parser.add_argument("--fft", action="store_true",
-                        help="add a live spectrum panel per chip")
+                        help="add a spectrum column, one per channel")
+    parser.add_argument("--fft-segments", type=int, default=4,
+                        help="Welch segments per frame (more = smoother)")
+    parser.add_argument("--fft-smooth", type=float, default=0.35,
+                        help="EMA weight of the new frame (0..1, lower = smoother)")
+    parser.add_argument("--time-span", type=int, default=2048,
+                        help="samples shown in the time panels")
     parser.add_argument("--fps", type=float, default=15.0)
     args = parser.parse_args()
 
     tap = StreamTap(args, args.window)
 
-    rows = 6 if args.fft else 4
-    fig, axes = plt.subplots(rows, 1, figsize=(11, 2.0 * rows))
+    ncols = 2 if args.fft else 1
+    fig, axes = plt.subplots(4, ncols, figsize=(7 * ncols + 4, 9), squeeze=False)
     fig.canvas.manager.set_window_title("DAQ live stream")
-    time_axes, fft_axes = axes[:4], axes[4:]
 
-    lines = []
-    for ch, ax in enumerate(time_axes):
-        (ln,) = ax.plot(np.zeros(args.window), lw=0.8)
+    time_lines = []
+    for ch in range(4):
+        ax = axes[ch][0]
+        (ln,) = ax.plot(np.zeros(args.time_span), lw=0.8)
         ax.set_ylabel(f"ch{ch} [V]")
         ax.set_ylim(-0.95, 0.95)
         ax.grid(True, alpha=0.3)
-        lines.append(ln)
+        time_lines.append(ln)
+    axes[3][0].set_xlabel("time [us]")
 
-    fft_lines = []
-    for chip, ax in enumerate(fft_axes):
-        (ln,) = ax.plot([], [], lw=0.8)
-        ax.set_ylabel(f"chip{chip} [dB]")
-        ax.set_xlabel("frequency [MHz]")
-        ax.grid(True, alpha=0.3)
-        fft_lines.append(ln)
+    fft_lines, fft_ema = [], [None] * 4
+    if args.fft:
+        for ch in range(4):
+            ax = axes[ch][1]
+            (ln,) = ax.plot([], [], lw=0.8)
+            ax.set_ylabel(f"ch{ch} [dBFS]")
+            ax.set_ylim(-100, 3)
+            ax.grid(True, alpha=0.3)
+            fft_lines.append(ln)
+        axes[3][1].set_xlabel("frequency [MHz]")
 
     closed = {"flag": False}
     fig.canvas.mpl_connect("close_event", lambda _e: closed.update(flag=True))
@@ -143,26 +183,27 @@ def main():
             snap = tap.snapshot()
             decim = tap.decim or 256
             dt_us = decim / 1000.0
-            t = np.arange(args.window) * dt_us
-            for ch, ln in enumerate(lines):
-                ln.set_data(t, snap[ch] * VOLTS_PER_COUNT)
-                time_axes[ch].set_xlim(0, t[-1])
-            time_axes[0].set_title(
+            t = np.arange(args.time_span) * dt_us
+            for ch, ln in enumerate(time_lines):
+                ln.set_data(t, snap[ch][-args.time_span:] * VOLTS_PER_COUNT)
+                axes[ch][0].set_xlim(0, t[-1])
+            axes[0][0].set_title(
                 f"decim={decim} ({1000.0/decim:.3f} MS/s/ch)  "
-                f"window={t[-1]:.0f} us  pkts={tap.pkts}")
-            time_axes[-1].set_xlabel("time [us]")
+                f"pkts={tap.pkts}  dropped-for-order={tap.discarded}")
 
             if args.fft:
                 fs = 1e9 / decim
-                freqs = np.fft.rfftfreq(args.window, d=1.0 / fs) / 1e6
-                for chip, ln in enumerate(fft_lines):
-                    x = snap[chip * 2].astype(np.float64)
-                    x -= x.mean()
-                    spec = np.abs(np.fft.rfft(x * np.hanning(len(x))))
-                    spec = 20 * np.log10(spec / (spec.max() or 1.0) + 1e-9)
-                    ln.set_data(freqs, spec)
-                    fft_axes[chip].set_xlim(0, freqs[-1])
-                    fft_axes[chip].set_ylim(-90, 3)
+                seg = args.window // args.fft_segments
+                freqs = np.fft.rfftfreq(seg, d=1.0 / fs) / 1e6
+                for ch, ln in enumerate(fft_lines):
+                    db = welch_db(snap[ch], args.fft_segments)
+                    if fft_ema[ch] is None or len(fft_ema[ch]) != len(db):
+                        fft_ema[ch] = db
+                    else:
+                        a = args.fft_smooth
+                        fft_ema[ch] = a * db + (1.0 - a) * fft_ema[ch]
+                    ln.set_data(freqs, fft_ema[ch])
+                    axes[ch][1].set_xlim(0, freqs[-1])
 
             fig.tight_layout()
             plt.pause(1.0 / args.fps)
