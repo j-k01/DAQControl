@@ -121,9 +121,21 @@ class DacControl:
 
 # ---------------------------------------------------------------- UDP stream
 class StreamTap:
-    def __init__(self, board_ip, cmd_port, local_ip, local_port, window):
+    """Latency-bounded scope receiver.
+
+    A scope only needs *recent* samples, not every one. So we (a) keep the OS
+    receive buffer small (~16 ms) — when Python falls behind, the kernel drops
+    the OLDEST queued packets instead of building a half-second backlog that you
+    then stare at; and (b) on every wakeup we drain ALL packets the kernel has
+    queued and only render the newest, so the display stays current even if a
+    burst arrives between frames. Samples land in per-channel circular buffers
+    (only the new samples are written each packet — no full-window memmove)."""
+
+    def __init__(self, board_ip, cmd_port, local_ip, local_port, window,
+                 rcvbuf=1 << 20):
         self.window = window
-        self.chans = {i: np.zeros(window, dtype=np.int16) for i in range(4)}
+        self.cbuf = {i: np.zeros(window, dtype=np.int16) for i in range(4)}
+        self.wpos = {i: 0 for i in range(4)}
         self.expected = {0: None, 1: None}
         self.lock = threading.Lock()
         self.decim = 128
@@ -131,51 +143,84 @@ class StreamTap:
         self.drops = 0
         self.running = True
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 * 1024 * 1024)
+        # Small rcvbuf == low latency: bound the kernel backlog to ~16 ms.
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
         self.sock.bind((local_ip, local_port))
-        self.sock.settimeout(1.0)
+        self.sock.settimeout(0.2)
         self.board = (board_ip, cmd_port)
         self.sock.sendto(b"STRM", self.board)
         threading.Thread(target=self._rx, daemon=True).start()
 
+    def _write(self, ch, col):
+        n = len(col)
+        cap = self.window
+        if n >= cap:
+            self.cbuf[ch][:] = col[-cap:]
+            self.wpos[ch] = 0
+            return
+        w = self.wpos[ch]
+        end = w + n
+        if end <= cap:
+            self.cbuf[ch][w:end] = col
+        else:
+            first = cap - w
+            self.cbuf[ch][w:] = col[:first]
+            self.cbuf[ch][:n - first] = col[first:]
+        self.wpos[ch] = end % cap
+
+    def _process(self, data):
+        if len(data) < HDR.size:
+            return
+        magic, _v, hdr, seq, chip, _o, count, _d, dec = HDR.unpack_from(data)
+        if magic != MAGIC or chip > 1:
+            return
+        exp = self.expected[chip]
+        if exp is not None and seq != exp:
+            self.drops += max(0, seq - exp)
+        if exp is not None and seq < exp:
+            return
+        self.expected[chip] = seq + 1
+        self.decim = dec
+        self.packets += 1
+        payload = data[hdr:hdr + count]
+        payload = payload[: len(payload) - (len(payload) % 16)]
+        sm = np.frombuffer(payload, dtype="<i2").reshape(-1, 8)
+        base = chip * 2
+        with self.lock:
+            self._write(base, sm[:, :4].ravel())
+            self._write(base + 1, sm[:, 4:].ravel())
+
     def _rx(self):
+        self.sock.setblocking(False)
         while self.running:
+            # Block (with timeout) for the first packet, then drain everything
+            # else the kernel already has queued so we end up at the newest.
             try:
-                data, _ = self.sock.recvfrom(4096)
+                self.sock.settimeout(0.2)
+                self._process(self.sock.recv(4096))
             except socket.timeout:
+                continue
+            except BlockingIOError:
                 continue
             except OSError:
                 break
-            if len(data) < HDR.size:
-                continue
-            magic, _v, hdr, seq, chip, _o, count, _d, dec = HDR.unpack_from(data)
-            if magic != MAGIC or chip > 1:
-                continue
-            exp = self.expected[chip]
-            if exp is not None and seq != exp:
-                self.drops += max(0, seq - exp)
-            if exp is not None and seq < exp:
-                continue
-            self.expected[chip] = seq + 1
-            self.decim = dec
-            self.packets += 1
-            payload = data[hdr:hdr + count]
-            payload = payload[: len(payload) - (len(payload) % 16)]
-            sm = np.frombuffer(payload, dtype="<i2").reshape(-1, 8)
-            base = chip * 2
-            with self.lock:
-                for ch, col in ((base, sm[:, :4].ravel()), (base + 1, sm[:, 4:].ravel())):
-                    buf = self.chans[ch]
-                    n = len(col)
-                    if n >= self.window:
-                        buf[:] = col[-self.window:]
-                    else:
-                        buf[:-n] = buf[n:]
-                        buf[-n:] = col
+            self.sock.setblocking(False)
+            while self.running:
+                try:
+                    self._process(self.sock.recv(4096))
+                except (BlockingIOError, socket.timeout):
+                    break
+                except OSError:
+                    return
 
     def snapshot(self):
         with self.lock:
-            return {c: b.copy() for c, b in self.chans.items()}
+            out = {}
+            for c in range(4):
+                w = self.wpos[c]
+                b = self.cbuf[c]
+                out[c] = np.concatenate((b[w:], b[:w]))  # oldest -> newest
+            return out
 
     def close(self):
         self.running = False
@@ -365,6 +410,8 @@ def main():
     ap.add_argument("--freqs", default="0.122,0.183,0.244,0.305")
     ap.add_argument("--window", type=int, default=8192)
     ap.add_argument("--time-span", type=int, default=1024)
+    ap.add_argument("--rcvbuf", type=lambda x: int(x, 0), default=1 << 20,
+                    help="UDP socket buffer bytes; small = low latency (default 1 MB)")
     ap.add_argument("--initial", default="BRAM", choices=SOURCE_LABELS)
     ap.add_argument("--cic", action="store_true", help="start with chip1 CIC on")
     ap.add_argument("--fps", type=float, default=60.0)
@@ -377,7 +424,7 @@ def main():
     for ch in range(4):
         dac.set_source(ch, args.initial)
     tap = StreamTap(args.board_ip, args.cmd_port, args.local_ip,
-                    args.local_port, args.window)
+                    args.local_port, args.window, args.rcvbuf)
 
     pg.setConfigOptions(antialias=True)
     app = QtWidgets.QApplication([])
