@@ -241,6 +241,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.paused = False
         self.autoscale = False
         self.fft_view = False
+        self.trigger = True
         self.setWindowTitle("DAC source live scope (PyQtGraph)")
         self.resize(1280, 820)
 
@@ -294,6 +295,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.auto_chk = QtWidgets.QCheckBox("Autoscale Y")
         self.auto_chk.toggled.connect(lambda v: setattr(self, "autoscale", v))
         col.addWidget(self.auto_chk)
+
+        self.trig_chk = QtWidgets.QCheckBox("Trigger (stabilize trace)")
+        self.trig_chk.setChecked(True)
+        self.trig_chk.toggled.connect(lambda v: setattr(self, "trigger", v))
+        col.addWidget(self.trig_chk)
 
         view_box = QtWidgets.QGroupBox("View")
         vh = QtWidgets.QHBoxLayout(view_box)
@@ -354,6 +360,27 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 if ch == 3:
                     p.setLabel("bottom", "time", units="s")
 
+    def _trig_slice(self, yfull, span):
+        """Return a span-length slice aligned to the most recent rising edge,
+        so a periodic trace stays put frame-to-frame instead of free-running.
+        Falls back to the newest span if no clean edge is found."""
+        n = len(yfull)
+        if n < span + 2:
+            return yfull[-span:]
+        thr = yfull.mean()
+        amp = yfull.std()
+        if amp < 8.0:                       # flat / noise: nothing to lock to
+            return yfull[-span:]
+        lo = max(1, n - 2 * span)           # look back up to 2 spans for an edge
+        hi = n - span                       # edge must leave a full span after it
+        a = yfull[lo - 1:hi - 1]
+        b = yfull[lo:hi]
+        cross = np.where((a < thr) & (b >= thr))[0]   # rising crossing of mean
+        if len(cross) == 0:
+            return yfull[-span:]
+        idx = lo + cross[-1]                # most recent rising edge
+        return yfull[idx:idx + span]
+
     def _update(self):
         if self.paused:
             return
@@ -362,9 +389,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         fs = 1.0e9 / decim
         span = self.args.time_span
         for ch in range(4):
-            y = snap[ch][-span:].astype(np.float64)
+            full = snap[ch].astype(np.float64)
             if self.fft_view:
-                v = y * VOLTS_PER_COUNT
+                v = full[-span:] * VOLTS_PER_COUNT
                 v = v - v.mean()
                 w = np.hanning(len(v))
                 Y = np.abs(np.fft.rfft(v * w)) / (np.sum(w) / 2.0)
@@ -374,6 +401,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 if self.autoscale:
                     self.plots[ch].setYRange(db.max() - 100, db.max() + 5)
             else:
+                y = self._trig_slice(full, span) if self.trigger else full[-span:]
                 t = np.arange(len(y)) / fs
                 v = y * VOLTS_PER_COUNT
                 self.curves[ch].setData(t, v)
