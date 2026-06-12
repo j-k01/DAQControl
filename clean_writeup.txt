@@ -1,0 +1,183 @@
+================================================================================
+ZCU102 PS-Ethernet Bring-Up: Root Cause and Fix
+Date: 2026-06-11
+Branch: ddr-zynq-eth
+================================================================================
+
+SUMMARY
+-------
+The PS (Cortex-A53) Ethernet readout had been dark since 2026-06-10: the lwIP
+app would "load and run" over JTAG but never answered ARP/ping/UDP, the A53
+could not be halted afterward, and DDR debug reads timed out. The cause was
+NOT the application code and NOT a faulty board. It was a single DDR
+configuration mismatch: the gateware used the stock ZCU102 board preset, which
+assumes x8 DDR4 devices, but the SODIMM actually fitted to this board uses x16
+devices. That mismatch made the DDR controller alias addresses 16 KB apart,
+which silently corrupted every A53 ELF as it was downloaded into DDR.
+
+Fixing the DDR geometry (x16, 8 Gb, 16 row-address bits, 1 bank-group bit) in
+create_project.tcl makes the memory clean and the PS Ethernet path fully
+functional: ping, UDP, and ADC capture over Ethernet all work.
+
+
+SYMPTOMS OBSERVED
+-----------------
+- A53 lwIP app downloaded and started, but:
+    * 192.168.2.10 did not answer ICMP ping (timeout).
+    * No ARP reply with the app MAC (00:0a:35:00:01:10); the host showed only a
+      synthetic placeholder entry.
+    * The A53 core could not be halted ("Cannot halt processor core, timeout").
+    * Reading the debug mailbox failed ("Cannot read memory if not stopped").
+    * A re-load attempt gave "Memory write error at 0x1000000 ... EDITR not
+      ready", recoverable only with a full rst -system.
+- The MicroBlaze side was always healthy (JESD up, live ADC data, DMAC OK).
+- The A53 program counter, when sampled, sat at exception-vector offset 0x200.
+
+
+HOW IT WAS DIAGNOSED (BISECT)
+-----------------------------
+1. Confirmed the gateware was correct: rebuilt on the right branch
+   (ddr-zynq-eth) with --with-ps-ddr-dma; verified the XSA's psu_init enables
+   GEM3 (GEM3_REF_CTRL @ 0xFF5E005C, MIO 64-77 pinmux). PS + Ethernet MAC are
+   present in hardware.
+
+2. Loaded the A53 app via a textbook ZynqMP JTAG sequence (rst -system ->
+   release A53 -> psu_init -> fpga -file -> isolation removal -> MicroBlaze ->
+   A53). Still unhaltable. So ordering/PMUFW was not the cause.
+
+3. Flat-asm execution-locality test (8-instruction loop, MMU/caches off, EL3,
+   no BSP, PL not even programmed):
+     - Loop run from OCM (0xFFFC0000): survives, halts, counter advances.
+     - Loop run from DDR 0x01000000: wedges the core within seconds.
+     - Loop run from DDR 0x30000000: survives.
+   This first looked like "instruction fetch from low DDR is bad," so the app
+   was relinked to 0x30000000 -- but it STILL died, which pointed past a simple
+   address window to the memory itself.
+
+4. Single-stepped the relinked app from its entry (_vector_table @ 0x30000000):
+   it executed ~19 instructions of boot code correctly, then jumped to PC=0,
+   then to exception vector 0x200, then became unhaltable. A clean boot does
+   not jump to 0 -- the loaded image was wrong in memory, i.e. corrupted during
+   download.
+
+5. DDR address-line probe (raw debugger writes after psu_init, no app at all):
+     - Wrote a marker to base, then a distinct value to base + (1<<bit) for
+       bits 12..27, then read everything back.
+     - The write to base+0x4000 (bit 14) LANDED ON base: base read back the
+       bit-14 payload. Accesses on the affected line also hung the DDRC port
+       and the coherent interconnect (unhaltable core, EDITR timeout).
+   Conclusion: byte-address bit 14 is being dropped -- classic addressing
+   aliasing. Two ELF sections 16 KB apart overwrite each other, so the entry
+   point runs garbage. This is why every PS app (ours or any example) died.
+
+
+ROOT CAUSE
+----------
+The DDR controller's address map was built for the wrong DRAM organization.
+
+  Stock ZCU102 preset (what the design used):
+    DRAM_WIDTH      = 8 Bits   (x8 devices)
+    bank groups     = 2 bits   (4 bank groups)
+    DEVICE_CAPACITY = 4096 MBits
+    ROW_ADDR_COUNT  = 15
+
+  SODIMM actually fitted to this board:
+    DRAM_WIDTH      = 16 Bits  (x16 devices)
+    bank groups     = 1 bit    (2 bank groups)
+    DEVICE_CAPACITY = 8192 MBits
+    ROW_ADDR_COUNT  = 16
+
+With the x8 preset, the controller drives a second bank-group address bit that
+the x16 module does not implement. That bit falls in the low address range and
+causes the 16 KB aliasing observed on "bit 14." The DRAM chips are fine; the
+controller was simply told the wrong module geometry.
+
+Note on why it hid for so long: a single isolated word or a tiny 32-byte loop
+fits inside one alias cell and behaves normally, and the MicroBlaze DMA path
+into PS DDR (via the HP ports) tolerated the aliasing enough to "succeed."
+Only multi-section accesses 16 KB+ apart -- like an ELF download -- exposed it.
+
+ECOSYSTEM CONTEXT (why nobody else sees this)
+---------------------------------------------
+This is a known, documented ZCU102 production change, not a quirk of this
+board:
+
+- Original ZCU102 kits shipped an x8-based PS SODIMM. Kits labeled
+  0432055-05 onward (board rev 1.1 era) ship the Micron
+  MTA4ATF51264HZ-2G6E1, a 1Rx16 module -- the geometry measured on this
+  board. Xilinx AR 71961 covers the change; UG1182 v1.6 lists the new part.
+- It broke people at the time: FSBL 2018.2-or-earlier does not boot rev 1.1
+  boards (Xilinx required 2018.3+), and rev 1.1 DDR support was patched into
+  mainline u-boot.
+- The reason standard flows (PetaLinux BSPs, the ZCU102-Ethernet wiki
+  designs, any BOOT.BIN built for board zcu102) work on BOTH modules: the
+  ZynqMP FSBL built with XPS_BOARD_ZCU102 ignores the static DDR values and
+  READS THE SODIMM'S SPD EEPROM over I2C at every boot
+  (xfsbl_ddr_init.c, XFsbl_DdrComputeDimmParameters), then programs the DDR
+  controller to match the actual module.
+- Our JTAG bring-up flow runs psu_init.tcl: static register values generated
+  from the Vivado board preset, which (verified in board-file versions 3.3
+  and 3.4) still encodes the original x8 module. No SPD read, no
+  self-correction -- so the preset mismatch surfaces only in psu_init/JTAG
+  flows on rev 1.1-era boards.
+
+Practical consequences:
+- The x16 overrides in create_project.tcl (and create_zcu102_ps_boot_xsa.tcl)
+  are correct for this board and harmless for the FSBL flow.
+- For deployment, an SD/QSPI BOOT.BIN with the stock SPD-reading FSBL is the
+  most robust path (immune to future module swaps); keep JTAG + psu_init for
+  development.
+
+
+THE FIX
+-------
+Set the true x16 geometry on the zynq_ultra_ps_e block in create_project.tcl
+(committed 3bfd5af on ddr-zynq-eth):
+
+    CONFIG.PSU__DDRC__DRAM_WIDTH      {16 Bits}
+    CONFIG.PSU__DDRC__BG_ADDR_COUNT   {1}
+    CONFIG.PSU__DDRC__DEVICE_CAPACITY {8192 MBits}
+    CONFIG.PSU__DDRC__ROW_ADDR_COUNT  {16}
+
+This regenerates psu_init with the correct DDR address map. No hardware change
+and no manual step -- a fresh rebuild bakes it in.
+
+
+VERIFICATION (after the fix)
+----------------------------
+- ddr_alias_probe.tcl: PASS at 0x30000000, 0x05000000, 0x01000000 -- all 16
+  address-bit offsets read back distinct, base intact, no hangs.
+- A53 app: halts cleanly; debug mailbox @0x0F000000 reads 0xDA0000FF (main loop
+  running) with the heartbeat advancing (0x17 -> 0x40).
+- Host: ping 192.168.2.10 = 4/4 replies, <1 ms; ARP shows the real board MAC
+  00:0a:35:00:01:10.
+- Host: UDP "PING" to :5006 -> "PONG".
+- ADC: MicroBlaze STAT healthy (JESD active, qpll locked); DMAC 4096 captured
+  into PS DDR; capture pulled OVER ETHERNET to eth_first_light_chip0.bin
+  (full 65536 bytes) and chip1.bin.
+
+
+KNOWN-GOOD STANDARD BRING-UP SEQUENCE (JTAG)
+--------------------------------------------
+1. rst -system (PSU target)
+2. release A53 #0: rst -processor -clear-registers
+3. source psu_init.tcl ; psu_init        (now carries x16 DDR + GEM3)
+4. fpga -file project/DAQ_LAUNCH.runs/impl_1/top.bit
+5. psu_post_config ; psu_ps_pl_isolation_removal ; psu_ps_pl_reset_config
+6. MicroBlaze #0: rst -processor ; dow firmware.elf ; con
+7. Cortex-A53 #0: rst -processor -clear-registers ; dow ps_eth_stream.elf ; con
+   (filter MicroBlaze with "MicroBlaze #0", not "MicroBlaze*", which also
+    matches the MicroBlaze Debug Module.)
+
+
+OPEN ITEMS
+----------
+- Bake the same DDR geometry into the standalone PS-boot project
+  (create_zcu102_ps_boot_xsa.tcl) if a BOOT.BIN/FSBL flow is used later.
+- Ethernet readout dropped one 256-byte UDP packet on chip1 (no retransmit in
+  the app). The link is fine; add sequencing/retransmit if lossless bulk
+  capture is required.
+- A correct, lasting takeaway: when standing up a board's PS, confirm the DDR
+  module organization against the preset before trusting it -- and run a known
+  reference image as a control early.
+================================================================================

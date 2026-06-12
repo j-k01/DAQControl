@@ -109,6 +109,19 @@ create_bd_design $design_name
 set ps [create_bd_cell -type ip -vlnv xilinx.com:ip:zynq_ultra_ps_e:3.5 zynq_ultra_ps_e_0]
 apply_bd_automation -rule xilinx.com:bd_rule:zynq_ultra_ps_e -config {apply_board_preset "1"} $ps
 
+# Rev 1.1-era ZCU102 kits (0432055-05 onward) ship a 1Rx16 SODIMM
+# (MTA4ATF51264HZ-2G6E1); the board preset still encodes the original x8
+# module and drives a bank-group bit the x16 module lacks, aliasing DDR
+# 16 KB apart (Xilinx AR 71961, verified with ddr_alias_probe.tcl). The
+# SPD-reading FSBL self-corrects at boot, but keep the static config
+# truthful for psu_init/JTAG flows.
+set_property -dict [list \
+    CONFIG.PSU__DDRC__DRAM_WIDTH {16 Bits} \
+    CONFIG.PSU__DDRC__BG_ADDR_COUNT {1} \
+    CONFIG.PSU__DDRC__DEVICE_CAPACITY {8192 MBits} \
+    CONFIG.PSU__DDRC__ROW_ADDR_COUNT {16} \
+] $ps
+
 set pl_clk0 [get_bd_pins zynq_ultra_ps_e_0/pl_clk0]
 foreach hpm_clk [get_bd_pins -quiet zynq_ultra_ps_e_0/maxihpm*_fpd_aclk] {
     if {[llength [get_bd_nets -quiet -of_objects $hpm_clk]] == 0} {
