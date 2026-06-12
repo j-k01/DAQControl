@@ -2328,9 +2328,12 @@ int main(void)
     u32 loop_count = 0;
     while (1) {
 #if HAS_PS_DDR_DMA
-        if ((++loop_count & 0x3FFu) == 0u) {
-            stream_publish();
-        }
+        /* Publish the write pointer every iteration so the A53 tracks the DMA
+         * smoothly (was every 1024 iters ~= 50 ms, which made the reader see
+         * the writer in coarse ~1.5 MB jumps and stutter). stream_publish()
+         * early-returns when not streaming, so this is cheap otherwise. */
+        ++loop_count;
+        stream_publish();
 #else
         (void)loop_count;
         ++loop_count;
