@@ -192,7 +192,11 @@ def main():
     ap.add_argument("--decim", type=int, default=256)
     ap.add_argument("--dds-step", type=lambda x: int(x, 0), default=4096)
     ap.add_argument("--amplitude", type=lambda x: int(x, 0), default=0x5000)
-    ap.add_argument("--freqs", default="0.305,0.610,0.916,1.221")
+    # Keep tones well below the decimated Nyquist (1.95 MHz at D=256) so the
+    # stream has >=12 samples/cycle and renders as smooth sines. Higher tones
+    # are real but look jagged at the decimated rate (few samples/cycle); for
+    # those, lower the decimation (--decim) or add the anti-alias decimator.
+    ap.add_argument("--freqs", default="0.122,0.183,0.244,0.305")
     ap.add_argument("--window", type=int, default=4096)
     ap.add_argument("--time-span", type=int, default=512)
     ap.add_argument("--initial", default="BRAM", choices=SOURCE_LABELS)
