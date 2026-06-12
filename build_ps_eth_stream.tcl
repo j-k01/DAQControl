@@ -26,10 +26,12 @@ platform generate
 app create -name ps_eth_stream -platform ps_eth_platform -domain ps_lwip -template {Empty Application(C)}
 importsources -name ps_eth_stream -path $script_dir/sw/ps_eth_stream/src
 
-# The generated linker script can map psu_ddr_0 from address 0x0. XSCT then
-# tries to download the A53 ELF at 0x0, which is fragile and can fail depending
-# on the PS/debug state. Keep this app in a known DDR window below the ADC DMA
-# buffers at 0x10000000 and 0x10020000.
+# The generated linker script can map psu_ddr_0 from address 0x0. On this
+# board the A53 wedges the coherent interconnect when it FETCHES instructions
+# from low DDR (proven at 0x01000000 with a flat-asm loop, MMU/caches off,
+# PL unprogrammed), while the identical loop at 0x30000000 runs indefinitely.
+# Link the app in the proven-good window. Data-side accesses to low DDR
+# (mailbox 0x0F000000, DMA buffers 0x10000000/0x10020000) are unaffected.
 set lscript_file [file join $ws ps_eth_stream src lscript.ld]
 if {[file exists $lscript_file]} {
     set fd [open $lscript_file r]
@@ -38,7 +40,7 @@ if {[file exists $lscript_file]} {
 
     set lscript [string map [list \
         "psu_ddr_0_MEM_0 : ORIGIN = 0x0, LENGTH = 0x7FF00000" \
-        "psu_ddr_0_MEM_0 : ORIGIN = 0x01000000, LENGTH = 0x0E000000" \
+        "psu_ddr_0_MEM_0 : ORIGIN = 0x30000000, LENGTH = 0x10000000" \
     ] $lscript]
 
     set fd [open $lscript_file w]

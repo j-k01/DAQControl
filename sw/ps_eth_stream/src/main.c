@@ -65,9 +65,10 @@
 #define DAQ_HEADER_BYTES    32u
 #define DAQ_PAYLOAD_WORDS   320u
 
-// Debug mailbox in PS DDR, outside the app ELF window (which ends at
-// 0x0EFFFFFF) and below the ADC DMA buffers at 0x10000000. Read it from XSCT
-// while the app runs, e.g.:
+// Debug mailbox in PS DDR, outside the app ELF window (0x30000000..0x3FFFFFFF)
+// and below the ADC DMA buffers at 0x10000000. Data accesses to low DDR are
+// fine on this board; only instruction fetch from low DDR wedges (see
+// build_ps_eth_stream.tcl). Read it from XSCT while the app runs, e.g.:
 //   targets -set -filter {name =~ "*PSU*"}; mrd 0x0F000000 8
 #define DAQ_MAILBOX_BASE    0x0F000000u
 
