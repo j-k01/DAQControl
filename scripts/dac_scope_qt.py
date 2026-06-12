@@ -573,27 +573,48 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.conn_lbl.setText(f"connecting {port}...")
         self.conn_lbl.setStyleSheet("color:#FFB74D;")
         QtWidgets.QApplication.processEvents()
-        try:
-            if self.tap:
+        # tear down any previous session
+        if self.tap:
+            try:
                 self.tap.close()
-            if self.dac:
+            except Exception:  # noqa: BLE001
+                pass
+            self.tap = None
+        if self.dac:
+            try:
                 self.dac.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.dac = None
+        # ---- UART (required): everything in the panel works over this ----
+        try:
             self.dac = DacControl(port)
             self.dac.base_setup(self.args.decim, self.args.cic)
             for ch in range(4):
                 self.dac.set_source(ch, self.args.initial)
-            self.tap = StreamTap(self.args.board_ip, self.args.cmd_port,
-                                 self.args.local_ip, self.args.local_port,
-                                 self.args.window, self.args.rcvbuf)
         except Exception as e:  # noqa: BLE001
-            self.conn_lbl.setText(f"failed: {e}")
+            self.conn_lbl.setText(f"UART connect failed: {e}")
             self.conn_lbl.setStyleSheet("color:#E57373;")
             self.dac = None
             return
-        self.conn_lbl.setText(f"connected {port}")
-        self.conn_lbl.setStyleSheet("color:#81C784;")
         self.connect_btn.setText("Reconnect")
         self._set_controls_enabled(True)
+        # ---- Ethernet stream (optional): the live plot. If the NIC/cable
+        #      isn't up, the panel + UART Capture still fully work. ----
+        try:
+            self.tap = StreamTap(self.args.board_ip, self.args.cmd_port,
+                                 self.args.local_ip, self.args.local_port,
+                                 self.args.window, self.args.rcvbuf)
+            self.conn_lbl.setText(f"connected {port} + Ethernet stream")
+            self.conn_lbl.setStyleSheet("color:#81C784;")
+        except Exception as e:  # noqa: BLE001
+            self.tap = None
+            self.conn_lbl.setText(f"connected {port} (UART only - no stream)")
+            self.conn_lbl.setStyleSheet("color:#FFB74D;")
+            self.status.setText(
+                f"UART connected - controls + UART Capture work. Live plot "
+                f"needs the NIC at {self.args.local_ip} and an Ethernet link "
+                f"({type(e).__name__}).")
 
     def _set_controls_enabled(self, on):
         for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.dt_cb):
@@ -607,10 +628,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
     def _show_stat(self, is_daq, health):
         port = self.dac.port if self.dac else self.port_cb.currentText()
         if is_daq:
-            self.conn_lbl.setText(f"✓ DAQ board on {port}  [{health}]")
+            self.conn_lbl.setText(f"DAQ board OK on {port}  [{health}]")
             self.conn_lbl.setStyleSheet("color:#81C784;")
         else:
-            self.conn_lbl.setText("✗ no DAQ response on this port "
+            self.conn_lbl.setText("no DAQ response on this port "
                                   "(wrong COM port / board down)")
             self.conn_lbl.setStyleSheet("color:#E57373;")
 
