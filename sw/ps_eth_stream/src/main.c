@@ -85,7 +85,8 @@
 #define STRM_MAGIC_RUNNING  0x53545201u
 #define STRM_CHIPS          2u
 #define STRM_PAYLOAD_BYTES  1408u
-#define STRM_PKTS_PER_PASS  32u
+#define STRM_PKTS_PER_PASS  8u  /* small bursts pace the wire; big bursts
+                                   overrun the host's UDP socket buffer */
 #define STRM_PACKET_MAGIC   0x53514144u /* "DAQS", little-endian on wire */
 
 static volatile u32 strm_running = 0;

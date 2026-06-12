@@ -40,13 +40,16 @@ def main() -> None:
     outdir.mkdir(parents=True, exist_ok=True)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
+    # Big receive buffer: the host must absorb disk-write stalls; at ~31 MB/s
+    # a 64 MB buffer rides out ~2 s of stall without losing datagrams.
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024 * 1024)
     sock.bind((args.local_ip, args.local_port))
     sock.settimeout(2.0)
 
     files = {c: (outdir / f"{args.prefix}_chip{c}.bin").open("wb") for c in (0, 1)}
-    stats = {c: {"pkts": 0, "bytes": 0, "next_seq": None, "gaps": 0,
-                 "gap_pkts": 0, "board_drops": 0} for c in (0, 1)}
+    stats = {c: {"pkts": 0, "bytes": 0, "first_seq": None, "max_seq": None,
+                 "missing": set(), "reordered": 0, "board_drops": 0}
+             for c in (0, 1)}
     decim = None
 
     sock.sendto(b"STRM", (args.board_ip, args.cmd_port))
@@ -72,10 +75,18 @@ def main() -> None:
                 continue
             decim = dec
             st = stats[chip]
-            if st["next_seq"] is not None and seq != st["next_seq"]:
-                st["gaps"] += 1
-                st["gap_pkts"] += (seq - st["next_seq"]) & 0xFFFFFFFF
-            st["next_seq"] = (seq + 1) & 0xFFFFFFFF
+            # Reorder-tolerant loss accounting: a forward jump marks the
+            # skipped seqs missing; a late arrival un-marks one.
+            if st["first_seq"] is None:
+                st["first_seq"] = seq
+                st["max_seq"] = seq
+            elif seq > st["max_seq"]:
+                for s in range(st["max_seq"] + 1, seq):
+                    st["missing"].add(s)
+                st["max_seq"] = seq
+            elif seq in st["missing"]:
+                st["missing"].discard(seq)
+                st["reordered"] += 1
             st["board_drops"] = drops
             payload = data[hdr_len:hdr_len + count]
             files[chip].write(payload)
@@ -103,7 +114,7 @@ def main() -> None:
         st = stats[c]
         print(f"chip{c}: {st['pkts']} pkts, {st['bytes']/1e6:.2f} MB "
               f"({st['bytes']/elapsed/1e6:.2f} MB/s), "
-              f"seq gaps={st['gaps']} ({st['gap_pkts']} pkts), "
+              f"lost={len(st['missing'])} pkts, reordered={st['reordered']}, "
               f"board ring drops={st['board_drops']} bytes")
     if decim:
         print(f"sample period = {decim} ns/sample per channel "
