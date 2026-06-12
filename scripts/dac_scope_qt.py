@@ -44,6 +44,17 @@ SOURCE_LABELS = ["DDS", "BRAM", "Neuron"]
 LABEL_TO_NSRC = {"DDS": "dds", "BRAM": "bram", "Neuron": "izh"}
 WAVEFORMS = ["Sine", "Triangle", "Trapezoid", "Square", "Sawtooth"]
 CH_COLORS = ["#4FC3F7", "#81C784", "#FFB74D", "#E57373"]
+CAPT_FRAME_OPTIONS = [128, 256, 512, 1024, 2048, 4096]   # 4096 = firmware max
+# Neuron integration timestep (Q16.16): larger dt -> faster simulation.
+NEURON_DT_OPTIONS = [
+    ("0.25x slow", 0x2000),
+    ("0.5x", 0x4000),
+    ("1x normal", 0x8000),
+    ("2x", 0x10000),
+    ("4x fast", 0x20000),
+    ("8x faster", 0x40000),
+]
+NEURON_DT_DEFAULT = 2   # index of "1x normal"
 
 
 # --------------------------------------------------------------- DAC content
@@ -140,6 +151,25 @@ class DacControl:
 
     def set_neuron(self, ch, profile):
         return self.cmd(f"NEUR {ch} {profile}", ok=("OK", "NEUR", "ERR"))
+
+    def set_neuron_dt(self, dt_hex):
+        # Integration timestep (Q16.16) for all neurons: larger = faster sim.
+        return self.cmd(f"NEUR all dt 0x{dt_hex:X}", ok=("OK", "NEUR", "ERR"))
+
+    def status_lines(self, timeout=1.5):
+        """Send STAT and collect the multi-line response. Used to verify the
+        port is actually the DAQ board (it answers with RW/RO regs + 'decoded:')."""
+        with self.lock:
+            self.s.reset_input_buffer()
+            self.s.write(b"STAT\n")
+            self.s.flush()
+            lines = []
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                ln = self.s.readline().decode("ascii", errors="replace").strip()
+                if ln:
+                    lines.append(ln)
+            return lines
 
     def set_cic(self, on):
         return self.cmd(f"STRM CIC {'on' if on else 'off'}", ok=("OK STRM", "ERR"))
@@ -301,6 +331,7 @@ class StreamTap:
 # --------------------------------------------------------------- GUI
 class ScopeWindow(QtWidgets.QMainWindow):
     captured = QtCore.pyqtSignal(object)      # emits {ch: int16[]} from worker
+    stat_result = QtCore.pyqtSignal(bool, str)  # board-verify result from worker
 
     def __init__(self, args):
         super().__init__()
@@ -352,13 +383,17 @@ class ScopeWindow(QtWidgets.QMainWindow):
         refresh = QtWidgets.QPushButton("↻")
         refresh.setMaximumWidth(32)
         refresh.clicked.connect(self.refresh_ports)
+        self.stat_btn = QtWidgets.QPushButton("STAT (verify board)")
+        self.stat_btn.clicked.connect(self._on_stat)
         cg.addWidget(QtWidgets.QLabel("COM"), 0, 0)
         cg.addWidget(self.port_cb, 0, 1)
         cg.addWidget(refresh, 0, 2)
         cg.addWidget(self.connect_btn, 1, 0, 1, 3)
+        cg.addWidget(self.stat_btn, 2, 0, 1, 3)
         self.conn_lbl = QtWidgets.QLabel("not connected")
         self.conn_lbl.setStyleSheet("color:#E57373;")
-        cg.addWidget(self.conn_lbl, 2, 0, 1, 3)
+        self.conn_lbl.setWordWrap(True)
+        cg.addWidget(self.conn_lbl, 3, 0, 1, 3)
         col.addWidget(conn)
 
         # per-channel source + neuron profile
@@ -383,6 +418,17 @@ class ScopeWindow(QtWidgets.QMainWindow):
             g.addWidget(prof, 1, 1, 1, 2)
             self.prof_cbs.append(prof)
             col.addWidget(box)
+
+        # neuron simulation speed (all neurons)
+        nb = QtWidgets.QGroupBox("Neuron sim speed (all)")
+        ng = QtWidgets.QHBoxLayout(nb)
+        self.dt_cb = QtWidgets.QComboBox()
+        self.dt_cb.addItems([lbl for lbl, _ in NEURON_DT_OPTIONS])
+        self.dt_cb.setCurrentIndex(NEURON_DT_DEFAULT)
+        self.dt_cb.currentIndexChanged.connect(self._on_dt)
+        ng.addWidget(QtWidgets.QLabel("dt"))
+        ng.addWidget(self.dt_cb)
+        col.addWidget(nb)
 
         # BRAM waveform builder
         wf = QtWidgets.QGroupBox("BRAM waveform")
@@ -450,10 +496,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.run_btn.clicked.connect(self._on_run)
         self.capt_btn = QtWidgets.QPushButton("UART Capture")
         self.capt_btn.clicked.connect(self._on_capture)
-        self.capt_frames = QtWidgets.QSpinBox()
-        self.capt_frames.setRange(64, 4096)
-        self.capt_frames.setValue(512)
-        self.capt_frames.setSuffix(" frames")
+        self.capt_frames = QtWidgets.QComboBox()
+        self.capt_frames.addItems([f"{n} frames" for n in CAPT_FRAME_OPTIONS])
+        self.capt_frames.setCurrentText("512 frames")
         og.addWidget(self.cic_chk, 0, 0, 1, 2)
         og.addWidget(self.auto_chk, 1, 0)
         og.addWidget(self.trig_chk, 1, 1)
@@ -473,6 +518,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._apply_view_ranges()
         self._set_controls_enabled(False)
         self.captured.connect(self._show_capture)
+        self.stat_result.connect(self._show_stat)
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._update)
         self.timer.start(int(1000.0 / args.fps))
@@ -520,13 +566,23 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._set_controls_enabled(True)
 
     def _set_controls_enabled(self, on):
-        for w in (self.wf_btn, self.cic_chk, self.capt_btn):
+        for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.dt_cb):
             w.setEnabled(on)
         for grp in self.src_groups:
             for b in grp.buttons():
                 b.setEnabled(on)
         for cb in self.prof_cbs:
             cb.setEnabled(on)
+
+    def _show_stat(self, is_daq, health):
+        port = self.dac.port if self.dac else self.port_cb.currentText()
+        if is_daq:
+            self.conn_lbl.setText(f"✓ DAQ board on {port}  [{health}]")
+            self.conn_lbl.setStyleSheet("color:#81C784;")
+        else:
+            self.conn_lbl.setText("✗ no DAQ response on this port "
+                                  "(wrong COM port / board down)")
+            self.conn_lbl.setStyleSheet("color:#E57373;")
 
     # ---- callbacks (UART off the GUI thread) ----
     def _bg(self, fn):
@@ -573,10 +629,32 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 self.dac.prog(ch, words)
         self._bg(work)
 
+    def _on_dt(self, idx):
+        if self.dac:
+            dt = NEURON_DT_OPTIONS[idx][1]
+            self._bg(lambda: self.dac.set_neuron_dt(dt))
+
+    def _on_stat(self):
+        if not self.dac:
+            self.conn_lbl.setText("connect first")
+            self.conn_lbl.setStyleSheet("color:#E57373;")
+            return
+        self.conn_lbl.setText("checking board...")
+        self.conn_lbl.setStyleSheet("color:#FFB74D;")
+
+        def work():
+            lines = self.dac.status_lines()
+            blob = "\n".join(lines)
+            is_daq = any(l.startswith("RW0") for l in lines) and "decoded:" in blob
+            health = [k for k in ("qpll_locked", "tx_ready", "rx_ready")
+                      if k in blob]
+            self.stat_result.emit(is_daq, ", ".join(health) or "link not ready")
+        self._bg(work)
+
     def _on_capture(self):
         if not self.dac:
             return
-        frames = self.capt_frames.value()
+        frames = CAPT_FRAME_OPTIONS[self.capt_frames.currentIndex()]
         self.capt_btn.setEnabled(False)
         self.status.setText(f"UART capturing {frames} frames...")
 
