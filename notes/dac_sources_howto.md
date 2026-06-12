@@ -56,6 +56,7 @@ four chronological 16-bit samples.
 | A/B a single channel DDS vs BRAM | `scripts/switch_dac_source_uart.py {dds,bram,toggle}` |
 | Continuous decimated ADC stream over Ethernet | `scripts/receive_ps_eth_stream_continuous.py` (arm `STRM <D>` first) |
 | Live scope + per-channel source switching | `scripts/dac_source_scope.py` |
+| A/B the chip-1 CIC anti-alias vs keep-1-of-D (rejection in dB) | `scripts/cic_alias_sweep_uart.py` |
 
 ## Minimal manual recipe (e.g. for a new waveform)
 
@@ -71,6 +72,38 @@ For DDS: `NSRC all dds` (optionally set frequency via the DDS step / RW3[31:8],
 but prefer `switch_dac_source_uart.py dds --step N`).
 For neurons: `NEUR <ch> <profile>`, `NEUR all dt 0x8000`, `NEUR all period 1`,
 then `NSRC all izh`.
+
+## Streaming decimation: keep-1-of-D vs CIC anti-alias (chip 1 only)
+
+The continuous ADC stream is decimated in the PL before it hits the DMA. There
+are two cores:
+
+- **keep-1-of-D** (`adc_stream_decimator.v`) — takes every D-th sample. Cheap,
+  but anything above the decimated Nyquist (fs_out/2) **aliases** straight into
+  the band at full amplitude. This is why a fast tone looks like a wrong, lower
+  tone in the stream even though the scope shows it correctly.
+- **CIC anti-alias** (`adc_stream_decimator_cic.v` + `cic3_decimate.v`) — a
+  boxcar-4 prefilter into a 3-stage CIC, **fixed D=128** (7.8125 MS/s/ch,
+  Nyquist 3.906 MHz). It low-pass filters before downsampling, so out-of-band
+  energy is rejected instead of folded in.
+
+For an A/B comparison the CIC is wired to **chip 1 only (ADC ch2/ch3)**; chip 0
+(ch0/ch1) is always keep-1-of-D. Select at runtime over UART:
+
+```
+STRM 128 cic        # start streaming, chip1 = CIC (run D=128 so both chips match)
+STRM CIC off        # live toggle chip1 back to keep-1-of-D (no restart)
+STRM CIC on         # live toggle chip1 to CIC
+STRM STAT           # shows "cic=0|1"
+```
+
+Internally this is `RW6[30]` (1 = CIC), CDC-synced alongside the existing
+`RW6[31]` enable and `RW6[15:0]` D. **Run `STRM 128`** when using CIC so chip 0's
+keep factor matches the CIC's fixed D=128 and both channels share one timebase.
+
+Verify with `scripts/cic_alias_sweep_uart.py`: it loads the same tone on all four
+channels and sweeps it across/above Nyquist, then reports `peak(keep) - peak(CIC)`
+in dB (the anti-alias rejection) and writes `captures/cic_alias_sweep.png`.
 
 ## Verify
 
