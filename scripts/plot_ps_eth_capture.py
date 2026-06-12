@@ -69,8 +69,8 @@ def main() -> None:
                         help="Output directory (default: same as --indir)")
     parser.add_argument("--plot-samples", type=int, default=2048,
                         help="Samples per channel in the time-domain plot")
-    parser.add_argument("--sample-rate", type=float, default=500e6,
-                        help="ADC sample rate in Hz for FFT axis")
+    parser.add_argument("--sample-rate", type=float, default=1e9,
+                        help="ADC sample rate in Hz for FFT axis (1 GS/s per input)")
     parser.add_argument("--raw-sources", action="store_true",
                         help="Plot raw u32 word streams as lo16/hi16 pairs")
     args = parser.parse_args()
