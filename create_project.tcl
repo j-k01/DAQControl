@@ -475,7 +475,16 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
             CONFIG.PSU__ENET3__PERIPHERAL__IO {MIO 64 .. 75} \
             CONFIG.PSU__ENET3__GRP_MDIO__ENABLE {1} \
             CONFIG.PSU__ENET3__GRP_MDIO__IO {MIO 76 .. 77} \
+            CONFIG.PSU__DDRC__DRAM_WIDTH {16 Bits} \
+            CONFIG.PSU__DDRC__BG_ADDR_COUNT {1} \
+            CONFIG.PSU__DDRC__DEVICE_CAPACITY {8192 MBits} \
+            CONFIG.PSU__DDRC__ROW_ADDR_COUNT {16} \
         ]
+        # This board's DDR4 SODIMM uses x16 devices (2 bank groups), not the
+        # x8/4-bank-group module the stock ZCU102 preset assumes. With the
+        # preset config the controller drives a bank-group bit the module
+        # lacks, aliasing DDR addresses 16 KB apart (verified with
+        # ddr_alias_probe.tcl) and corrupting every A53 ELF download.
 
         foreach dma {0 1} {
             create_bd_cell -type ip -vlnv xilinx.com:ip:axi_dma:* axi_dma_${dma}
