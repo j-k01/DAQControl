@@ -3,9 +3,13 @@
 # is written to QSPI/SD flash, so it is gone on power-cycle.
 #
 # Run on whatever machine has the board's JTAG (a running hw_server), from a
-# fresh clone -- no Vivado/Vitis workspace or build needed:
+# fresh clone -- no Vivado/Vitis workspace or build needed. Works from ANY
+# Xilinx shell; if it isn't already an xsct shell it relaunches itself under
+# xsct automatically:
 #
 #     xsct program_board.tcl
+#     xsdb program_board.tcl
+#     vivado -mode batch -source program_board.tcl     # relaunches under xsct
 #
 # (On the capitolpeak build host: ~/bin/with_xilinx_2024_1 xsct program_board.tcl)
 #
@@ -33,8 +37,51 @@ foreach {label f} [list bitstream $bit "MicroBlaze ELF" $mb_elf "A53 ELF" $a53_e
     }
 }
 
-if {[llength [info commands connect]] == 0 || [llength [info commands dow]] == 0} {
-    error "program_board.tcl must run under XSCT/XSDB (xsct program_board.tcl), not Vivado Tcl."
+# ---- run-anywhere shim --------------------------------------------------
+# The actual bring-up needs xsct/xsdb commands (connect/fpga/dow/con). If this
+# script was sourced from a different terminal -- Vivado batch
+# (`vivado -mode batch -source program_board.tcl`), plain tclsh, etc. -- those
+# commands don't exist, so we locate xsct and relaunch ourselves under it. That
+# way the SAME one command works from any shell.
+proc find_xsct_command {} {
+    if {[info exists ::env(XSCT)] && [file exists $::env(XSCT)]} {
+        return [list $::env(XSCT)]
+    }
+    set roots {}
+    if {[info exists ::env(XILINX_VITIS)]} { lappend roots $::env(XILINX_VITIS) }
+    if {[info exists ::env(XILINX_VIVADO)]} {
+        set ver [file tail $::env(XILINX_VIVADO)]
+        lappend roots [file join [file dirname [file dirname $::env(XILINX_VIVADO)]] Vitis $ver]
+    }
+    foreach root $roots {
+        foreach name {xsct xsct.bat} {
+            set c [file join $root bin $name]
+            if {[file exists $c]} { return [list $c] }
+        }
+    }
+    # Vivado-only installs ship xsdb in Vivado/bin and it supports all we use.
+    if {[info exists ::env(XILINX_VIVADO)]} {
+        foreach name {xsdb xsdb.bat} {
+            set c [file join $::env(XILINX_VIVADO) bin $name]
+            if {[file exists $c]} { return [list $c] }
+        }
+    }
+    foreach name {xsct xsct.bat xsdb xsdb.bat} {
+        set r [auto_execok $name]
+        if {$r ne ""} { return $r }
+    }
+    return {}
+}
+
+if {[llength [info commands connect]] == 0 || [llength [info commands fpga]] == 0
+    || [llength [info commands dow]] == 0} {
+    set xsct [find_xsct_command]
+    if {$xsct eq ""} {
+        error "Not an xsct/xsdb shell and could not find xsct.\nRun: xsct program_board.tcl  (or set \$XSCT / source the Vitis settings64)."
+    }
+    puts "Not an xsct shell; relaunching under xsct: $xsct"
+    exec {*}$xsct [file normalize [info script]] >@ stdout 2>@ stderr
+    return
 }
 
 puts "== connecting to hw_server =="
