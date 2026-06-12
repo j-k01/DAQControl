@@ -1,11 +1,13 @@
-# flash_board.tcl -- one-shot ZCU102 reprogram from committed prebuilt artifacts.
+# program_board.tcl -- one-shot ZCU102 program over JTAG from committed prebuilt
+# artifacts. This is a VOLATILE load (config SRAM + processor download); nothing
+# is written to QSPI/SD flash, so it is gone on power-cycle.
 #
 # Run on whatever machine has the board's JTAG (a running hw_server), from a
 # fresh clone -- no Vivado/Vitis workspace or build needed:
 #
-#     xsct flash_board.tcl
+#     xsct program_board.tcl
 #
-# (On the capitolpeak build host: ~/bin/with_xilinx_2024_1 xsct flash_board.tcl)
+# (On the capitolpeak build host: ~/bin/with_xilinx_2024_1 xsct program_board.tcl)
 #
 # It does the whole bring-up in ONE xsct session:
 #   1. connect + recover the PS/DAP if it is in the wedged state
@@ -32,7 +34,7 @@ foreach {label f} [list bitstream $bit "MicroBlaze ELF" $mb_elf "A53 ELF" $a53_e
 }
 
 if {[llength [info commands connect]] == 0 || [llength [info commands dow]] == 0} {
-    error "flash_board.tcl must run under XSCT/XSDB (xsct flash_board.tcl), not Vivado Tcl."
+    error "program_board.tcl must run under XSCT/XSDB (xsct program_board.tcl), not Vivado Tcl."
 }
 
 puts "== connecting to hw_server =="

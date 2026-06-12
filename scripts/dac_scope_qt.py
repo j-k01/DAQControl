@@ -183,12 +183,25 @@ class DacControl:
         self.cmd(f"STRM {decim}{' cic' if usecic else ''}", ok=("OK STRM", "ERR"))
 
     def uart_capture(self, frames):
-        """PCAP <frames> -> 4-channel int16 arrays (over UART, blocking).
-        PCAP keeps RW3_DAC_PROGRAM_EN set so BRAM channels keep playing during
-        the capture; plain CAPT clears it and BRAM would read as noise."""
+        """PCAP <frames> -> 4-channel snapshot. PCAP keeps RW3_DAC_PROGRAM_EN
+        set so BRAM channels keep playing during the capture (plain CAPT clears
+        it and BRAM would read as noise)."""
+        return self._capture(f"PCAP {frames}", frames)
+
+    def uart_capture_step(self, iconst_q16, frames, predelay):
+        """CSTP -> capture the neuron rest->current-step transition: parks all
+        neurons at I=0, opens the window flat, holds the baseline for `predelay`,
+        then steps iconst -> iconst_q16 (Q16.16; e.g. 10.0 = 0x000A0000) mid-fill.
+        Set the channels to the Neuron source first."""
+        return self._capture(
+            f"CSTP 0x{iconst_q16:08X} {frames} {predelay}", frames)
+
+    def _capture(self, cmd_str, frames):
+        """Send a capture command, wait for the FE10CAFE sync, read
+        frames*8*4 bytes, and decode to 4-channel int16 arrays (over UART)."""
         with self.lock:
             self.s.reset_input_buffer()
-            self.s.write(f"PCAP {frames}\n".encode("ascii"))
+            self.s.write((cmd_str + "\n").encode("ascii"))
             self.s.flush()
             win = bytearray()
             deadline = time.time() + 15
@@ -499,14 +512,31 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.capt_frames = QtWidgets.QComboBox()
         self.capt_frames.addItems([f"{n} frames" for n in CAPT_FRAME_OPTIONS])
         self.capt_frames.setCurrentText("512 frames")
+        self.capt_mode = QtWidgets.QComboBox()
+        self.capt_mode.addItems(["Snapshot (PCAP)", "Neuron step (CSTP)"])
+        self.capt_mode.currentIndexChanged.connect(self._on_capt_mode)
+        self.capt_istep = QtWidgets.QDoubleSpinBox()
+        self.capt_istep.setRange(0.0, 40.0)
+        self.capt_istep.setDecimals(1)
+        self.capt_istep.setValue(10.0)
+        self.capt_istep.setSuffix(" I")        # Izhikevich drive ("mA")
+        self.capt_istep.setEnabled(False)
+        self.capt_predelay = QtWidgets.QSpinBox()
+        self.capt_predelay.setRange(0, 4000)
+        self.capt_predelay.setValue(150)
+        self.capt_predelay.setPrefix("pre ")
+        self.capt_predelay.setEnabled(False)
         og.addWidget(self.cic_chk, 0, 0, 1, 2)
         og.addWidget(self.auto_chk, 1, 0)
         og.addWidget(self.trig_chk, 1, 1)
         og.addWidget(self.rb_time, 2, 0)
         og.addWidget(self.rb_fft, 2, 1)
         og.addWidget(self.run_btn, 3, 0, 1, 2)
-        og.addWidget(self.capt_frames, 4, 0)
-        og.addWidget(self.capt_btn, 4, 1)
+        og.addWidget(self.capt_mode, 4, 0, 1, 2)
+        og.addWidget(self.capt_istep, 5, 0)
+        og.addWidget(self.capt_predelay, 5, 1)
+        og.addWidget(self.capt_frames, 6, 0)
+        og.addWidget(self.capt_btn, 6, 1)
         col.addWidget(opt)
 
         col.addStretch(1)
@@ -651,15 +681,29 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.stat_result.emit(is_daq, ", ".join(health) or "link not ready")
         self._bg(work)
 
+    def _on_capt_mode(self, idx):
+        step = (idx == 1)
+        self.capt_istep.setEnabled(step)
+        self.capt_predelay.setEnabled(step)
+
     def _on_capture(self):
         if not self.dac:
             return
         frames = CAPT_FRAME_OPTIONS[self.capt_frames.currentIndex()]
+        step = (self.capt_mode.currentIndex() == 1)
+        iconst = int(round(self.capt_istep.value() * 65536.0))   # Q16.16
+        predelay = self.capt_predelay.value()
         self.capt_btn.setEnabled(False)
-        self.status.setText(f"UART capturing {frames} frames...")
+        self.status.setText(
+            (f"CSTP step to I={self.capt_istep.value():.1f} after {predelay} "
+             f"({frames} frames)..." if step
+             else f"UART capturing {frames} frames..."))
 
         def work():
-            data = self.dac.uart_capture(frames)
+            if step:
+                data = self.dac.uart_capture_step(iconst, frames, predelay)
+            else:
+                data = self.dac.uart_capture(frames)
             self.captured.emit(data)
         self._bg(work)
 
