@@ -202,6 +202,11 @@ static u32 stream_active = 0;
 static u32 stream_decim = 0;
 static u32 stream_usecic = 0;
 static u32 stream_pub_count = 0;
+/* Monotonic per-chip count of bytes the DMA has completed, so the A53 can
+ * compute an unambiguous reader-vs-writer distance (wrapped offsets can't tell
+ * "behind" from "lapped"). */
+static u32 stream_write_total[ADC_DMA_CHIPS];
+static u32 stream_last_idx[ADC_DMA_CHIPS];
 
 static const u32 adc_dma_base[ADC_DMA_CHIPS] = {
     ADC_DMA0_BASE,
@@ -1802,6 +1807,10 @@ static void stream_start(u32 decim, u32 usecic)
     stream_decim = decim;
     stream_usecic = usecic ? 1u : 0u;
     stream_pub_count = 0;
+    for (chip = 0; chip < ADC_DMA_CHIPS; chip++) {
+        stream_write_total[chip] = 0u;
+        stream_last_idx[chip] = 0u;
+    }
     Xil_Out32(STRM_MAILBOX + 0x04u, decim);
     Xil_Out32(STRM_MAILBOX + 0x08u, STRM_RING_BYTES);
     Xil_Out32(STRM_MAILBOX + 0x0Cu, STRM_CHUNK_BYTES);
@@ -1818,8 +1827,9 @@ static void stream_start(u32 decim, u32 usecic)
                        (decim & 0xFFFFu));
 }
 
-/* Publish each chip's ring write offset (the chunk the DMA is currently
- * filling) so the A53 knows how far it may read. Called from the main loop. */
+/* Publish each chip's MONOTONIC bytes-written counter (not a wrapped ring
+ * offset) so the A53 can compute an unambiguous reader-vs-writer distance.
+ * Called from the main loop. */
 static void stream_publish(void)
 {
     u32 i;
@@ -1830,11 +1840,17 @@ static void stream_publish(void)
     for (i = 0; i < ADC_DMA_CHIPS; i++) {
         u32 cur = Xil_In32(adc_dma_base[i] + DMA_S2MM_CURDESC);
         u32 idx = 0;
+        u32 dchunks;
 
         if (cur >= strm_desc_base[i]) {
             idx = ((cur - strm_desc_base[i]) / STRM_DESC_STRIDE) % STRM_RING_CHUNKS;
         }
-        Xil_Out32(STRM_MAILBOX + 0x14u + i * 8u, idx * STRM_CHUNK_BYTES);
+        /* chunks completed since last publish (mod ring), accumulated into a
+         * free-running byte total. */
+        dchunks = (idx - stream_last_idx[i]) & (STRM_RING_CHUNKS - 1u);
+        stream_write_total[i] += dchunks * STRM_CHUNK_BYTES;
+        stream_last_idx[i] = idx;
+        Xil_Out32(STRM_MAILBOX + 0x14u + i * 8u, stream_write_total[i]);
         Xil_Out32(STRM_MAILBOX + 0x20u + i * 4u, dma_status(i));
     }
     stream_pub_count++;

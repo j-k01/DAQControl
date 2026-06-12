@@ -320,7 +320,8 @@ static int strm_begin(const ip_addr_t *addr, u16 port)
     strm_ring_base[0] = strm_mbox_read(0x10u);
     strm_ring_base[1] = strm_mbox_read(0x18u);
     for (chip = 0; chip < STRM_CHIPS; chip++) {
-        /* Start at the current write chunk: stream only new data. */
+        /* Start the monotonic read counter at the writer: stream only new
+         * data (gap == 0 initially). */
         strm_read_off[chip] = strm_mbox_read(0x14u + chip * 8u);
         strm_seq[chip] = 0;
         strm_drops[chip] = 0;
@@ -376,44 +377,42 @@ static void strm_service(void)
     }
 
     for (chip = 0; chip < STRM_CHIPS; chip++) {
-        u32 write_off = strm_mbox_read(0x14u + chip * 8u);
+        /* write_tot and strm_read_off are MONOTONIC byte counters (they wrap
+         * only at 2^32). Their difference is a true, unambiguous distance --
+         * no "behind vs lapped" confusion like wrapped ring offsets had. */
+        u32 write_tot = strm_mbox_read(0x14u + chip * 8u);
         u32 pkts = 0;
 
         while (pkts < STRM_PKTS_PER_PASS) {
-            u32 gap = (write_off - strm_read_off[chip]) & (strm_ring_bytes - 1u);
+            u32 gap = write_tot - strm_read_off[chip];
             u32 bytes;
+            u32 ring_off;
 
-            /* gap is (write_off - read_off) mod ring, so it can't distinguish
-             * "reader just behind writer" (gap ~ 0) from "reader just AHEAD of a
-             * momentarily-stale, chunk-granular write pointer" (gap ~ ring).
-             * Treat the whole upper half as "no genuine new data, wait" -- the
-             * reader keeps up, so a real backlog is always a small fraction of
-             * the ring. This kills the spurious half-ring rewinds that streamed
-             * ~0.5 s-stale samples and made switched sources flicker old/new. */
-            if (gap == 0u || gap > strm_ring_bytes / 2u) {
+            if (gap == 0u) {
                 break;
             }
-            /* Genuine backlog (reader fell behind): resync to a small fixed lag
-             * just behind the writer -- stay fresh, drop the stale span. */
+            /* Fell behind the writer (e.g. a publish stall during a UART
+             * command): jump to a fixed small lag behind the head so the
+             * stream stays FRESH instead of draining ~1 s of stale ring.
+             * This is what makes a source switch appear immediately. */
             if (gap > STRM_MAX_LAG) {
-                u32 resume = (write_off - STRM_MAX_LAG) & (strm_ring_bytes - 1u);
-                strm_drops[chip] += (resume - strm_read_off[chip]) &
-                                    (strm_ring_bytes - 1u);
+                u32 resume = write_tot - STRM_MAX_LAG;
+                strm_drops[chip] += gap - STRM_MAX_LAG;
                 strm_read_off[chip] = resume;
-                continue;
+                gap = STRM_MAX_LAG;
             }
 
             bytes = gap;
             if (bytes > STRM_PAYLOAD_BYTES) {
                 bytes = STRM_PAYLOAD_BYTES;
             }
-            if (strm_read_off[chip] + bytes > strm_ring_bytes) {
-                bytes = strm_ring_bytes - strm_read_off[chip];
+            ring_off = strm_read_off[chip] & (strm_ring_bytes - 1u);
+            if (ring_off + bytes > strm_ring_bytes) {
+                bytes = strm_ring_bytes - ring_off;   /* don't span the wrap */
             }
 
-            strm_send_packet(chip, strm_read_off[chip], bytes);
-            strm_read_off[chip] = (strm_read_off[chip] + bytes) &
-                                  (strm_ring_bytes - 1u);
+            strm_send_packet(chip, ring_off, bytes);
+            strm_read_off[chip] += bytes;             /* monotonic */
             pkts++;
         }
     }
