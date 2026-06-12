@@ -488,10 +488,14 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
 
         foreach dma {0 1} {
             create_bd_cell -type ip -vlnv xilinx.com:ip:axi_dma:* axi_dma_${dma}
+            # Scatter-gather (cyclic-capable) so continuous streaming has no
+            # re-arm gaps. Status/control stream off; 26-bit lengths so one
+            # descriptor can hold a full 128 KB ring chunk.
             set_property -dict [list \
                 CONFIG.c_addr_width {32} \
                 CONFIG.c_include_mm2s {0} \
-                CONFIG.c_include_sg {0} \
+                CONFIG.c_include_sg {1} \
+                CONFIG.c_sg_include_stscntrl_strm {0} \
                 CONFIG.c_m_axi_s2mm_data_width {128} \
                 CONFIG.c_s_axis_s2mm_tdata_width {128} \
                 CONFIG.c_sg_length_width {26} \
@@ -533,8 +537,18 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
         safe_connect_bd_intf_net [get_bd_intf_pins axi_clock_converter_0/M_AXI] [get_bd_intf_pins axi_dma_0/S_AXI_LITE]
         safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M09_AXI] [get_bd_intf_pins axi_clock_converter_1/S_AXI]
         safe_connect_bd_intf_net [get_bd_intf_pins axi_clock_converter_1/M_AXI] [get_bd_intf_pins axi_dma_1/S_AXI_LITE]
-        safe_connect_bd_intf_net [get_bd_intf_pins axi_dma_0/M_AXI_S2MM] [get_bd_intf_pins zynq_ultra_ps_e_0/S_AXI_HP0_FPD]
-        safe_connect_bd_intf_net [get_bd_intf_pins axi_dma_1/M_AXI_S2MM] [get_bd_intf_pins zynq_ultra_ps_e_0/S_AXI_HP1_FPD]
+        # SmartConnect per DMA merges M_AXI_S2MM + M_AXI_SG onto one HP port.
+        foreach dma {0 1} {
+            if {[llength [get_bd_cells -quiet axi_smc_dma${dma}]] == 0} {
+                create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:* axi_smc_dma${dma}
+                set_property -dict [list CONFIG.NUM_SI {2} CONFIG.NUM_MI {1} CONFIG.NUM_CLKS {1}] \
+                    [get_bd_cells axi_smc_dma${dma}]
+            }
+            safe_connect_bd_intf_net [get_bd_intf_pins axi_dma_${dma}/M_AXI_S2MM] [get_bd_intf_pins axi_smc_dma${dma}/S00_AXI]
+            safe_connect_bd_intf_net [get_bd_intf_pins axi_dma_${dma}/M_AXI_SG] [get_bd_intf_pins axi_smc_dma${dma}/S01_AXI]
+        }
+        safe_connect_bd_intf_net [get_bd_intf_pins axi_smc_dma0/M00_AXI] [get_bd_intf_pins zynq_ultra_ps_e_0/S_AXI_HP0_FPD]
+        safe_connect_bd_intf_net [get_bd_intf_pins axi_smc_dma1/M00_AXI] [get_bd_intf_pins zynq_ultra_ps_e_0/S_AXI_HP1_FPD]
         safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M10_AXI] [get_bd_intf_pins zynq_ultra_ps_e_0/S_AXI_HP2_FPD]
     }
 
@@ -565,6 +579,8 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
             safe_connect_bd_net [get_bd_ports gt_rx_usrclk_2] [get_bd_pins axi_clock_converter_${dma}/m_axi_aclk]
             safe_connect_bd_net [get_bd_ports gt_rx_usrclk_2] [get_bd_pins axi_dma_${dma}/s_axi_lite_aclk]
             safe_connect_bd_net [get_bd_ports gt_rx_usrclk_2] [get_bd_pins axi_dma_${dma}/m_axi_s2mm_aclk]
+            safe_connect_bd_net [get_bd_ports gt_rx_usrclk_2] [get_bd_pins axi_dma_${dma}/m_axi_sg_aclk]
+            safe_connect_bd_net [get_bd_ports gt_rx_usrclk_2] [get_bd_pins axi_smc_dma${dma}/aclk]
         }
         safe_connect_bd_net [get_bd_ports gt_rx_usrclk_2] [get_bd_pins zynq_ultra_ps_e_0/saxihp0_fpd_aclk]
         safe_connect_bd_net [get_bd_ports gt_rx_usrclk_2] [get_bd_pins zynq_ultra_ps_e_0/saxihp1_fpd_aclk]
@@ -609,6 +625,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
             safe_connect_bd_net $resetn_pin [get_bd_pins axi_clock_converter_${dma}/s_axi_aresetn]
             safe_connect_bd_net [lindex $gt_resetn_pin 0] [get_bd_pins axi_clock_converter_${dma}/m_axi_aresetn]
             safe_connect_bd_net [lindex $gt_resetn_pin 0] [get_bd_pins axi_dma_${dma}/axi_resetn]
+            safe_connect_bd_net [lindex $gt_resetn_pin 0] [get_bd_pins axi_smc_dma${dma}/aresetn]
         }
     }
 
@@ -647,6 +664,19 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
         exclude_bd_addr_seg_if_exists axi_dma_1/Data_S2MM zynq_ultra_ps_e_0/SAXIGP3/HP1_LPS_OCM 0xFF000000 0x01000000
         exclude_bd_addr_seg_if_exists axi_dma_1/Data_S2MM zynq_ultra_ps_e_0/SAXIGP3/HP1_PCIE_LOW 0xE0000000 0x10000000
         exclude_bd_addr_seg_if_exists axi_dma_1/Data_S2MM zynq_ultra_ps_e_0/SAXIGP3/HP1_QSPI 0xC0000000 0x20000000
+
+        # SG descriptor-fetch masters need the same DDR view as the data side
+        # (descriptor rings live in the MicroBlaze DDR window at 0x1003xxxx).
+        assign_bd_addr_if_exists axi_dma_0/Data_SG zynq_ultra_ps_e_0/SAXIGP2/HP0_DDR_LOW 0x00000000 0x80000000
+        assign_bd_addr_if_exists axi_dma_1/Data_SG zynq_ultra_ps_e_0/SAXIGP3/HP1_DDR_LOW 0x00000000 0x80000000
+        exclude_bd_addr_seg_if_exists axi_dma_0/Data_SG zynq_ultra_ps_e_0/SAXIGP2/HP0_DDR_HIGH
+        exclude_bd_addr_seg_if_exists axi_dma_0/Data_SG zynq_ultra_ps_e_0/SAXIGP2/HP0_LPS_OCM 0xFF000000 0x01000000
+        exclude_bd_addr_seg_if_exists axi_dma_0/Data_SG zynq_ultra_ps_e_0/SAXIGP2/HP0_PCIE_LOW 0xE0000000 0x10000000
+        exclude_bd_addr_seg_if_exists axi_dma_0/Data_SG zynq_ultra_ps_e_0/SAXIGP2/HP0_QSPI 0xC0000000 0x20000000
+        exclude_bd_addr_seg_if_exists axi_dma_1/Data_SG zynq_ultra_ps_e_0/SAXIGP3/HP1_DDR_HIGH 0x000800000000 0x000800000000
+        exclude_bd_addr_seg_if_exists axi_dma_1/Data_SG zynq_ultra_ps_e_0/SAXIGP3/HP1_LPS_OCM 0xFF000000 0x01000000
+        exclude_bd_addr_seg_if_exists axi_dma_1/Data_SG zynq_ultra_ps_e_0/SAXIGP3/HP1_PCIE_LOW 0xE0000000 0x10000000
+        exclude_bd_addr_seg_if_exists axi_dma_1/Data_SG zynq_ultra_ps_e_0/SAXIGP3/HP1_QSPI 0xC0000000 0x20000000
     }
 
     validate_bd_design
@@ -670,7 +700,8 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
     if {$include_ps_ddr_dma} {
         foreach dma {0 1} {
             require_cell_property axi_dma_${dma} CONFIG.c_include_mm2s 0
-            require_cell_property axi_dma_${dma} CONFIG.c_include_sg 0
+            require_cell_property axi_dma_${dma} CONFIG.c_include_sg 1
+            require_cell_property axi_dma_${dma} CONFIG.c_sg_length_width 26
             require_cell_property axi_dma_${dma} CONFIG.c_m_axi_s2mm_data_width 128
             require_cell_property axi_dma_${dma} CONFIG.c_s_axis_s2mm_tdata_width 128
             require_cell_property axi_dma_${dma} CONFIG.c_addr_width 32

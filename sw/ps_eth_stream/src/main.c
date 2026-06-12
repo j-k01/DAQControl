@@ -78,6 +78,27 @@
 #define MBOX_TX_PKTS        3u /* UDP packets sent */
 #define MBOX_WORDS          8u
 
+/* Continuous streaming: the MicroBlaze runs the PL decimator + cyclic SG DMA
+ * into per-chip DDR rings and publishes the ring write offsets in its own
+ * mailbox (inside the MB HP2 window). This app drains the rings over UDP. */
+#define STRM_MAILBOX        0x1003FF00u
+#define STRM_MAGIC_RUNNING  0x53545201u
+#define STRM_CHIPS          2u
+#define STRM_PAYLOAD_BYTES  1408u
+#define STRM_PKTS_PER_PASS  32u
+#define STRM_PACKET_MAGIC   0x53514144u /* "DAQS", little-endian on wire */
+
+static volatile u32 strm_running = 0;
+static ip_addr_t strm_addr;
+static u16 strm_port = DAQ_DEFAULT_DST_PORT;
+static u32 strm_read_off[STRM_CHIPS];
+static u32 strm_seq[STRM_CHIPS];
+static u32 strm_drops[STRM_CHIPS];
+static u32 strm_ring_base[STRM_CHIPS];
+static u32 strm_ring_bytes;
+static u32 strm_chunk_bytes;
+static u32 strm_decim;
+
 // Bring-up bisect aid: when DAQ_HALT_STAGE matches the low byte of a
 // progress code, spin forever right after writing it. The system staying
 // healthy (core haltable, mailbox readable) proves everything up to that
@@ -276,6 +297,118 @@ static void handle_pending_send(void)
     sequence++;
 }
 
+static u32 strm_mbox_read(u32 offset)
+{
+    Xil_DCacheInvalidateRange((UINTPTR)STRM_MAILBOX, 64u);
+    return *(volatile u32 *)(UINTPTR)(STRM_MAILBOX + offset);
+}
+
+static int strm_begin(const ip_addr_t *addr, u16 port)
+{
+    u32 chip;
+
+    if (strm_mbox_read(0x00u) != STRM_MAGIC_RUNNING) {
+        return -1;
+    }
+    strm_decim = strm_mbox_read(0x04u);
+    strm_ring_bytes = strm_mbox_read(0x08u);
+    strm_chunk_bytes = strm_mbox_read(0x0Cu);
+    strm_ring_base[0] = strm_mbox_read(0x10u);
+    strm_ring_base[1] = strm_mbox_read(0x18u);
+    for (chip = 0; chip < STRM_CHIPS; chip++) {
+        /* Start at the current write chunk: stream only new data. */
+        strm_read_off[chip] = strm_mbox_read(0x14u + chip * 8u);
+        strm_seq[chip] = 0;
+        strm_drops[chip] = 0;
+    }
+    strm_addr = *addr;
+    strm_port = port;
+    strm_running = 1;
+    return 0;
+}
+
+static void strm_send_packet(u32 chip, u32 offset, u32 bytes)
+{
+    struct pbuf *p;
+    u8 *payload;
+    UINTPTR src = (UINTPTR)(strm_ring_base[chip] + offset);
+
+    p = pbuf_alloc(PBUF_TRANSPORT, (u16)(DAQ_HEADER_BYTES + bytes), PBUF_RAM);
+    if (p == NULL) {
+        return;
+    }
+
+    Xil_DCacheInvalidateRange(src & ~63u,
+                              ((bytes + (u32)(src & 63u) + 63u) & ~63u));
+
+    payload = (u8 *)p->payload;
+    put_u32_le(payload + 0, STRM_PACKET_MAGIC);
+    put_u16_le(payload + 4, 1u);
+    put_u16_le(payload + 6, DAQ_HEADER_BYTES);
+    put_u32_le(payload + 8, strm_seq[chip]);
+    put_u32_le(payload + 12, chip);
+    put_u32_le(payload + 16, offset);
+    put_u32_le(payload + 20, bytes);
+    put_u32_le(payload + 24, strm_drops[chip]);
+    put_u32_le(payload + 28, strm_decim);
+    memcpy(payload + DAQ_HEADER_BYTES, (const void *)src, bytes);
+
+    udp_sendto(tx_pcb, p, &strm_addr, strm_port);
+    pbuf_free(p);
+    strm_seq[chip]++;
+    mailbox_increment(MBOX_TX_PKTS);
+}
+
+static void strm_service(void)
+{
+    u32 chip;
+
+    if (!strm_running) {
+        return;
+    }
+    if (strm_mbox_read(0x00u) != STRM_MAGIC_RUNNING) {
+        strm_running = 0;
+        return;
+    }
+
+    for (chip = 0; chip < STRM_CHIPS; chip++) {
+        u32 write_off = strm_mbox_read(0x14u + chip * 8u);
+        u32 pkts = 0;
+
+        while (pkts < STRM_PKTS_PER_PASS) {
+            u32 avail = (write_off - strm_read_off[chip]) & (strm_ring_bytes - 1u);
+            u32 bytes;
+
+            if (avail == 0u) {
+                break;
+            }
+            /* Writer has nearly lapped the reader: skip forward and count
+             * the loss instead of streaming overwritten bytes. */
+            if (avail > strm_ring_bytes - 4u * strm_chunk_bytes) {
+                u32 resume = (write_off - strm_ring_bytes / 2u) &
+                             (strm_ring_bytes - 1u);
+                strm_drops[chip] += (resume - strm_read_off[chip]) &
+                                    (strm_ring_bytes - 1u);
+                strm_read_off[chip] = resume;
+                continue;
+            }
+
+            bytes = avail;
+            if (bytes > STRM_PAYLOAD_BYTES) {
+                bytes = STRM_PAYLOAD_BYTES;
+            }
+            if (strm_read_off[chip] + bytes > strm_ring_bytes) {
+                bytes = strm_ring_bytes - strm_read_off[chip];
+            }
+
+            strm_send_packet(chip, strm_read_off[chip], bytes);
+            strm_read_off[chip] = (strm_read_off[chip] + bytes) &
+                                  (strm_ring_bytes - 1u);
+            pkts++;
+        }
+    }
+}
+
 static void parse_command(const char *cmd, const ip_addr_t *addr, u16 port)
 {
     u32 chip = 2u; /* 2 means both chips. */
@@ -284,6 +417,22 @@ static void parse_command(const char *cmd, const ip_addr_t *addr, u16 port)
 
     if (strncmp(cmd, "PING", 4) == 0) {
         send_status_packet(addr, port, "PONG\n");
+        return;
+    }
+
+    if (strncmp(cmd, "STRM", 4) == 0) {
+        if (strm_begin(addr, port) != 0) {
+            send_status_packet(addr, port,
+                "ERR stream not armed; run 'STRM <decim>' on the MicroBlaze UART first\n");
+        } else {
+            send_status_packet(addr, port, "STRM_BEGIN\n");
+        }
+        return;
+    }
+
+    if (strncmp(cmd, "STOP", 4) == 0) {
+        strm_running = 0;
+        send_status_packet(addr, port, "STRM_END\n");
         return;
     }
 
@@ -431,6 +580,8 @@ int main(void)
         if (pending_send != 0u) {
             handle_pending_send();
         }
+
+        strm_service();
 
         /* ~4 Hz housekeeping: mailbox heartbeat plus the lwIP ARP timer. */
         XTime_GetTime(&now);

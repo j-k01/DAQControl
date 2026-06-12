@@ -164,15 +164,42 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
 #if HAS_PS_DDR_DMA
 #define DMA_S2MM_DMACR       0x30u
 #define DMA_S2MM_DMASR       0x34u
-#define DMA_S2MM_DA          0x48u
-#define DMA_S2MM_DA_MSB      0x4Cu
-#define DMA_S2MM_LENGTH      0x58u
+#define DMA_S2MM_CURDESC     0x38u
+#define DMA_S2MM_CURDESC_MSB 0x3Cu
+#define DMA_S2MM_TAILDESC    0x40u
+#define DMA_S2MM_TAILDESC_MSB 0x44u
 #define DMA_DMACR_RS         (1u << 0)
 #define DMA_DMACR_RESET      (1u << 2)
+#define DMA_DMACR_CYCLIC     (1u << 4)
 #define DMA_DMASR_HALTED     (1u << 0)
 #define DMA_DMASR_IDLE       (1u << 1)
 #define DMA_DMASR_ERR_MASK   ((1u << 4) | (1u << 5) | (1u << 6))
 #define DMA_DMASR_IRQ_MASK   ((1u << 12) | (1u << 13) | (1u << 14))
+
+/* Continuous decimated streaming: the PL decimator (RW6) feeds each DMA a
+ * tlast-delimited 128 KB chunk stream; a cyclic SG descriptor ring makes the
+ * DMA write those chunks into a DDR ring forever with no re-arm gaps. The
+ * A53 drains the ring over UDP, reading the write pointer published in the
+ * mailbox below. Descriptors and the mailbox live inside the MicroBlaze HP2
+ * window (0x10000000..0x1003FFFF); the data rings do not need to (only the
+ * DMA writes and the A53 reads them). */
+#define STRM_CHUNK_BYTES     0x20000u   /* = decimator CHUNK_BEATS * 16 B */
+#define STRM_RING_CHUNKS     256u
+#define STRM_RING_BYTES      (STRM_CHUNK_BYTES * STRM_RING_CHUNKS) /* 32 MB */
+#define STRM_DESC_STRIDE     0x40u
+#define STRM_ONESHOT_DESC0   0x1003C000u
+#define STRM_ONESHOT_DESC1   0x1003C040u
+#define STRM_MAILBOX         0x1003FF00u
+#define STRM_MAGIC_RUNNING   0x53545201u
+#define STRM_MAGIC_STOPPED   0x53545200u
+#define RW6_STREAM_ENABLE    (1u << 31)
+
+static const u32 strm_desc_base[ADC_DMA_CHIPS] = { 0x10030000u, 0x10034000u };
+static const u32 strm_ring_base[ADC_DMA_CHIPS] = { 0x18000000u, 0x1A000000u };
+
+static u32 stream_active = 0;
+static u32 stream_decim = 0;
+static u32 stream_pub_count = 0;
 
 static const u32 adc_dma_base[ADC_DMA_CHIPS] = {
     ADC_DMA0_BASE,
@@ -1546,16 +1573,34 @@ static void dma_reset(u32 chip)
     }
 }
 
+static void dma_write_desc(u32 desc, u32 next, u32 buf, u32 bytes)
+{
+    Xil_Out32(desc + 0x00u, next);
+    Xil_Out32(desc + 0x04u, 0u);
+    Xil_Out32(desc + 0x08u, buf);
+    Xil_Out32(desc + 0x0Cu, 0u);
+    Xil_Out32(desc + 0x10u, 0u);
+    Xil_Out32(desc + 0x14u, 0u);
+    Xil_Out32(desc + 0x18u, bytes & 0x03FFFFFFu);
+    Xil_Out32(desc + 0x1Cu, 0u);
+}
+
+/* The DMA is built with scatter-gather (for cyclic streaming), which removes
+ * the simple-mode DA/LENGTH registers, so the one-shot burst capture is a
+ * single self-terminating descriptor: tail == head stops after one chunk. */
 static void dma_arm_s2mm(u32 chip, u32 dest_addr, u32 bytes)
 {
     u32 base = adc_dma_base[chip];
+    u32 desc = (chip == 0u) ? STRM_ONESHOT_DESC0 : STRM_ONESHOT_DESC1;
 
     dma_reset(chip);
+    dma_write_desc(desc, desc, dest_addr, bytes);
     Xil_Out32(base + DMA_S2MM_DMASR, DMA_DMASR_IRQ_MASK | DMA_DMASR_ERR_MASK);
+    Xil_Out32(base + DMA_S2MM_CURDESC, desc);
+    Xil_Out32(base + DMA_S2MM_CURDESC_MSB, 0u);
     Xil_Out32(base + DMA_S2MM_DMACR, DMA_DMACR_RS);
-    Xil_Out32(base + DMA_S2MM_DA, dest_addr);
-    Xil_Out32(base + DMA_S2MM_DA_MSB, 0u);
-    Xil_Out32(base + DMA_S2MM_LENGTH, bytes);
+    Xil_Out32(base + DMA_S2MM_TAILDESC, desc);
+    Xil_Out32(base + DMA_S2MM_TAILDESC_MSB, 0u);
 }
 
 static int wait_dma_done(u32 *s0, u32 *s1)
@@ -1634,6 +1679,130 @@ static void cmd_dma_capture(u32 frames)
     send_str("\r\n");
 }
 
+static void stream_stop(void)
+{
+    Xil_Out32(RW_REG6, 0u);
+    dma_reset(0u);
+    dma_reset(1u);
+    stream_active = 0;
+    Xil_Out32(STRM_MAILBOX + 0x00u, STRM_MAGIC_STOPPED);
+}
+
+static void stream_start(u32 decim)
+{
+    u32 chip;
+    u32 i;
+
+    stream_stop();
+
+    for (chip = 0; chip < ADC_DMA_CHIPS; chip++) {
+        u32 base = adc_dma_base[chip];
+
+        for (i = 0; i < STRM_RING_CHUNKS; i++) {
+            u32 desc = strm_desc_base[chip] + i * STRM_DESC_STRIDE;
+            u32 next = strm_desc_base[chip] +
+                       ((i + 1u) % STRM_RING_CHUNKS) * STRM_DESC_STRIDE;
+            dma_write_desc(desc, next,
+                           strm_ring_base[chip] + i * STRM_CHUNK_BYTES,
+                           STRM_CHUNK_BYTES);
+        }
+
+        Xil_Out32(base + DMA_S2MM_DMASR, DMA_DMASR_IRQ_MASK | DMA_DMASR_ERR_MASK);
+        Xil_Out32(base + DMA_S2MM_CURDESC, strm_desc_base[chip]);
+        Xil_Out32(base + DMA_S2MM_CURDESC_MSB, 0u);
+        Xil_Out32(base + DMA_S2MM_DMACR, DMA_DMACR_RS | DMA_DMACR_CYCLIC);
+        /* Cyclic mode: tail points outside the chain so the ring never halts. */
+        Xil_Out32(base + DMA_S2MM_TAILDESC, 0x50u);
+        Xil_Out32(base + DMA_S2MM_TAILDESC_MSB, 0u);
+    }
+
+    stream_decim = decim;
+    stream_pub_count = 0;
+    Xil_Out32(STRM_MAILBOX + 0x04u, decim);
+    Xil_Out32(STRM_MAILBOX + 0x08u, STRM_RING_BYTES);
+    Xil_Out32(STRM_MAILBOX + 0x0Cu, STRM_CHUNK_BYTES);
+    Xil_Out32(STRM_MAILBOX + 0x10u, strm_ring_base[0]);
+    Xil_Out32(STRM_MAILBOX + 0x14u, 0u);
+    Xil_Out32(STRM_MAILBOX + 0x18u, strm_ring_base[1]);
+    Xil_Out32(STRM_MAILBOX + 0x1Cu, 0u);
+    Xil_Out32(STRM_MAILBOX + 0x28u, 0u);
+    Xil_Out32(STRM_MAILBOX + 0x00u, STRM_MAGIC_RUNNING);
+
+    stream_active = 1;
+    Xil_Out32(RW_REG6, RW6_STREAM_ENABLE | (decim & 0xFFFFu));
+}
+
+/* Publish each chip's ring write offset (the chunk the DMA is currently
+ * filling) so the A53 knows how far it may read. Called from the main loop. */
+static void stream_publish(void)
+{
+    u32 i;
+
+    if (!stream_active) {
+        return;
+    }
+    for (i = 0; i < ADC_DMA_CHIPS; i++) {
+        u32 cur = Xil_In32(adc_dma_base[i] + DMA_S2MM_CURDESC);
+        u32 idx = 0;
+
+        if (cur >= strm_desc_base[i]) {
+            idx = ((cur - strm_desc_base[i]) / STRM_DESC_STRIDE) % STRM_RING_CHUNKS;
+        }
+        Xil_Out32(STRM_MAILBOX + 0x14u + i * 8u, idx * STRM_CHUNK_BYTES);
+        Xil_Out32(STRM_MAILBOX + 0x20u + i * 4u, dma_status(i));
+    }
+    stream_pub_count++;
+    Xil_Out32(STRM_MAILBOX + 0x28u, stream_pub_count);
+}
+
+static void cmd_stream(char *args)
+{
+    char *p = args;
+    u32 decim = 256u;
+
+    while (*p == ' ') {
+        p++;
+    }
+    if (strncmp(p, "STOP", 4) == 0) {
+        stream_stop();
+        send_str("OK STRM stopped\r\n");
+        return;
+    }
+    if (strncmp(p, "STAT", 4) == 0) {
+        send_str("STRM active=");
+        send_uint(stream_active);
+        send_str(" decim=");
+        send_uint(stream_decim);
+        send_str(" w0=");
+        send_hex(Xil_In32(STRM_MAILBOX + 0x14u));
+        send_str(" w1=");
+        send_hex(Xil_In32(STRM_MAILBOX + 0x1Cu));
+        send_str(" ");
+        print_named_hex("dmasr0", dma_status(0u));
+        send_str(" ");
+        print_named_hex("dmasr1", dma_status(1u));
+        send_str("\r\n");
+        return;
+    }
+
+    parse_u32_arg(&p, &decim);
+    if (decim < 4u || decim > 0xFFFCu || (decim & 3u) != 0u) {
+        send_str("ERR STRM decim must be a multiple of 4 in 4..65532\r\n");
+        return;
+    }
+
+    stream_start(decim);
+    send_str("OK STRM decim=");
+    send_uint(decim);
+    send_str(" ring_bytes=");
+    send_uint(STRM_RING_BYTES);
+    send_str(" chunk_bytes=");
+    send_uint(STRM_CHUNK_BYTES);
+    send_str(" mailbox=");
+    send_hex(STRM_MAILBOX);
+    send_str("\r\n");
+}
+
 static void cmd_ddr_read(u32 chip, u32 start_word, u32 words)
 {
     u32 i;
@@ -1699,6 +1868,7 @@ static void cmd_help(void)
 #endif
 #if HAS_PS_DDR_DMA
     send_str("  DMAC [frames]    arm ADC0/ADC1 S2MM DMA to PS DDR, then pulse ADC capture\r\n");
+    send_str("  STRM [decim]|STOP|STAT  continuous decimated stream into DDR rings (cyclic SG)\r\n");
     send_str("  DSTA             print AXI DMA S2MM status registers\r\n");
     send_str("  DDRD chip [start] [n] read PS DDR DMA buffer as u32 words; chip=0|1\r\n");
 #else
@@ -1940,9 +2110,15 @@ static void process_cmd(void)
         send_str("ERR BRAM dataplane not built; rebuild with --with-bram-dataplane\r\n");
 #endif
 #if HAS_PS_DDR_DMA
+    } else if (strncmp(cmd, "STRM", 4) == 0) {
+        cmd_stream(&cmd[4]);
     } else if (strncmp(cmd, "DMAC", 4) == 0) {
         char *p = &cmd[4];
         u32 frames = ADC_CAPTURE_FRAMES;
+        if (stream_active) {
+            send_str("ERR DMAC unavailable while STRM is running; STRM STOP first\r\n");
+            return;
+        }
         parse_u32_arg(&p, &frames);
         cmd_dma_capture(frames);
     } else if (strncmp(cmd, "DSTA", 4) == 0) {
@@ -1997,7 +2173,16 @@ int main(void)
     firmware_marker(8);
 
     u8 c;
+    u32 loop_count = 0;
     while (1) {
+#if HAS_PS_DDR_DMA
+        if ((++loop_count & 0x3FFu) == 0u) {
+            stream_publish();
+        }
+#else
+        (void)loop_count;
+        ++loop_count;
+#endif
         if (XUartNs550_Recv(&uart, &c, 1) > 0) {
             if (c == '\r' || c == '\n') {
                 if (cmd_idx > 0) {
