@@ -193,12 +193,14 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
 #define STRM_MAGIC_RUNNING   0x53545201u
 #define STRM_MAGIC_STOPPED   0x53545200u
 #define RW6_STREAM_ENABLE    (1u << 31)
+#define RW6_STREAM_USECIC    (1u << 30)  /* chip 1 (ch2/3): CIC vs keep-1-of-D */
 
 static const u32 strm_desc_base[ADC_DMA_CHIPS] = { 0x10030000u, 0x10034000u };
 static const u32 strm_ring_base[ADC_DMA_CHIPS] = { 0x18000000u, 0x1A000000u };
 
 static u32 stream_active = 0;
 static u32 stream_decim = 0;
+static u32 stream_usecic = 0;
 static u32 stream_pub_count = 0;
 
 static const u32 adc_dma_base[ADC_DMA_CHIPS] = {
@@ -1769,7 +1771,7 @@ static void stream_stop(void)
     Xil_Out32(STRM_MAILBOX + 0x00u, STRM_MAGIC_STOPPED);
 }
 
-static void stream_start(u32 decim)
+static void stream_start(u32 decim, u32 usecic)
 {
     u32 chip;
     u32 i;
@@ -1798,6 +1800,7 @@ static void stream_start(u32 decim)
     }
 
     stream_decim = decim;
+    stream_usecic = usecic ? 1u : 0u;
     stream_pub_count = 0;
     Xil_Out32(STRM_MAILBOX + 0x04u, decim);
     Xil_Out32(STRM_MAILBOX + 0x08u, STRM_RING_BYTES);
@@ -1810,7 +1813,9 @@ static void stream_start(u32 decim)
     Xil_Out32(STRM_MAILBOX + 0x00u, STRM_MAGIC_RUNNING);
 
     stream_active = 1;
-    Xil_Out32(RW_REG6, RW6_STREAM_ENABLE | (decim & 0xFFFFu));
+    Xil_Out32(RW_REG6, RW6_STREAM_ENABLE |
+                       (stream_usecic ? RW6_STREAM_USECIC : 0u) |
+                       (decim & 0xFFFFu));
 }
 
 /* Publish each chip's ring write offset (the chunk the DMA is currently
@@ -1849,11 +1854,39 @@ static void cmd_stream(char *args)
         send_str("OK STRM stopped\r\n");
         return;
     }
+    if (strncmp(p, "CIC", 3) == 0) {
+        /* Live A/B toggle of chip 1 (ch2/ch3) between CIC and keep-1-of-D. */
+        u32 want = stream_usecic;
+
+        p += 3;
+        while (*p == ' ') {
+            p++;
+        }
+        if (strncmp(p, "on", 2) == 0 || *p == '1') {
+            want = 1u;
+        } else if (strncmp(p, "off", 3) == 0 || *p == '0') {
+            want = 0u;
+        }
+        if (!stream_active) {
+            send_str("ERR STRM not running; start with STRM <decim> [cic] first\r\n");
+            return;
+        }
+        stream_usecic = want;
+        Xil_Out32(RW_REG6, RW6_STREAM_ENABLE |
+                           (stream_usecic ? RW6_STREAM_USECIC : 0u) |
+                           (stream_decim & 0xFFFFu));
+        send_str("OK STRM cic=");
+        send_uint(stream_usecic);
+        send_str(" (chip1 ch2/ch3)\r\n");
+        return;
+    }
     if (strncmp(p, "STAT", 4) == 0) {
         send_str("STRM active=");
         send_uint(stream_active);
         send_str(" decim=");
         send_uint(stream_decim);
+        send_str(" cic=");
+        send_uint(stream_usecic);
         send_str(" w0=");
         send_hex(Xil_In32(STRM_MAILBOX + 0x14u));
         send_str(" w1=");
@@ -1872,9 +1905,19 @@ static void cmd_stream(char *args)
         return;
     }
 
-    stream_start(decim);
+    u32 usecic = 0u;
+    while (*p == ' ') {
+        p++;
+    }
+    if (strncmp(p, "cic", 3) == 0 || strncmp(p, "CIC", 3) == 0) {
+        usecic = 1u;  /* CIC D=128 on chip 1; run decim=128 to match chip 0 */
+    }
+
+    stream_start(decim, usecic);
     send_str("OK STRM decim=");
     send_uint(decim);
+    send_str(" cic=");
+    send_uint(usecic);
     send_str(" ring_bytes=");
     send_uint(STRM_RING_BYTES);
     send_str(" chunk_bytes=");
@@ -1950,7 +1993,8 @@ static void cmd_help(void)
 #endif
 #if HAS_PS_DDR_DMA
     send_str("  DMAC [frames]    arm ADC0/ADC1 S2MM DMA to PS DDR, then pulse ADC capture\r\n");
-    send_str("  STRM [decim]|STOP|STAT  continuous decimated stream into DDR rings (cyclic SG)\r\n");
+    send_str("  STRM [decim [cic]]|STOP|STAT  continuous decimated stream into DDR rings (cyclic SG)\r\n");
+    send_str("  STRM CIC on|off  live A/B toggle: chip1 ch2/3 CIC anti-alias (D=128) vs keep-1-of-D\r\n");
     send_str("  DSTA             print AXI DMA S2MM status registers\r\n");
     send_str("  DDRD chip [start] [n] read PS DDR DMA buffer as u32 words; chip=0|1\r\n");
 #else
