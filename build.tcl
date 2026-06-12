@@ -121,6 +121,8 @@ proc validate_microblaze_bd_contract {} {
         zynq_ultra_ps_e_0
         axi_dma_0
         axi_dma_1
+        axi_smc_dma0
+        axi_smc_dma1
         axi_clock_converter_0
         axi_clock_converter_1
         rst_gt_rx_usrclk2
@@ -177,8 +179,11 @@ proc validate_microblaze_bd_contract {} {
             if {[get_property CONFIG.c_include_mm2s [get_bd_cells $dma_name]] ne "0"} {
                 error "MicroBlaze BD contract failure: $dma_name MM2S is enabled; expected S2MM-only."
             }
-            if {[get_property CONFIG.c_include_sg [get_bd_cells $dma_name]] ne "0"} {
-                error "MicroBlaze BD contract failure: $dma_name scatter-gather is enabled; expected simple mode."
+            if {[get_property CONFIG.c_include_sg [get_bd_cells $dma_name]] ne "1"} {
+                error "MicroBlaze BD contract failure: $dma_name scatter-gather is disabled; continuous streaming needs cyclic SG."
+            }
+            if {[get_property CONFIG.c_sg_length_width [get_bd_cells $dma_name]] ne "26"} {
+                error "MicroBlaze BD contract failure: $dma_name SG length width is not 26 (128 KB ring chunks need it)."
             }
             if {[get_property CONFIG.c_m_axi_s2mm_data_width [get_bd_cells $dma_name]] ne "128"} {
                 error "MicroBlaze BD contract failure: $dma_name M_AXI_S2MM width is not 128."
