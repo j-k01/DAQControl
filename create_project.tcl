@@ -802,6 +802,17 @@ foreach f [glob -nocomplain -directory $script_dir/constraints *.xdc] {
     add_files -fileset constrs_1 -norecurse $f
 }
 
+# Unmanaged Tcl constraints: managed .xdc files reject proc/if (Designutils
+# 20-1307), which silently disabled every constraint in the old
+# debug_cdc.xdc.  Run the .tcl constraints LATE so the GT/IP generated clocks
+# they reference already exist.
+foreach f [glob -nocomplain -directory $script_dir/constraints *.tcl] {
+    add_files -fileset constrs_1 -norecurse $f
+    set f_obj [get_files -of_objects [get_filesets constrs_1] $f]
+    set_property USED_IN {synthesis implementation} $f_obj
+    set_property PROCESSING_ORDER LATE $f_obj
+}
+
 set ip_dir $project_dir/${project_name}.srcs/sources_1/ip
 file mkdir $ip_dir
 
@@ -814,6 +825,8 @@ set_property -dict [list \
     CONFIG.CLKOUT2_REQUESTED_OUT_FREQ {100.000} \
     CONFIG.CLKOUT3_USED               {true} \
     CONFIG.CLKOUT3_REQUESTED_OUT_FREQ {125.000} \
+    CONFIG.CLKOUT4_USED               {true} \
+    CONFIG.CLKOUT4_REQUESTED_OUT_FREQ {50.000} \
     CONFIG.USE_LOCKED                 {true} \
     CONFIG.USE_RESET                  {false} \
 ] [get_ips clk_wiz_0]

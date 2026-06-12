@@ -62,9 +62,10 @@ python scripts/trap_dac0_adc_in1_uart.py --port COMx
 
 Defaults program the 35 ns spike train (7 ns IZH-profile trapezoid + 28 ns
 gap, amplitude 0x6000) into the DAC0 BRAM with a seamless loop, select AC
-coupling on IN1, PCAP-capture 4096 frames (16384 IN1 samples at 500 MS/s,
-~33 us), write `captures/trap35ns_in1.{csv,png}` plus a summary, and leave
-the DAC0 train free-running.
+coupling on IN1, PCAP-capture 4096 frames (16384 IN1 samples at 1 GS/s,
+~16.4 us; the ADS54J60s run LMFS=4211 on 10G lanes, 4 samples per 250 MHz
+JESD beat), write `captures/trap35ns_in1.{csv,png}` plus a summary, and
+leave the DAC0 train free-running.
 
 Knobs:
 

@@ -28,6 +28,11 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise SystemExit("matplotlib is required: python -m pip install matplotlib") from exc
 
+# ADS54J60 full-scale input is 1.9 Vpp differential at the ADC pins
+# (same convention as trap_dac0_adc_in1_uart.py).
+ADC_FULL_SCALE_VPP = 1.9
+ADC_VOLTS_PER_COUNT = ADC_FULL_SCALE_VPP / 65536.0
+
 
 def load_csv(path: Path) -> dict[str, tuple[list[float] | None, list[int]]]:
     """Return {trace_name: (time_ns or None, samples)}."""
@@ -68,8 +73,8 @@ def main() -> None:
     parser.add_argument(
         "--sample-rate-mhz",
         type=float,
-        default=500.0,
-        help="Builds the time axis when the CSV has no time_ns column (ADC IN1 is 500 MS/s).",
+        default=1000.0,
+        help="Builds the time axis when the CSV has no time_ns column (ADC inputs are 1 GS/s).",
     )
     parser.add_argument("--fft", action="store_true", help="Add an FFT magnitude panel per trace.")
     parser.add_argument("--start-ns", type=float, default=0.0, help="Trim before this time.")
@@ -108,6 +113,10 @@ def main() -> None:
         ax.set_xlabel("time [ns]")
         ax.set_ylabel("signed16 counts")
         ax.grid(True, alpha=0.25)
+        ax.secondary_yaxis(
+            "right",
+            functions=(lambda c: c * ADC_VOLTS_PER_COUNT, lambda v: v / ADC_VOLTS_PER_COUNT),
+        ).set_ylabel(f"volts ({ADC_FULL_SCALE_VPP:g} Vpp FS, ADC-pin referred)")
 
         if args.fft:
             try:

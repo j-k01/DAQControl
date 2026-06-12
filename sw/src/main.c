@@ -246,7 +246,10 @@ static const struct neuron_profile neuron_profiles[] = {
 #define NEURON_PROFILE_COUNT (sizeof(neuron_profiles) / sizeof(neuron_profiles[0]))
 #define NEURON_DEFAULT_DT     0x00001000u
 #define NEURON_DEFAULT_I      0x00000000u
-#define NEURON_DEFAULT_PERIOD 1024u
+/* update_period counts neuron-clock cycles; the neurons moved from the
+ * 200 MHz fabric clock to a dedicated 50 MHz clock, so 256 preserves the
+ * original ~5.12 us default step rate. */
+#define NEURON_DEFAULT_PERIOD 256u
 
 static void firmware_marker(u32 stage)
 {
@@ -1545,6 +1548,84 @@ static void cmd_capture(u32 frames, int use_dac_program)
         }
     }
 }
+
+/*
+ * Synchronized step-from-rest capture (emulates the Izhikevich figures, where a
+ * resting neuron is given a current step at t=0). Parks every neuron at rest
+ * (iconst=0 then reset v/u), arms the BRAM capture, holds a flat I=0 baseline
+ * for `predelay` tight-loop iterations, then strobes iconst=value to all
+ * channels WHILE the capture is still filling. The capture trigger (RW3[3]) and
+ * the IZH config strobe (RW3[7] + param + all, value in RW1) share RW_REG3, so
+ * the step lands at a known point inside one ~16 us window - which UART command
+ * timing (>=87 us per byte) can never do. Profile/period/dt/source are left as
+ * the host already programmed them; only iconst is stepped.
+ */
+static void cmd_capture_step(u32 value, u32 frames, u32 predelay)
+{
+    u32 status = 0;
+    u32 frame;
+    u32 word;
+    u32 base = Xil_In32(RW_REG3) & RW3_DAC_SOURCE_MASK;
+    u32 strobe = base | RW3_CAPTURE_START | RW3_IZH_CFG_STROBE |
+                 (6u << RW3_IZH_CFG_PARAM_SHIFT) | RW3_IZH_CFG_ALL;
+    volatile u32 i;
+
+    if (frames == 0u || frames > ADC_CAPTURE_FRAMES) {
+        frames = ADC_CAPTURE_FRAMES;
+    }
+
+    /* Park at rest before the window opens. These use the slow config helper,
+     * but the timing is pre-capture and does not matter. */
+    pulse_neuron_config(0u, 1u, 6u, 0u);   /* iconst = 0 (all) */
+    pulse_neuron_config(0u, 1u, 15u, 0u);  /* reset v/u (all) */
+    delay_short_delays(2u);
+
+    /* Stage the value the strobe will latch into iconst. */
+    Xil_Out32(RW_REG1, value);
+
+    /* Arm capture; iconst is still 0 so the window opens flat. START is held
+     * high through the fill. */
+    Xil_Out32(RW_REG3, base);
+    Xil_Out32(RW_REG3, base | RW3_CAPTURE_START);
+
+    /* Hold the I=0 baseline, then step iconst -> value mid-fill. */
+    for (i = 0; i < predelay; i++)
+        ;
+    Xil_Out32(RW_REG3, strobe);
+    Xil_Out32(RW_REG3, base | RW3_CAPTURE_START);
+
+    if (!wait_capture_done(&status)) {
+        Xil_Out32(RW_REG3, base);
+        send_str("ERR capture timeout; ");
+        send_hex(status);
+        send_str("\r\n");
+        return;
+    }
+    Xil_Out32(RW_REG3, base);
+
+    send_byte(CAPTURE_SYNC0);
+    send_byte(CAPTURE_SYNC1);
+    send_byte(CAPTURE_SYNC2);
+    send_byte(CAPTURE_SYNC3);
+    for (frame = 0; frame < frames; frame++) {
+        for (word = 0; word < ADC_CAPTURE_WORDS_PER_CHIP_FRAME; word++) {
+            u32 sample = Xil_In32(ADC0_CAPTURE_BRAM_BASE +
+                                  (frame * ADC_CAPTURE_WORDS_PER_CHIP_FRAME + word) * 4u);
+            send_byte((u8)(sample & 0xFFu));
+            send_byte((u8)((sample >> 8) & 0xFFu));
+            send_byte((u8)((sample >> 16) & 0xFFu));
+            send_byte((u8)((sample >> 24) & 0xFFu));
+        }
+        for (word = 0; word < ADC_CAPTURE_WORDS_PER_CHIP_FRAME; word++) {
+            u32 sample = Xil_In32(ADC1_CAPTURE_BRAM_BASE +
+                                  (frame * ADC_CAPTURE_WORDS_PER_CHIP_FRAME + word) * 4u);
+            send_byte((u8)(sample & 0xFFu));
+            send_byte((u8)((sample >> 8) & 0xFFu));
+            send_byte((u8)((sample >> 16) & 0xFFu));
+            send_byte((u8)((sample >> 24) & 0xFFu));
+        }
+    }
+}
 #endif
 
 #if HAS_PS_DDR_DMA
@@ -1863,6 +1944,7 @@ static void cmd_help(void)
     send_str("  CAPS             print ADC BRAM capture status\r\n");
     send_str("  CAPT [frames]    capture 256-bit adc_ch0..3 frames; stream 8 u32 words/frame\r\n");
     send_str("  PCAP [frames]    restart DAC BRAM program, then capture ADC frames\r\n");
+    send_str("  CSTP [iconstQ16] [frames] [predelay]  rest -> iconst step synced to capture start\r\n");
 #else
     send_str("  PROG/CAPS/CAPT/PCAP unavailable; rebuild with --with-bram-dataplane\r\n");
 #endif
@@ -2101,11 +2183,21 @@ static void process_cmd(void)
         u32 frames = ADC_CAPTURE_FRAMES;
         parse_u32_arg(&p, &frames);
         cmd_capture(frames, 1);
+    } else if (strncmp(cmd, "CSTP", 4) == 0) {
+        char *p = &cmd[4];
+        u32 value = 0x000A0000u;
+        u32 frames = ADC_CAPTURE_FRAMES;
+        u32 predelay = 150u;
+        parse_u32_arg(&p, &value);
+        parse_u32_arg(&p, &frames);
+        parse_u32_arg(&p, &predelay);
+        cmd_capture_step(value, frames, predelay);
 #else
     } else if (strncmp(cmd, "PROG", 4) == 0 ||
                strncmp(cmd, "DPRD", 4) == 0 ||
                strncmp(cmd, "CAPS", 4) == 0 ||
                strncmp(cmd, "CAPT", 4) == 0 ||
+               strncmp(cmd, "CSTP", 4) == 0 ||
                strncmp(cmd, "PCAP", 4) == 0) {
         send_str("ERR BRAM dataplane not built; rebuild with --with-bram-dataplane\r\n");
 #endif
