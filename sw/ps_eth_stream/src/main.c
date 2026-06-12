@@ -87,6 +87,9 @@
 #define STRM_PAYLOAD_BYTES  1408u
 #define STRM_PKTS_PER_PASS  8u  /* small bursts pace the wire; big bursts
                                    overrun the host's UDP socket buffer */
+#define STRM_MAX_LAG        (2u * 1024u * 1024u)  /* on backlog, resync to this
+                                   fixed lag behind the writer (~64 ms) so the
+                                   stream stays fresh instead of half a ring old */
 #define STRM_PACKET_MAGIC   0x53514144u /* "DAQS", little-endian on wire */
 
 static volatile u32 strm_running = 0;
@@ -377,24 +380,30 @@ static void strm_service(void)
         u32 pkts = 0;
 
         while (pkts < STRM_PKTS_PER_PASS) {
-            u32 avail = (write_off - strm_read_off[chip]) & (strm_ring_bytes - 1u);
+            u32 gap = (write_off - strm_read_off[chip]) & (strm_ring_bytes - 1u);
             u32 bytes;
 
-            if (avail == 0u) {
+            /* gap is (write_off - read_off) mod ring, so it can't distinguish
+             * "reader just behind writer" (gap ~ 0) from "reader just AHEAD of a
+             * momentarily-stale, chunk-granular write pointer" (gap ~ ring).
+             * Treat the whole upper half as "no genuine new data, wait" -- the
+             * reader keeps up, so a real backlog is always a small fraction of
+             * the ring. This kills the spurious half-ring rewinds that streamed
+             * ~0.5 s-stale samples and made switched sources flicker old/new. */
+            if (gap == 0u || gap > strm_ring_bytes / 2u) {
                 break;
             }
-            /* Writer has nearly lapped the reader: skip forward and count
-             * the loss instead of streaming overwritten bytes. */
-            if (avail > strm_ring_bytes - 4u * strm_chunk_bytes) {
-                u32 resume = (write_off - strm_ring_bytes / 2u) &
-                             (strm_ring_bytes - 1u);
+            /* Genuine backlog (reader fell behind): resync to a small fixed lag
+             * just behind the writer -- stay fresh, drop the stale span. */
+            if (gap > STRM_MAX_LAG) {
+                u32 resume = (write_off - STRM_MAX_LAG) & (strm_ring_bytes - 1u);
                 strm_drops[chip] += (resume - strm_read_off[chip]) &
                                     (strm_ring_bytes - 1u);
                 strm_read_off[chip] = resume;
                 continue;
             }
 
-            bytes = avail;
+            bytes = gap;
             if (bytes > STRM_PAYLOAD_BYTES) {
                 bytes = STRM_PAYLOAD_BYTES;
             }
