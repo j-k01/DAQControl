@@ -111,11 +111,17 @@ def main():
             s = apply_transform(sine_samples(k, args.amp), args.transform)
             dpwr(port, ch, pack_u32(s))
             print(f"ch{ch}: {f:.4f} MHz ({k} cycles/loop), transform={args.transform}")
+        # NSRC bram sets the source mux AND program_enable (RW3[6]) in one shot
+        # on the merged firmware; do NOT hand-poke RW3 (its bits now overlap the
+        # CSTP/IZH config fields). Pulse dac_restart (RW3[1]) preserving [5:4]/[6].
         send_wait(port, "NSRC all bram", prefix="DAC source")
-        # restart all BRAM loops (full loop = loop_frames 0): pulse restart bit
-        send_wait(port, "WRTE 3 0x00000068")
-        send_wait(port, "WRTE 3 0x00000060")
-        print("OK: four distinct tones playing from BRAM")
+        rw3 = int(send_wait(port, "RDRW 3", prefix="RW3").split("0x")[-1], 16) \
+            if False else None  # RW3 already has source+enable from NSRC
+        send_wait(port, "WRTE 3 0x00000062")  # set dac_restart (bit1) + keep 0x60
+        send_wait(port, "WRTE 3 0x00000060")  # clear restart -> edge pulse
+        print("OK: four distinct tones armed from BRAM "
+              "(NOTE: per-channel BRAM->DAC path is a known-broken gateware bug; "
+              "see notes/dac_bram_byte_mapping; DDS works)")
 
 
 if __name__ == "__main__":
