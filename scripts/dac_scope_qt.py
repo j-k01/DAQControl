@@ -4,11 +4,16 @@
 Live Ethernet ADC stream on the left; a control panel on the right:
   - Connection: pick the UART COM port and connect/reconnect.
   - Per channel: source = DDS / BRAM / Neuron, plus a neuron-profile dropdown.
+  - Neuron params (live): a/b/c/d/I spinboxes (physical Izhikevich units) that
+    reprogram the config bank and pulse a reload immediately, so the loopback
+    spike pattern responds in real time -- tweak and watch the live stream to
+    verify the neuron dynamics. "load profile" fills the spinboxes from a
+    built-in profile as a starting point; target = all or a single channel.
   - BRAM waveform builder: pick a shape (Sine/Triangle/Trapezoid/Square/Saw),
     period (ns), pulse width (ns), and a voltage range (clamped to the DAC's
     allowable range, default 0 V .. max), then program it to a channel.
   - CIC anti-alias (chip 1) toggle, autoscale, rising-edge trigger, Time/FFT.
-  - UART Capture: grab an ADC snapshot over UART (CAPT) and pop up the 4
+  - UART Capture: grab an ADC snapshot over UART (PCAP) and pop up the 4
     channels -- works without the Ethernet path.
 
 Prereqs: board programmed + A53 PS-eth app running; UART (default COM10); NIC at
@@ -55,6 +60,29 @@ NEURON_DT_OPTIONS = [
     ("8x faster", 0x40000),
 ]
 NEURON_DT_DEFAULT = 2   # index of "1x normal"
+
+# Real-time Izhikevich parameters (physical units; converted to Q16.16 for the
+# NEUR command). param name matches the firmware NEUR param keyword.
+#   (param, label, lo, hi, default, step, decimals)
+NEURON_PARAM_SPECS = [
+    ("a",      "a  recovery rate",  0.0,   0.5,  0.02,  0.005, 3),
+    ("b",      "b  sensitivity",    0.0,   0.5,  0.20,  0.01,  2),
+    ("c",      "c  reset v (mV)",  -90.0, -40.0, -65.0, 1.0,   1),
+    ("d",      "d  reset u",        0.0,  15.0,  8.0,   0.25,  2),
+    ("iconst", "I  drive",          0.0,  40.0,  10.0,  0.5,   1),
+]
+# Physical values per built-in profile (mirror sw neuron_profiles).
+NEURON_PROFILE_VALUES = {
+    "regular":    dict(a=0.02, b=0.20, c=-65.0, d=8.0, iconst=10.0),
+    "bursting":   dict(a=0.02, b=0.20, c=-55.0, d=4.0, iconst=10.0),
+    "chattering": dict(a=0.02, b=0.20, c=-50.0, d=2.0, iconst=10.0),
+    "fast":       dict(a=0.10, b=0.20, c=-65.0, d=2.0, iconst=10.0),
+}
+
+
+def izh_to_q16(v):
+    """Physical Izhikevich value -> signed Q16.16 as a 32-bit word."""
+    return int(round(v * 65536.0)) & 0xFFFFFFFF
 
 
 # --------------------------------------------------------------- DAC content
@@ -188,13 +216,11 @@ class DacControl:
         it and BRAM would read as noise)."""
         return self._capture(f"PCAP {frames}", frames)
 
-    def uart_capture_step(self, iconst_q16, frames, predelay):
-        """CSTP -> capture the neuron rest->current-step transition: parks all
-        neurons at I=0, opens the window flat, holds the baseline for `predelay`,
-        then steps iconst -> iconst_q16 (Q16.16; e.g. 10.0 = 0x000A0000) mid-fill.
-        Set the channels to the Neuron source first."""
-        return self._capture(
-            f"CSTP 0x{iconst_q16:08X} {frames} {predelay}", frames)
+    def set_neuron_param(self, target, param, q16):
+        """Live single-param update: writes the config bank and pulses the
+        reload. target = 'all' or 0..3; param in a/b/c/d/i/iconst/dt/period."""
+        return self.cmd(f"NEUR {target} {param} 0x{q16 & 0xFFFFFFFF:08X}",
+                        ok=("OK", "NEUR", "ERR"))
 
     def _capture(self, cmd_str, frames):
         """Send a capture command, wait for the FE10CAFE sync, read
@@ -443,6 +469,39 @@ class ScopeWindow(QtWidgets.QMainWindow):
         ng.addWidget(self.dt_cb)
         col.addWidget(nb)
 
+        # live Izhikevich parameters: tweak a/b/c/d/I and the neuron is
+        # reprogrammed (config bank + reload pulse) immediately, so the loopback
+        # spike pattern responds in real time.
+        pb = QtWidgets.QGroupBox("Neuron params (live)")
+        pg_ = QtWidgets.QGridLayout(pb)
+        pg_.addWidget(QtWidgets.QLabel("target"), 0, 0)
+        self.np_target = QtWidgets.QComboBox()
+        self.np_target.addItems(["all", "0", "1", "2", "3"])
+        pg_.addWidget(self.np_target, 0, 1)
+        self.np_loadprof = QtWidgets.QComboBox()
+        self.np_loadprof.addItems(["load profile…"] + NEURON_PROFILES)
+        self.np_loadprof.currentIndexChanged.connect(self._on_load_profile_values)
+        pg_.addWidget(self.np_loadprof, 0, 2)
+        self.np_spins = {}
+        for row, (param, label, lo, hi, dflt, step, dec) in enumerate(
+                NEURON_PARAM_SPECS, start=1):
+            sp = QtWidgets.QDoubleSpinBox()
+            sp.setRange(lo, hi)
+            sp.setSingleStep(step)
+            sp.setDecimals(dec)
+            sp.setValue(dflt)
+            sp.valueChanged.connect(self._make_param_cb(param))
+            pg_.addWidget(QtWidgets.QLabel(label), row, 0)
+            pg_.addWidget(sp, row, 1, 1, 2)
+            self.np_spins[param] = sp
+        col.addWidget(pb)
+
+        # debounce param sends so dragging a spinbox doesn't flood the UART
+        self._np_pending = {}
+        self._np_timer = QtCore.QTimer(self)
+        self._np_timer.setSingleShot(True)
+        self._np_timer.timeout.connect(self._flush_params)
+
         # BRAM waveform builder
         wf = QtWidgets.QGroupBox("BRAM waveform")
         wg = QtWidgets.QGridLayout(wf)
@@ -512,31 +571,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.capt_frames = QtWidgets.QComboBox()
         self.capt_frames.addItems([f"{n} frames" for n in CAPT_FRAME_OPTIONS])
         self.capt_frames.setCurrentText("512 frames")
-        self.capt_mode = QtWidgets.QComboBox()
-        self.capt_mode.addItems(["Snapshot (PCAP)", "Neuron step (CSTP)"])
-        self.capt_mode.currentIndexChanged.connect(self._on_capt_mode)
-        self.capt_istep = QtWidgets.QDoubleSpinBox()
-        self.capt_istep.setRange(0.0, 40.0)
-        self.capt_istep.setDecimals(1)
-        self.capt_istep.setValue(10.0)
-        self.capt_istep.setSuffix(" I")        # Izhikevich drive ("mA")
-        self.capt_istep.setEnabled(False)
-        self.capt_predelay = QtWidgets.QSpinBox()
-        self.capt_predelay.setRange(0, 4000)
-        self.capt_predelay.setValue(150)
-        self.capt_predelay.setPrefix("pre ")
-        self.capt_predelay.setEnabled(False)
         og.addWidget(self.cic_chk, 0, 0, 1, 2)
         og.addWidget(self.auto_chk, 1, 0)
         og.addWidget(self.trig_chk, 1, 1)
         og.addWidget(self.rb_time, 2, 0)
         og.addWidget(self.rb_fft, 2, 1)
         og.addWidget(self.run_btn, 3, 0, 1, 2)
-        og.addWidget(self.capt_mode, 4, 0, 1, 2)
-        og.addWidget(self.capt_istep, 5, 0)
-        og.addWidget(self.capt_predelay, 5, 1)
-        og.addWidget(self.capt_frames, 6, 0)
-        og.addWidget(self.capt_btn, 6, 1)
+        og.addWidget(self.capt_frames, 4, 0)
+        og.addWidget(self.capt_btn, 4, 1)
         col.addWidget(opt)
 
         col.addStretch(1)
@@ -617,8 +659,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 f"({type(e).__name__}).")
 
     def _set_controls_enabled(self, on):
-        for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.dt_cb):
+        for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.dt_cb,
+                  self.np_target, self.np_loadprof):
             w.setEnabled(on)
+        for sp in self.np_spins.values():
+            sp.setEnabled(on)
         for grp in self.src_groups:
             for b in grp.buttons():
                 b.setEnabled(on)
@@ -685,6 +730,50 @@ class ScopeWindow(QtWidgets.QMainWindow):
             dt = NEURON_DT_OPTIONS[idx][1]
             self._bg(lambda: self.dac.set_neuron_dt(dt))
 
+    # ---- live neuron parameters ----
+    def _make_param_cb(self, param):
+        def cb(_val):
+            self._np_pending[param] = self.np_spins[param].value()
+            self._np_timer.start(150)      # debounce rapid spinbox changes
+        return cb
+
+    def _flush_params(self):
+        if not self.dac or not self._np_pending:
+            return
+        target = self.np_target.currentText()
+        items = list(self._np_pending.items())
+        self._np_pending = {}
+        labels = ", ".join(f"{p}={v:g}" for p, v in items)
+        self.status.setText(f"NEUR {target}: {labels}")
+
+        def work():
+            for param, val in items:
+                self.dac.set_neuron_param(target, param, izh_to_q16(val))
+        self._bg(work)
+
+    def _on_load_profile_values(self, idx):
+        if idx <= 0:
+            return
+        name = self.np_loadprof.itemText(idx)
+        vals = NEURON_PROFILE_VALUES.get(name)
+        if not vals:
+            return
+        for p, sp in self.np_spins.items():
+            sp.blockSignals(True)
+            sp.setValue(vals[p])
+            sp.blockSignals(False)
+        self.np_loadprof.blockSignals(True)
+        self.np_loadprof.setCurrentIndex(0)
+        self.np_loadprof.blockSignals(False)
+        if self.dac:
+            target = self.np_target.currentText()
+            self.status.setText(f"NEUR {target}: profile {name} values")
+
+            def work():
+                for p, v in vals.items():
+                    self.dac.set_neuron_param(target, p, izh_to_q16(v))
+            self._bg(work)
+
     def _on_stat(self):
         if not self.dac:
             self.conn_lbl.setText("connect first")
@@ -702,29 +791,15 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.stat_result.emit(is_daq, ", ".join(health) or "link not ready")
         self._bg(work)
 
-    def _on_capt_mode(self, idx):
-        step = (idx == 1)
-        self.capt_istep.setEnabled(step)
-        self.capt_predelay.setEnabled(step)
-
     def _on_capture(self):
         if not self.dac:
             return
         frames = CAPT_FRAME_OPTIONS[self.capt_frames.currentIndex()]
-        step = (self.capt_mode.currentIndex() == 1)
-        iconst = int(round(self.capt_istep.value() * 65536.0))   # Q16.16
-        predelay = self.capt_predelay.value()
         self.capt_btn.setEnabled(False)
-        self.status.setText(
-            (f"CSTP step to I={self.capt_istep.value():.1f} after {predelay} "
-             f"({frames} frames)..." if step
-             else f"UART capturing {frames} frames..."))
+        self.status.setText(f"UART capturing {frames} frames...")
 
         def work():
-            if step:
-                data = self.dac.uart_capture_step(iconst, frames, predelay)
-            else:
-                data = self.dac.uart_capture(frames)
+            data = self.dac.uart_capture(frames)
             self.captured.emit(data)
         self._bg(work)
 
