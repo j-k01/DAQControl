@@ -139,10 +139,39 @@
 #endif
 #define RW3_DAC_SOURCE_SHIFT   4
 #define RW3_DAC_SOURCE_MASK    (3u << RW3_DAC_SOURCE_SHIFT)
-#define RW3_IZH_CFG_STROBE     (1u << 7)
-#define RW3_IZH_CFG_PARAM_SHIFT 8
-#define RW3_IZH_CFG_CHANNEL_SHIFT 12
-#define RW3_IZH_CFG_ALL        (1u << 14)
+
+/* IZH neuron config: profiles live in a dual-clock "config bank" BRAM that the
+ * MicroBlaze fills over AXI; rw_reg4[0] is toggled to fire one prog_start pulse
+ * to the neuron-domain reader, which (re)loads every neuron whose mask bit is
+ * set in control word 0.  Per-DAC source select is independent and lives in
+ * rw_reg4[15:8] (2 bits per DAC, synced straight into the GT clock domain). */
+#define RW4_NEURON_PROG_TOGGLE (1u << 0)
+#define RW4_DAC_SOURCE_SHIFT   8
+#define RW4_DAC_SOURCE_MASK    (0xFFu << RW4_DAC_SOURCE_SHIFT)
+
+#if HAS_BRAM_DATAPLANE
+#define NEURON_CFG_BRAM_BASE   XPAR_NEURON_CFG_BRAM_CTRL_S_AXI_BASEADDR
+/* word offsets within the config bank */
+#define NCFG_CTRL_WORD         0u   /* [3:0] program mask, [8] global-set */
+#define NCFG_DT_WORD           1u   /* global dt   (Q16.16) */
+#define NCFG_PERIOD_WORD       2u   /* global update_period (low 24 bits) */
+#define NCFG_NEURON_BASE       4u   /* neuron 0 profile base */
+#define NCFG_NEURON_STRIDE     8u   /* words per neuron (a,b,c,d,Ic,I + pad) */
+#define NCFG_CTRL_GLOBAL_SET   (1u << 8)
+
+/* NEUR param codes (host-facing).  Per-neuron: a/b/c/d/i/iconst.  Global:
+ * dt/period.  default = reload regular profile; reset = re-pulse (reset v/u). */
+#define NPARAM_A        0u
+#define NPARAM_B        1u
+#define NPARAM_C        2u
+#define NPARAM_D        3u
+#define NPARAM_I        4u
+#define NPARAM_ICONST   5u
+#define NPARAM_DT       6u
+#define NPARAM_PERIOD   7u
+#define NPARAM_DEFAULT  8u
+#define NPARAM_RESET    9u
+#endif
 
 #if HAS_BRAM_DATAPLANE
 #define CAPTURE_SYNC0          0xFEu
@@ -236,7 +265,9 @@ static XUartNs550 uart;
 static char cmd[96];
 static int cmd_idx = 0;
 
-static void pulse_neuron_config(u32 channel, u32 all_channels, u32 param, u32 value);
+#if HAS_BRAM_DATAPLANE
+static void neuron_program(u32 mask, u32 global_set);
+#endif
 
 struct neuron_profile {
     const char *name;
@@ -270,6 +301,33 @@ static const struct neuron_profile neuron_profiles[] = {
  * 200 MHz fabric clock to a dedicated 50 MHz clock, so 256 preserves the
  * original ~5.12 us default step rate. */
 #define NEURON_DEFAULT_PERIOD 256u
+
+#if HAS_BRAM_DATAPLANE
+/* Firmware-side shadow of the config bank.  We keep all 4 neurons + globals so
+ * a partial update (e.g. just change neuron 2's profile) rewrites a coherent
+ * full image into the BRAM; the reader only resets/reloads masked neurons. */
+struct neuron_image {
+    u32 a, b, c, d, iconst, i;   /* Q16.16 */
+};
+static struct neuron_image neuron_img[4];
+static u32 neuron_g_dt = NEURON_DEFAULT_DT;
+static u32 neuron_g_period = NEURON_DEFAULT_PERIOD;
+
+static void neuron_image_init(void)
+{
+    int n;
+    for (n = 0; n < 4; n++) {
+        neuron_img[n].a = neuron_profiles[0].a;     /* regular-spiking */
+        neuron_img[n].b = neuron_profiles[0].b;
+        neuron_img[n].c = neuron_profiles[0].c;
+        neuron_img[n].d = neuron_profiles[0].d;
+        neuron_img[n].iconst = neuron_profiles[0].iconst;
+        neuron_img[n].i = NEURON_DEFAULT_I;
+    }
+    neuron_g_dt = NEURON_DEFAULT_DT;
+    neuron_g_period = NEURON_DEFAULT_PERIOD;
+}
+#endif
 
 static void firmware_marker(u32 stage)
 {
@@ -839,9 +897,6 @@ static int parse_dac_source_mode(char **cursor, u32 *mode)
         *mode = 2u;
     } else if (token_eq_ci(p, "izh") || token_eq_ci(p, "neuron")) {
         *mode = 3u;
-    } else if (token_eq_ci(p, "vout") || token_eq_ci(p, "voltage") ||
-               token_eq_ci(p, "direct")) {
-        *mode = 4u;
     } else if (!parse_u32_arg(&p, mode)) {
         return 0;
     }
@@ -850,6 +905,10 @@ static int parse_dac_source_mode(char **cursor, u32 *mode)
     return 1;
 }
 
+/* DAC source select is purely a GT-domain mux now: rw_reg4[15:8] holds two bits
+ * per DAC (0=auto, 1=dds, 2=bram, 3=neuron pulse).  It is independent of the
+ * neuron config bank.  program_enable (rw_reg3[6]) still gates the BRAM read
+ * pipeline so 'auto'/'bram' have a live BRAM image. */
 static void cmd_nsrc(void)
 {
     char *p = &cmd[4];
@@ -875,37 +934,37 @@ static void cmd_nsrc(void)
         }
     }
 
-    if (!parse_dac_source_mode(&p, &mode) || mode > 4u) {
-        send_str("ERR NSRC expects [all|0..3] auto, dds, bram, izh, vout, or 0..4\r\n");
+    if (!parse_dac_source_mode(&p, &mode) || mode > 3u) {
+        send_str("ERR NSRC expects [all|0..3] auto, dds, bram, izh, or 0..3\r\n");
         return;
     }
 
-    if (mode == 4u) {
-        pulse_neuron_config(channel, all_channels, 10u, 1u);
-        pulse_neuron_config(channel, all_channels, 8u, 3u);
-    } else {
-        if (mode == 3u) {
-            pulse_neuron_config(channel, all_channels, 10u, 0u);
+    {
+        u32 r4 = Xil_In32(RW_REG4);
+        if (all_channels) {
+            u32 packed = (mode & 3u);
+            packed |= packed << 2;
+            packed |= packed << 4;      /* same 2-bit mode in all four slots */
+            r4 = (r4 & ~RW4_DAC_SOURCE_MASK) |
+                 ((packed & 0xFFu) << RW4_DAC_SOURCE_SHIFT);
+        } else {
+            u32 sh = RW4_DAC_SOURCE_SHIFT + channel * 2u;
+            r4 = (r4 & ~(3u << sh)) | ((mode & 3u) << sh);
         }
-        pulse_neuron_config(channel, all_channels, 8u, mode);
+        Xil_Out32(RW_REG4, r4);
     }
 
+#if HAS_BRAM_DATAPLANE
     {
         u32 rw3 = Xil_In32(RW_REG3);
-        u32 rw3_source_mode = (mode == 4u) ? 3u : mode;
-        rw3 &= ~(RW3_DAC_SOURCE_MASK
-#if HAS_BRAM_DATAPLANE
-                 | (all_channels ? RW3_DAC_PROGRAM_EN : 0u)
-#endif
-                 | RW3_IZH_CFG_STROBE);
-        rw3 |= (rw3_source_mode << RW3_DAC_SOURCE_SHIFT);
-#if HAS_BRAM_DATAPLANE
-        if (mode == 2u) {
-            rw3 |= RW3_DAC_PROGRAM_EN;
+        if (mode == 2u || mode == 0u) {
+            rw3 |= RW3_DAC_PROGRAM_EN;          /* bram / auto need the BRAM path */
+        } else if (all_channels) {
+            rw3 &= ~RW3_DAC_PROGRAM_EN;         /* all-dds / all-izh: free it */
         }
-#endif
         Xil_Out32(RW_REG3, rw3);
     }
+#endif
 
     send_str("DAC source ");
     send_str(all_channels ? "all" : "ch");
@@ -927,36 +986,32 @@ static int parse_neuron_param(char **cursor, u32 *param, int *needs_value)
     if (*p == '\0')
         return 0;
 
+    /* Param codes match the BRAM image layout: per-neuron a/b/c/d/i/iconst and
+     * the two globals dt/period.  offset/source/output are gone (source is NSRC;
+     * there are no v_offset / direct-voltage modes any more). */
     *needs_value = 1;
     if (token_eq_ci(p, "a")) {
-        *param = 0u;
+        *param = NPARAM_A;
     } else if (token_eq_ci(p, "b")) {
-        *param = 1u;
+        *param = NPARAM_B;
     } else if (token_eq_ci(p, "c")) {
-        *param = 2u;
+        *param = NPARAM_C;
     } else if (token_eq_ci(p, "d")) {
-        *param = 3u;
+        *param = NPARAM_D;
     } else if (token_eq_ci(p, "i") || token_eq_ci(p, "current")) {
-        *param = 4u;
+        *param = NPARAM_I;
     } else if (token_eq_ci(p, "dt") || token_eq_ci(p, "timestep")) {
-        *param = 5u;
+        *param = NPARAM_DT;
     } else if (token_eq_ci(p, "iconst") || token_eq_ci(p, "bias")) {
-        *param = 6u;
-    } else if (token_eq_ci(p, "offset") || token_eq_ci(p, "offs")) {
-        *param = 7u;
-    } else if (token_eq_ci(p, "source") || token_eq_ci(p, "src")) {
-        *param = 8u;
+        *param = NPARAM_ICONST;
     } else if (token_eq_ci(p, "period") || token_eq_ci(p, "rate") ||
                token_eq_ci(p, "divider") || token_eq_ci(p, "update")) {
-        *param = 9u;
-    } else if (token_eq_ci(p, "output") || token_eq_ci(p, "out") ||
-               token_eq_ci(p, "vout_mode")) {
-        *param = 10u;
+        *param = NPARAM_PERIOD;
     } else if (token_eq_ci(p, "default") || token_eq_ci(p, "defaults")) {
-        *param = 14u;
+        *param = NPARAM_DEFAULT;
         *needs_value = 0;
     } else if (token_eq_ci(p, "reset")) {
-        *param = 15u;
+        *param = NPARAM_RESET;
         *needs_value = 0;
     } else if (!parse_u32_arg(&p, param)) {
         return 0;
@@ -965,31 +1020,40 @@ static int parse_neuron_param(char **cursor, u32 *param, int *needs_value)
     while (*p != '\0' && *p != ' ' && *p != '\t')
         p++;
     *cursor = p;
-    return *param <= 15u;
+    return *param <= NPARAM_RESET;
 }
 
-static void pulse_neuron_config(u32 channel, u32 all_channels, u32 param, u32 value)
+static void neuron_bram_write(u32 word_index, u32 value)
 {
-    u32 old_rw1 = Xil_In32(RW_REG1);
-    u32 old_rw3 = Xil_In32(RW_REG3);
-    u32 base_rw3 = old_rw3 & RW3_DAC_SOURCE_MASK;
-    u32 restore_rw3 = old_rw3 & ~RW3_IZH_CFG_STROBE;
-    u32 cfg_rw3 = base_rw3 |
-                  RW3_IZH_CFG_STROBE |
-                  ((param & 0xFu) << RW3_IZH_CFG_PARAM_SHIFT) |
-                  ((channel & 3u) << RW3_IZH_CFG_CHANNEL_SHIFT);
+    Xil_Out32(NEURON_CFG_BRAM_BASE + (word_index << 2), value);
+}
 
-    if (all_channels) {
-        cfg_rw3 |= RW3_IZH_CFG_ALL;
+/* Write the full shadow image + control word into the config bank, then toggle
+ * rw_reg4[0] so the neuron-domain reader (re)loads every masked neuron.  The
+ * reader holds masked neurons in reset while it copies, then releases them;
+ * unmasked neurons keep free-running and streaming spikes. */
+static void neuron_program(u32 mask, u32 global_set)
+{
+    int n;
+    u32 base;
+
+    neuron_bram_write(NCFG_DT_WORD, neuron_g_dt);
+    neuron_bram_write(NCFG_PERIOD_WORD, neuron_g_period & 0x00FFFFFFu);
+    for (n = 0; n < 4; n++) {
+        base = NCFG_NEURON_BASE + (u32)n * NCFG_NEURON_STRIDE;
+        neuron_bram_write(base + 0u, neuron_img[n].a);
+        neuron_bram_write(base + 1u, neuron_img[n].b);
+        neuron_bram_write(base + 2u, neuron_img[n].c);
+        neuron_bram_write(base + 3u, neuron_img[n].d);
+        neuron_bram_write(base + 4u, neuron_img[n].iconst);
+        neuron_bram_write(base + 5u, neuron_img[n].i);
     }
+    /* control word last; all AXI BRAM writes retire before the toggle, so the
+     * reader sees a coherent image. */
+    neuron_bram_write(NCFG_CTRL_WORD,
+                      (mask & 0xFu) | (global_set ? NCFG_CTRL_GLOBAL_SET : 0u));
 
-    Xil_Out32(RW_REG1, value);
-    short_delay();
-    Xil_Out32(RW_REG3, cfg_rw3);
-    short_delay();
-    Xil_Out32(RW_REG3, restore_rw3);
-    short_delay();
-    Xil_Out32(RW_REG1, old_rw1);
+    Xil_Out32(RW_REG4, Xil_In32(RW_REG4) ^ RW4_NEURON_PROG_TOGGLE);
 }
 
 static const struct neuron_profile *find_neuron_profile(const char *token)
@@ -1020,18 +1084,21 @@ static void print_neuron_profiles(void)
     send_str("\r\n");
 }
 
-static void apply_neuron_profile(u32 channel, u32 all_channels,
-                                 const struct neuron_profile *profile)
+static void apply_neuron_profile(u32 mask, const struct neuron_profile *profile)
 {
-    pulse_neuron_config(channel, all_channels, 0u, profile->a);
-    pulse_neuron_config(channel, all_channels, 1u, profile->b);
-    pulse_neuron_config(channel, all_channels, 2u, profile->c);
-    pulse_neuron_config(channel, all_channels, 3u, profile->d);
-    pulse_neuron_config(channel, all_channels, 4u, NEURON_DEFAULT_I);
-    pulse_neuron_config(channel, all_channels, 5u, NEURON_DEFAULT_DT);
-    pulse_neuron_config(channel, all_channels, 6u, profile->iconst);
-    pulse_neuron_config(channel, all_channels, 9u, NEURON_DEFAULT_PERIOD);
-    pulse_neuron_config(channel, all_channels, 15u, 0u);
+    int n;
+
+    for (n = 0; n < 4; n++) {
+        if (mask & (1u << n)) {
+            neuron_img[n].a = profile->a;
+            neuron_img[n].b = profile->b;
+            neuron_img[n].c = profile->c;
+            neuron_img[n].d = profile->d;
+            neuron_img[n].iconst = profile->iconst;
+            neuron_img[n].i = NEURON_DEFAULT_I;
+        }
+    }
+    neuron_program(mask, 1u);
 }
 
 static void cmd_neur(void)
@@ -1039,9 +1106,11 @@ static void cmd_neur(void)
     char *p = &cmd[4];
     u32 channel = 0;
     u32 all_channels = 0;
+    u32 mask;
     u32 param;
     u32 value = 0;
     int needs_value;
+    int n;
     const struct neuron_profile *profile;
 
     while (*p == ' ' || *p == '\t')
@@ -1060,41 +1129,21 @@ static void cmd_neur(void)
         send_str("ERR NEUR expects channel 0..3 or all\r\n");
         return;
     }
+    mask = all_channels ? 0xFu : (1u << channel);
 
     while (*p == ' ' || *p == '\t')
         p++;
 
+    /* optional "profile"/"type" keyword before the profile name */
     if (token_eq_ci(p, "profile") || token_eq_ci(p, "type")) {
         advance_token(&p);
-
         while (*p == ' ' || *p == '\t')
             p++;
-
-        profile = find_neuron_profile(p);
-        if (profile == NULL) {
-            send_str("ERR NEUR profile expects one of: regular/rs, bursting/ib, chattering/ch, fast/fs, lts, tc, resonator/rz, rebound/rb\r\n");
-            return;
-        }
-
-        apply_neuron_profile(channel, all_channels, profile);
-        send_str("OK NEUR ");
-        send_str(all_channels ? "all" : "ch");
-        if (!all_channels) {
-            send_uint(channel);
-        }
-        send_str(" profile=");
-        send_str(profile->name);
-        send_str(" iconst=");
-        send_hex(profile->iconst);
-        send_str(" period=");
-        send_uint(NEURON_DEFAULT_PERIOD);
-        send_str("\r\n");
-        return;
     }
 
     profile = find_neuron_profile(p);
     if (profile != NULL) {
-        apply_neuron_profile(channel, all_channels, profile);
+        apply_neuron_profile(mask, profile);
         send_str("OK NEUR ");
         send_str(all_channels ? "all" : "ch");
         if (!all_channels) {
@@ -1105,18 +1154,13 @@ static void cmd_neur(void)
         send_str(" iconst=");
         send_hex(profile->iconst);
         send_str(" period=");
-        send_uint(NEURON_DEFAULT_PERIOD);
+        send_uint(neuron_g_period);
         send_str("\r\n");
         return;
     }
 
-    if (token_eq_ci(p, "profiles") || token_eq_ci(p, "list")) {
-        print_neuron_profiles();
-        return;
-    }
-
     if (!parse_neuron_param(&p, &param, &needs_value)) {
-        send_str("ERR NEUR expects profile or param a,b,c,d,i,dt,iconst,offset,period,source,output,reset,default\r\n");
+        send_str("ERR NEUR expects profile or param a,b,c,d,i,dt,iconst,period,reset,default\r\n");
         return;
     }
 
@@ -1125,7 +1169,47 @@ static void cmd_neur(void)
         return;
     }
 
-    pulse_neuron_config(channel, all_channels, param, value);
+    switch (param) {
+    case NPARAM_A:
+    case NPARAM_B:
+    case NPARAM_C:
+    case NPARAM_D:
+    case NPARAM_I:
+    case NPARAM_ICONST:
+        for (n = 0; n < 4; n++) {
+            if (!(mask & (1u << n)))
+                continue;
+            switch (param) {
+            case NPARAM_A:      neuron_img[n].a = value;      break;
+            case NPARAM_B:      neuron_img[n].b = value;      break;
+            case NPARAM_C:      neuron_img[n].c = value;      break;
+            case NPARAM_D:      neuron_img[n].d = value;      break;
+            case NPARAM_I:      neuron_img[n].i = value;      break;
+            case NPARAM_ICONST: neuron_img[n].iconst = value; break;
+            default: break;
+            }
+        }
+        neuron_program(mask, 1u);
+        break;
+    case NPARAM_DT:                     /* global: live, no neuron reset */
+        neuron_g_dt = value;
+        neuron_program(0u, 1u);
+        break;
+    case NPARAM_PERIOD:                 /* global */
+        neuron_g_period = value;
+        neuron_program(0u, 1u);
+        break;
+    case NPARAM_DEFAULT:
+        apply_neuron_profile(mask, &neuron_profiles[0]);
+        break;
+    case NPARAM_RESET:                  /* re-pulse: masked neurons reset v/u */
+        neuron_program(mask, 1u);
+        break;
+    default:
+        send_str("ERR NEUR unknown param\r\n");
+        return;
+    }
+
     send_str("OK NEUR ");
     send_str(all_channels ? "all" : "ch");
     if (!all_channels) {
@@ -1569,83 +1653,6 @@ static void cmd_capture(u32 frames, int use_dac_program)
     }
 }
 
-/*
- * Synchronized step-from-rest capture (emulates the Izhikevich figures, where a
- * resting neuron is given a current step at t=0). Parks every neuron at rest
- * (iconst=0 then reset v/u), arms the BRAM capture, holds a flat I=0 baseline
- * for `predelay` tight-loop iterations, then strobes iconst=value to all
- * channels WHILE the capture is still filling. The capture trigger (RW3[3]) and
- * the IZH config strobe (RW3[7] + param + all, value in RW1) share RW_REG3, so
- * the step lands at a known point inside one ~16 us window - which UART command
- * timing (>=87 us per byte) can never do. Profile/period/dt/source are left as
- * the host already programmed them; only iconst is stepped.
- */
-static void cmd_capture_step(u32 value, u32 frames, u32 predelay)
-{
-    u32 status = 0;
-    u32 frame;
-    u32 word;
-    u32 base = Xil_In32(RW_REG3) & RW3_DAC_SOURCE_MASK;
-    u32 strobe = base | RW3_CAPTURE_START | RW3_IZH_CFG_STROBE |
-                 (6u << RW3_IZH_CFG_PARAM_SHIFT) | RW3_IZH_CFG_ALL;
-    volatile u32 i;
-
-    if (frames == 0u || frames > ADC_CAPTURE_FRAMES) {
-        frames = ADC_CAPTURE_FRAMES;
-    }
-
-    /* Park at rest before the window opens. These use the slow config helper,
-     * but the timing is pre-capture and does not matter. */
-    pulse_neuron_config(0u, 1u, 6u, 0u);   /* iconst = 0 (all) */
-    pulse_neuron_config(0u, 1u, 15u, 0u);  /* reset v/u (all) */
-    delay_short_delays(2u);
-
-    /* Stage the value the strobe will latch into iconst. */
-    Xil_Out32(RW_REG1, value);
-
-    /* Arm capture; iconst is still 0 so the window opens flat. START is held
-     * high through the fill. */
-    Xil_Out32(RW_REG3, base);
-    Xil_Out32(RW_REG3, base | RW3_CAPTURE_START);
-
-    /* Hold the I=0 baseline, then step iconst -> value mid-fill. */
-    for (i = 0; i < predelay; i++)
-        ;
-    Xil_Out32(RW_REG3, strobe);
-    Xil_Out32(RW_REG3, base | RW3_CAPTURE_START);
-
-    if (!wait_capture_done(&status)) {
-        Xil_Out32(RW_REG3, base);
-        send_str("ERR capture timeout; ");
-        send_hex(status);
-        send_str("\r\n");
-        return;
-    }
-    Xil_Out32(RW_REG3, base);
-
-    send_byte(CAPTURE_SYNC0);
-    send_byte(CAPTURE_SYNC1);
-    send_byte(CAPTURE_SYNC2);
-    send_byte(CAPTURE_SYNC3);
-    for (frame = 0; frame < frames; frame++) {
-        for (word = 0; word < ADC_CAPTURE_WORDS_PER_CHIP_FRAME; word++) {
-            u32 sample = Xil_In32(ADC0_CAPTURE_BRAM_BASE +
-                                  (frame * ADC_CAPTURE_WORDS_PER_CHIP_FRAME + word) * 4u);
-            send_byte((u8)(sample & 0xFFu));
-            send_byte((u8)((sample >> 8) & 0xFFu));
-            send_byte((u8)((sample >> 16) & 0xFFu));
-            send_byte((u8)((sample >> 24) & 0xFFu));
-        }
-        for (word = 0; word < ADC_CAPTURE_WORDS_PER_CHIP_FRAME; word++) {
-            u32 sample = Xil_In32(ADC1_CAPTURE_BRAM_BASE +
-                                  (frame * ADC_CAPTURE_WORDS_PER_CHIP_FRAME + word) * 4u);
-            send_byte((u8)(sample & 0xFFu));
-            send_byte((u8)((sample >> 8) & 0xFFu));
-            send_byte((u8)((sample >> 16) & 0xFFu));
-            send_byte((u8)((sample >> 24) & 0xFFu));
-        }
-    }
-}
 #endif
 
 #if HAS_PS_DDR_DMA
@@ -2134,9 +2141,9 @@ static void cmd_help(void)
     send_str("  ADCS [chip sel]  ADC frontend status; ADCS CH n [hi|lo] reads adc_chN\r\n");
     send_str("  ADCT [all|adc0|adc1] mode  ADS54J60 test mode: off,d21,k28,ila,rpat,transport\r\n");
     send_str("  COUP [all|1..4] [ac|dc] ADC input coupling; default/safe state is AC\r\n");
-    send_str("  NSRC [ch|all] mode DAC source: auto,dds,bram,izh,vout\r\n");
-    send_str("  NEUR ch param value  program IZH Q16.16 param on ch=0..3 or all\r\n");
-    send_str("                 params: a,b,c,d,i/current,dt,iconst/bias,offset,period,source,output,reset,default\r\n");
+    send_str("  NSRC [ch|all] mode DAC source: auto,dds,bram,izh (GT-domain mux, rw_reg4[15:8])\r\n");
+    send_str("  NEUR ch param value  set IZH Q16.16 param on ch=0..3 or all (writes config-bank BRAM)\r\n");
+    send_str("                 params: a,b,c,d,i/current,iconst/bias (per-neuron); dt,period (global); reset,default\r\n");
     send_str("  NEUR [ch|all] profile name  profiles: regular/rs, bursting/ib, chattering/ch, fast/fs, lts, tc, resonator/rz, rebound/rb\r\n");
     send_str("  NEUR profiles       list built-in neuron profiles\r\n");
     send_str("  RDRO n           read RO register 0..7\r\n");
@@ -2149,7 +2156,6 @@ static void cmd_help(void)
     send_str("  CAPS             print ADC BRAM capture status\r\n");
     send_str("  CAPT [frames]    capture 256-bit adc_ch0..3 frames; stream 8 u32 words/frame\r\n");
     send_str("  PCAP [frames]    restart DAC BRAM program, then capture ADC frames\r\n");
-    send_str("  CSTP [iconstQ16] [frames] [predelay]  rest -> iconst step synced to capture start\r\n");
 #else
     send_str("  PROG/CAPS/CAPT/PCAP unavailable; rebuild with --with-bram-dataplane\r\n");
 #endif
@@ -2201,8 +2207,9 @@ static void cmd_help(void)
     send_str("PS DDR DMA buffers: chip0 base=0x10000000, chip1 base=0x10020000, 16 bytes/frame/chip\r\n");
 #endif
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
-    send_str("    [5:4] DAC source: 0=auto legacy, 1=DDS, 2=BRAM, 3=IZH neuron/vout\r\n");
-    send_str("    NEUR uses RW3[7] pulse, [11:8] param, [13:12] channel, [14] all\r\n");
+    send_str("    [5:4] RO3 DAC debug select (3=neuron debug word); [6] DAC program/BRAM enable\r\n");
+    send_str("RW4 neuron+source: [0] config-bank prog toggle (NEUR pulses it)\r\n");
+    send_str("    [15:8] per-DAC source, 2 bits each: 0=auto,1=DDS,2=BRAM,3=IZH (set by NSRC)\r\n");
     send_str("    IZH debug via RW1=7: conv_sel 5=ch0 dt, 6=ch0 last spike interval, 7=ch0 update period\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("    [3] ADC BRAM capture/DAC program restart pulse\r\n");
@@ -2258,8 +2265,8 @@ static void cmd_status(void)
     send_uint((rw2 & RW2_DAC_CONV_MASK) >> RW2_DAC_CONV_SHIFT);
     send_str(" txpol=");
     send_hex((rw2 & RW2_DAC_TX_POL_MASK) >> RW2_DAC_TX_POL_SHIFT);
-    send_str(" last_src=");
-    send_uint((Xil_In32(RW_REG3) & RW3_DAC_SOURCE_MASK) >> RW3_DAC_SOURCE_SHIFT);
+    send_str(" dac_src[3:0]=");
+    send_hex((Xil_In32(RW_REG4) & RW4_DAC_SOURCE_MASK) >> RW4_DAC_SOURCE_SHIFT);
     send_str("\r\n");
     send_str("adc_diag: rw5=");
     send_hex(Xil_In32(RW_REG5));
@@ -2391,21 +2398,11 @@ static void process_cmd(void)
         u32 frames = ADC_CAPTURE_FRAMES;
         parse_u32_arg(&p, &frames);
         cmd_capture(frames, 1);
-    } else if (strncmp(cmd, "CSTP", 4) == 0) {
-        char *p = &cmd[4];
-        u32 value = 0x000A0000u;
-        u32 frames = ADC_CAPTURE_FRAMES;
-        u32 predelay = 150u;
-        parse_u32_arg(&p, &value);
-        parse_u32_arg(&p, &frames);
-        parse_u32_arg(&p, &predelay);
-        cmd_capture_step(value, frames, predelay);
 #else
     } else if (strncmp(cmd, "PROG", 4) == 0 ||
                strncmp(cmd, "DPRD", 4) == 0 ||
                strncmp(cmd, "CAPS", 4) == 0 ||
                strncmp(cmd, "CAPT", 4) == 0 ||
-               strncmp(cmd, "CSTP", 4) == 0 ||
                strncmp(cmd, "PCAP", 4) == 0) {
         send_str("ERR BRAM dataplane not built; rebuild with --with-bram-dataplane\r\n");
 #endif
@@ -2454,6 +2451,12 @@ int main(void)
 {
     firmware_marker(1);
     launch_defaults();
+#if HAS_BRAM_DATAPLANE
+    /* Keep the firmware shadow image consistent with the bank's RTL defaults
+     * (regular-spiking) so the first partial NEUR update writes a coherent
+     * full image into the config bank. */
+    neuron_image_init();
+#endif
     firmware_marker(2);
 
     XUartNs550_Initialize(&uart, XPAR_AXI_UART16550_0_DEVICE_ID);

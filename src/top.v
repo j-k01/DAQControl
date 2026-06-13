@@ -152,6 +152,15 @@ module top #(
     wire        adc1_axi_bram_rst;
     wire [3:0]  adc1_axi_bram_we;
 
+    // IZH neuron config bank (port A: AXI BRAM controller in the BD, clk_200).
+    wire [31:0] neuron_cfg_axi_bram_addr;
+    wire        neuron_cfg_axi_bram_clk;
+    wire [31:0] neuron_cfg_axi_bram_din;
+    wire [31:0] neuron_cfg_axi_bram_dout;
+    wire        neuron_cfg_axi_bram_en;
+    wire        neuron_cfg_axi_bram_rst;
+    wire [3:0]  neuron_cfg_axi_bram_we;
+
     wire [31:0] dac0_bram_addr;
     wire        dac0_bram_clk;
     wire [63:0] dac0_bram_din;
@@ -320,7 +329,14 @@ module top #(
         .ADC1_AXI_BRAM_PORTA_dout (adc1_axi_bram_dout),
         .ADC1_AXI_BRAM_PORTA_en   (adc1_axi_bram_en),
         .ADC1_AXI_BRAM_PORTA_rst  (adc1_axi_bram_rst),
-        .ADC1_AXI_BRAM_PORTA_we   (adc1_axi_bram_we)
+        .ADC1_AXI_BRAM_PORTA_we   (adc1_axi_bram_we),
+        .NEURON_CFG_AXI_BRAM_PORTA_addr (neuron_cfg_axi_bram_addr),
+        .NEURON_CFG_AXI_BRAM_PORTA_clk  (neuron_cfg_axi_bram_clk),
+        .NEURON_CFG_AXI_BRAM_PORTA_din  (neuron_cfg_axi_bram_din),
+        .NEURON_CFG_AXI_BRAM_PORTA_dout (neuron_cfg_axi_bram_dout),
+        .NEURON_CFG_AXI_BRAM_PORTA_en   (neuron_cfg_axi_bram_en),
+        .NEURON_CFG_AXI_BRAM_PORTA_rst  (neuron_cfg_axi_bram_rst),
+        .NEURON_CFG_AXI_BRAM_PORTA_we   (neuron_cfg_axi_bram_we)
 `endif
     );
 
@@ -408,7 +424,18 @@ module top #(
         .adc1_fabric_dout    (adc1_bram_dout),
         .adc_fabric_en       (adc_bram_en),
         .adc_fabric_rst      (adc_bram_rst),
-        .adc_fabric_we       (adc_bram_we)
+        .adc_fabric_we       (adc_bram_we),
+
+        .neuron_cfg_axi_addr (neuron_cfg_axi_bram_addr),
+        .neuron_cfg_axi_clk  (neuron_cfg_axi_bram_clk),
+        .neuron_cfg_axi_din  (neuron_cfg_axi_bram_din),
+        .neuron_cfg_axi_dout (neuron_cfg_axi_bram_dout),
+        .neuron_cfg_axi_en   (neuron_cfg_axi_bram_en),
+        .neuron_cfg_axi_rst  (neuron_cfg_axi_bram_rst),
+        .neuron_cfg_axi_we   (neuron_cfg_axi_bram_we),
+        .neuron_cfg_fabric_clk  (clk_50),
+        .neuron_cfg_fabric_addr (neuron_cfg_fabric_addr),
+        .neuron_cfg_fabric_dout (neuron_cfg_fabric_dout)
     );
 `endif
 
@@ -501,7 +528,6 @@ module top #(
     wire [63:0] dac_program_word3_reg;
     wire [3:0]  izh_spike_flags_neuron;
     wire [3:0]  izh_spike_flags_tx;
-    wire [7:0]  dac_source_modes_neuron;
     wire [7:0]  dac_source_modes_tx;
     wire [31:0] dac_neuron_debug_async;
     wire [31:0] dac_neuron_debug_reg;
@@ -892,71 +918,44 @@ module top #(
 
     // The IZH neuron bank runs in its own slow clock domain (clk_50) so the
     // vendor neuron's Q16.16 DSP multiply chains (~12 ns of logic) close
-    // timing without touching vendor/izh_neuron.v.  Config writes are still
-    // captured in the clk_200 register-file domain; each capture flips a
-    // toggle that is synchronized into clk_50 and edge-detected into a
-    // one-cycle strobe there.  The captured value/param/channel buses are
-    // sampled directly in clk_50: the firmware paces NEUR register writes
-    // with millisecond busy-waits (pulse_neuron_config), so those buses are
-    // long stable by the time the synchronized toggle lands.
-    reg        izh_cfg_strobe_d = 1'b0;
-    reg        izh_cfg_toggle_fabric = 1'b0;
-    reg [31:0] izh_cfg_value_fabric = 32'd0;
-    reg [3:0]  izh_cfg_param_fabric = 4'd0;
-    reg [1:0]  izh_cfg_channel_fabric = 2'd0;
-    reg        izh_cfg_all_fabric = 1'b0;
-
-    always @(posedge clk_200) begin
-        if (fabric_rst) begin
-            izh_cfg_strobe_d <= 1'b0;
-            izh_cfg_toggle_fabric <= 1'b0;
-            izh_cfg_value_fabric <= 32'd0;
-            izh_cfg_param_fabric <= 4'd0;
-            izh_cfg_channel_fabric <= 2'd0;
-            izh_cfg_all_fabric <= 1'b0;
-        end else begin
-            izh_cfg_strobe_d <= rw_reg3[7];
-            if (rw_reg3[7] & ~izh_cfg_strobe_d) begin
-                izh_cfg_toggle_fabric <= ~izh_cfg_toggle_fabric;
-                izh_cfg_value_fabric <= rw_reg1;
-                izh_cfg_param_fabric <= rw_reg3[11:8];
-                izh_cfg_channel_fabric <= rw_reg3[13:12];
-                izh_cfg_all_fabric <= rw_reg3[14];
-            end
-        end
-    end
-
+    // timing without touching vendor/izh_neuron.v.  All config now lives in a
+    // dual-clock "config bank" BRAM: the MicroBlaze writes the profile image
+    // over AXI (port A, clk_200), then toggles rw_reg4[0].  That toggle is the
+    // ONLY config control that crosses through the register file; everything
+    // else is read straight out of the BRAM on port B inside clk_50.  We
+    // synchronize the toggle into clk_50 and edge-detect a one-cycle
+    // prog_start pulse for the bank reader, which walks the whole BRAM and
+    // (re)loads every neuron whose mask bit is set.
     (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] neuron_rst_sync = 2'b11;
     always @(posedge clk_50) begin
         neuron_rst_sync <= {neuron_rst_sync[0], fabric_rst};
     end
     wire neuron_rst = neuron_rst_sync[1];
 
-    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] izh_cfg_toggle_meta = 2'b00;
-    reg izh_cfg_toggle_neuron_d = 1'b0;
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [2:0] izh_prog_toggle_sync = 3'b000;
     always @(posedge clk_50) begin
-        if (neuron_rst) begin
-            izh_cfg_toggle_meta <= 2'b00;
-            izh_cfg_toggle_neuron_d <= 1'b0;
-        end else begin
-            izh_cfg_toggle_meta <= {izh_cfg_toggle_meta[0], izh_cfg_toggle_fabric};
-            izh_cfg_toggle_neuron_d <= izh_cfg_toggle_meta[1];
-        end
+        if (neuron_rst)
+            izh_prog_toggle_sync <= 3'b000;
+        else
+            izh_prog_toggle_sync <= {izh_prog_toggle_sync[1:0], rw_reg4[0]};
     end
-    wire izh_cfg_strobe_neuron = izh_cfg_toggle_meta[1] ^ izh_cfg_toggle_neuron_d;
+    // Either edge of the firmware-toggled bit fires one prog_start pulse.
+    wire izh_prog_start = izh_prog_toggle_sync[2] ^ izh_prog_toggle_sync[1];
 
-    izh_dac_bank u_izh_dac_bank (
-        .clk           (clk_50),
-        .reset         (neuron_rst),
-        .cfg_strobe    (izh_cfg_strobe_neuron),
-        .cfg_channel   (izh_cfg_channel_fabric),
-        .cfg_all       (izh_cfg_all_fabric),
-        .cfg_param     (izh_cfg_param_fabric),
-        .cfg_value     (izh_cfg_value_fabric),
-        .debug_channel (rw_reg2[7:5]),
-        .source_modes  (dac_source_modes_neuron),
-        .debug_word    (dac_neuron_debug_async),
-        .spike_flags   (izh_spike_flags_neuron)
+    // Config BRAM port B (read-only, clk_50 neuron domain).
+    wire [5:0]  neuron_cfg_fabric_addr;
+    wire [31:0] neuron_cfg_fabric_dout;
+
+    izh_dac_bank #(
+        .ADDR_W (6)
+    ) u_izh_dac_bank (
+        .clk         (clk_50),
+        .reset       (neuron_rst),
+        .prog_start  (izh_prog_start),
+        .cfg_addr    (neuron_cfg_fabric_addr),
+        .cfg_data    (neuron_cfg_fabric_dout),
+        .spike_flags (izh_spike_flags_neuron),
+        .debug_word  (dac_neuron_debug_async)
     );
 
 `ifdef DAQ_WITH_GTH
@@ -1044,12 +1043,16 @@ module top #(
     wire [3:0] dac_physical_map_mode_tx = 4'd0;
     wire       dac_tag_source_enable_tx = 1'b0;
 
+    // Source select lives wholly in the GT (DAC) clock domain: a simple
+    // per-DAC mux choosing among the viable outputs (DDS / BRAM / neuron pulse
+    // shaper).  Firmware sets rw_reg4[15:8] (2 bits per DAC) and we sync it
+    // across; it is independent of the neuron bank and its reprogramming.
     cdc_vector_sync #(
         .WIDTH (8)
     ) u_dac_source_modes_sync (
         .dest_clk (gth_tx_usrclk2),
         .dest_rst (litejesd_reset),
-        .src      (dac_source_modes_neuron),
+        .src      (rw_reg4[15:8]),
         .dest     (dac_source_modes_tx)
     );
 
