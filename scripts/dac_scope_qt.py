@@ -4,11 +4,11 @@
 Live Ethernet ADC stream on the left; a control panel on the right:
   - Connection: pick the UART COM port and connect/reconnect.
   - Per channel: source = DDS / BRAM / Neuron, plus a neuron-profile dropdown.
-  - Neuron params (live): a/b/c/d/I spinboxes (physical Izhikevich units) that
-    reprogram the config bank and pulse a reload immediately, so the loopback
-    spike pattern responds in real time -- tweak and watch the live stream to
-    verify the neuron dynamics. "load profile" fills the spinboxes from a
-    built-in profile as a starting point; target = all or a single channel.
+  - Neuron params: a/b/c/d/I spinboxes (physical Izhikevich units). Set them
+    (or "load profile" to stage a built-in profile), pick target = all or a
+    single channel, then hit "Program neurons" to apply -- each NEUR write
+    resets + reloads the target, so it runs fresh with exactly these values.
+    Watch the live stream to verify the dynamics.
   - BRAM waveform builder: pick a shape (Sine/Triangle/Trapezoid/Square/Saw),
     period (ns), pulse width (ns), and a voltage range (clamped to the DAC's
     allowable range, default 0 V .. max), then program it to a channel.
@@ -472,7 +472,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
         # live Izhikevich parameters: tweak a/b/c/d/I and the neuron is
         # reprogrammed (config bank + reload pulse) immediately, so the loopback
         # spike pattern responds in real time.
-        pb = QtWidgets.QGroupBox("Neuron params (live)")
+        # Set up the params (or load a profile), then hit "Program neurons" to
+        # apply them in one shot: each NEUR write resets + reloads the target,
+        # so after Program the neuron runs fresh with exactly these values.
+        pb = QtWidgets.QGroupBox("Neuron params")
         pg_ = QtWidgets.QGridLayout(pb)
         pg_.addWidget(QtWidgets.QLabel("target"), 0, 0)
         self.np_target = QtWidgets.QComboBox()
@@ -490,17 +493,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
             sp.setSingleStep(step)
             sp.setDecimals(dec)
             sp.setValue(dflt)
-            sp.valueChanged.connect(self._make_param_cb(param))
             pg_.addWidget(QtWidgets.QLabel(label), row, 0)
             pg_.addWidget(sp, row, 1, 1, 2)
             self.np_spins[param] = sp
+        self.np_prog_btn = QtWidgets.QPushButton("Program neurons")
+        self.np_prog_btn.clicked.connect(self._on_program_neurons)
+        pg_.addWidget(self.np_prog_btn, len(NEURON_PARAM_SPECS) + 1, 0, 1, 3)
         col.addWidget(pb)
-
-        # debounce param sends so dragging a spinbox doesn't flood the UART
-        self._np_pending = {}
-        self._np_timer = QtCore.QTimer(self)
-        self._np_timer.setSingleShot(True)
-        self._np_timer.timeout.connect(self._flush_params)
 
         # BRAM waveform builder
         wf = QtWidgets.QGroupBox("BRAM waveform")
@@ -660,7 +659,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     def _set_controls_enabled(self, on):
         for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.dt_cb,
-                  self.np_target, self.np_loadprof):
+                  self.np_target, self.np_loadprof, self.np_prog_btn):
             w.setEnabled(on)
         for sp in self.np_spins.values():
             sp.setEnabled(on)
@@ -730,28 +729,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
             dt = NEURON_DT_OPTIONS[idx][1]
             self._bg(lambda: self.dac.set_neuron_dt(dt))
 
-    # ---- live neuron parameters ----
-    def _make_param_cb(self, param):
-        def cb(_val):
-            self._np_pending[param] = self.np_spins[param].value()
-            self._np_timer.start(150)      # debounce rapid spinbox changes
-        return cb
-
-    def _flush_params(self):
-        if not self.dac or not self._np_pending:
-            return
-        target = self.np_target.currentText()
-        items = list(self._np_pending.items())
-        self._np_pending = {}
-        labels = ", ".join(f"{p}={v:g}" for p, v in items)
-        self.status.setText(f"NEUR {target}: {labels}")
-
-        def work():
-            for param, val in items:
-                self.dac.set_neuron_param(target, param, izh_to_q16(val))
-        self._bg(work)
-
+    # ---- neuron parameters (explicit Program button) ----
     def _on_load_profile_values(self, idx):
+        """Stage a profile's values into the spinboxes (does NOT program -- hit
+        'Program neurons' to apply)."""
         if idx <= 0:
             return
         name = self.np_loadprof.itemText(idx)
@@ -759,20 +740,24 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if not vals:
             return
         for p, sp in self.np_spins.items():
-            sp.blockSignals(True)
             sp.setValue(vals[p])
-            sp.blockSignals(False)
         self.np_loadprof.blockSignals(True)
         self.np_loadprof.setCurrentIndex(0)
         self.np_loadprof.blockSignals(False)
-        if self.dac:
-            target = self.np_target.currentText()
-            self.status.setText(f"NEUR {target}: profile {name} values")
+        self.status.setText(f"staged profile '{name}' -- press Program neurons")
 
-            def work():
-                for p, v in vals.items():
-                    self.dac.set_neuron_param(target, p, izh_to_q16(v))
-            self._bg(work)
+    def _on_program_neurons(self):
+        if not self.dac:
+            return
+        target = self.np_target.currentText()
+        vals = [(p, self.np_spins[p].value()) for p, *_ in NEURON_PARAM_SPECS]
+        labels = ", ".join(f"{p}={v:g}" for p, v in vals)
+        self.status.setText(f"programming neuron {target}: {labels}")
+
+        def work():
+            for param, val in vals:
+                self.dac.set_neuron_param(target, param, izh_to_q16(val))
+        self._bg(work)
 
     def _on_stat(self):
         if not self.dac:
