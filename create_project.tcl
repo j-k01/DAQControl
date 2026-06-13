@@ -744,7 +744,7 @@ close_project_if_open
 open_project [file join $project_dir ${project_name}.xpr]
 set_first_available_board_part $board_candidates
 set_property target_language Verilog [current_project]
-set_property XPM_LIBRARIES {XPM_CDC} [current_project]
+set_property XPM_LIBRARIES {XPM_CDC XPM_FIFO} [current_project]
 set verilog_defines {}
 if {$include_staged_gt} {
     lappend verilog_defines DAQ_WITH_GTH=1

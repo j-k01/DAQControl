@@ -195,6 +195,19 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
 #define RW6_STREAM_ENABLE    (1u << 31)
 #define RW6_STREAM_USECIC    (1u << 30)  /* chip 1 (ch2/3): CIC vs keep-1-of-D */
 
+/* ---- Full-rate burst capture (no decimation) -----------------------------
+ * Both DMAs capture in parallel into separate 512 MB DDR regions, sample-
+ * aligned (one trigger fires both, ADCs SYSREF-synced). RW6 carries the beat
+ * count per chip (16 B/beat). The A53 reads the regions out over UDP on MB
+ * request via the burst mailbox. */
+#define BURST_DDR_BASE0   0x40000000u    /* chip0 capture region (512 MB)     */
+#define BURST_DDR_BASE1   0x60000000u    /* chip1 capture region (512 MB)     */
+#define BURST_MAX_BYTES   0x20000000u    /* 512 MB/chip                       */
+#define BURST_DESC_BYTES  0x04000000u    /* 64 MB = SG 26-bit length max      */
+#define BURST_MAGIC       0x42435054u    /* mailbox magic: burst armed        */
+/* burst mailbox layout (at STRM_MAILBOX): 00=magic 04=bytes/chip 08=base0
+ * 0C=base1 10=readout_req(MB++) 14=readout_done(A53 echo) 18=beats */
+
 static const u32 strm_desc_base[ADC_DMA_CHIPS] = { 0x10030000u, 0x10034000u };
 static const u32 strm_ring_base[ADC_DMA_CHIPS] = { 0x18000000u, 0x1A000000u };
 
@@ -1691,6 +1704,53 @@ static void dma_arm_s2mm(u32 chip, u32 dest_addr, u32 bytes)
     Xil_Out32(base + DMA_S2MM_TAILDESC_MSB, 0u);
 }
 
+/* Pulse the ADC capture trigger (RW3[3] rising edge) WITHOUT disturbing the
+ * DAC source/program bits, so a DAC loopback keeps playing through the burst. */
+static void pulse_adc_capture(void)
+{
+    u32 rw3 = Xil_In32(RW_REG3) & ~RW3_CAPTURE_START;
+
+    Xil_Out32(RW_REG3, rw3);
+    Xil_Out32(RW_REG3, rw3 | RW3_CAPTURE_START);
+    short_delay();
+    Xil_Out32(RW_REG3, rw3);
+}
+
+/* Arm a one-shot SG chain spanning total_bytes into a contiguous DDR region.
+ * total_bytes is split across 64 MB descriptors (the SG 26-bit length max);
+ * the PL asserts tlast at the end so the transfer self-terminates. The chain
+ * reuses the per-chip descriptor ring region (strm_desc_base). */
+static void dma_arm_burst(u32 chip, u32 base, u32 total_bytes)
+{
+    u32 dmabase = adc_dma_base[chip];
+    u32 desc_base = strm_desc_base[chip];
+    u32 n = (total_bytes + BURST_DESC_BYTES - 1u) / BURST_DESC_BYTES;
+    u32 i;
+    u32 off = 0u;
+
+    if (n == 0u) {
+        n = 1u;
+    }
+    dma_reset(chip);
+    for (i = 0u; i < n; i++) {
+        u32 desc = desc_base + i * STRM_DESC_STRIDE;
+        u32 next = desc_base + ((i + 1u) % n) * STRM_DESC_STRIDE;
+        u32 chunk = total_bytes - off;
+
+        if (chunk > BURST_DESC_BYTES) {
+            chunk = BURST_DESC_BYTES;
+        }
+        dma_write_desc(desc, next, base + off, chunk);
+        off += chunk;
+    }
+    Xil_Out32(dmabase + DMA_S2MM_DMASR, DMA_DMASR_IRQ_MASK | DMA_DMASR_ERR_MASK);
+    Xil_Out32(dmabase + DMA_S2MM_CURDESC, desc_base);
+    Xil_Out32(dmabase + DMA_S2MM_CURDESC_MSB, 0u);
+    Xil_Out32(dmabase + DMA_S2MM_DMACR, DMA_DMACR_RS);
+    Xil_Out32(dmabase + DMA_S2MM_TAILDESC, desc_base + (n - 1u) * STRM_DESC_STRIDE);
+    Xil_Out32(dmabase + DMA_S2MM_TAILDESC_MSB, 0u);
+}
+
 static int wait_dma_done(u32 *s0, u32 *s1)
 {
     u32 timeout;
@@ -1765,6 +1825,90 @@ static void cmd_dma_capture(u32 frames)
     send_str(" ");
     print_named_hex("dma1", s1);
     send_str("\r\n");
+}
+
+static u32 burst_bytes = BURST_MAX_BYTES;
+
+/* BCAP [MB] -- full-rate, un-decimated, sample-aligned burst capture of all 4
+ * ADC channels into two 512 MB DDR regions. Default 512 MB/chip. */
+static void cmd_burst(char *args)
+{
+    char *p = args;
+    u32 mb = 512u;
+    u32 bytes;
+    u32 beats;
+    u32 s0 = 0;
+    u32 s1 = 0;
+
+    while (*p == ' ') {
+        p++;
+    }
+    parse_u32_arg(&p, &mb);
+    if (mb == 0u) {
+        mb = 512u;
+    }
+    bytes = mb * 0x100000u;                 /* MB -> bytes */
+    if (bytes > BURST_MAX_BYTES) {
+        bytes = BURST_MAX_BYTES;
+    }
+    bytes &= ~0x0Fu;                         /* whole 16 B beats */
+    beats = bytes >> 4;
+    burst_bytes = bytes;
+
+    Xil_Out32(RW_REG6, beats);              /* PL capture length (both chips) */
+    dma_arm_burst(0u, BURST_DDR_BASE0, bytes);
+    dma_arm_burst(1u, BURST_DDR_BASE1, bytes);
+
+    /* publish region info for the A53 readout (and reset the readout handshake) */
+    Xil_Out32(STRM_MAILBOX + 0x04u, bytes);
+    Xil_Out32(STRM_MAILBOX + 0x08u, BURST_DDR_BASE0);
+    Xil_Out32(STRM_MAILBOX + 0x0Cu, BURST_DDR_BASE1);
+    Xil_Out32(STRM_MAILBOX + 0x18u, beats);
+    Xil_Out32(STRM_MAILBOX + 0x00u, BURST_MAGIC);
+
+    pulse_adc_capture();                    /* fire both chips together */
+
+    if (!wait_dma_done(&s0, &s1)) {
+        send_str("ERR BCAP timeout ");
+        print_named_hex("dma0", s0);
+        send_str(" ");
+        print_named_hex("dma1", s1);
+        send_str("\r\n");
+        return;
+    }
+    send_str("OK BCAP bytes_per_chip=");
+    send_uint(bytes);
+    send_str(" beats=");
+    send_uint(beats);
+    send_str(" base0=");
+    send_hex(BURST_DDR_BASE0);
+    send_str(" base1=");
+    send_hex(BURST_DDR_BASE1);
+    send_str(" ");
+    print_named_hex("dma0", s0);
+    send_str(" ");
+    print_named_hex("dma1", s1);
+    send_str("\r\n");
+}
+
+/* BRDO -- ask the A53 to read the last captured regions out over UDP. Capture
+ * (BCAP) and readout (BRDO) are decoupled, both MB-controlled. */
+static void cmd_burst_readout(char *args)
+{
+    u32 req;
+
+    (void)args;
+    if (Xil_In32(STRM_MAILBOX + 0x00u) != BURST_MAGIC) {
+        send_str("ERR BRDO no capture armed; run BCAP first\r\n");
+        return;
+    }
+    req = Xil_In32(STRM_MAILBOX + 0x10u) + 1u;
+    Xil_Out32(STRM_MAILBOX + 0x10u, req);   /* request A53 readout */
+    send_str("OK BRDO request=");
+    send_uint(req);
+    send_str(" bytes_per_chip=");
+    send_uint(burst_bytes);
+    send_str(" (A53 draining over UDP)\r\n");
 }
 
 static void stream_stop(void)
@@ -2009,6 +2153,8 @@ static void cmd_help(void)
 #endif
 #if HAS_PS_DDR_DMA
     send_str("  DMAC [frames]    arm ADC0/ADC1 S2MM DMA to PS DDR, then pulse ADC capture\r\n");
+    send_str("  BCAP [MB]        full-rate un-decimated burst capture of all 4 ADC ch (default 512 MB/chip)\r\n");
+    send_str("  BRDO             ask the A53 to read the last BCAP regions out over UDP\r\n");
     send_str("  STRM [decim [cic]]|STOP|STAT  continuous decimated stream into DDR rings (cyclic SG)\r\n");
     send_str("  STRM CIC on|off  live A/B toggle: chip1 ch2/3 CIC anti-alias (D=128) vs keep-1-of-D\r\n");
     send_str("  DSTA             print AXI DMA S2MM status registers\r\n");
@@ -2264,6 +2410,10 @@ static void process_cmd(void)
 #if HAS_PS_DDR_DMA
     } else if (strncmp(cmd, "STRM", 4) == 0) {
         cmd_stream(&cmd[4]);
+    } else if (strncmp(cmd, "BCAP", 4) == 0) {
+        cmd_burst(&cmd[4]);
+    } else if (strncmp(cmd, "BRDO", 4) == 0) {
+        cmd_burst_readout(&cmd[4]);
     } else if (strncmp(cmd, "DMAC", 4) == 0) {
         char *p = &cmd[4];
         u32 frames = ADC_CAPTURE_FRAMES;

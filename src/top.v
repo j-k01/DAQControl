@@ -1624,130 +1624,49 @@ module top #(
     );
 
 `ifdef DAQ_WITH_PS_DDR_DMA
-    // RW6: [31] continuous-stream enable, [30] chip-1 CIC anti-alias select
-    // (0 = keep-1-of-D, 1 = CIC D=128), [15:0] decimation factor D (multiple
-    // of 4). When enabled, the decimators own the DMA streams; otherwise the
-    // original one-shot burst streamers do.
-    wire [17:0] adc_stream_cfg_rx;
+    // RW6 = number of 128-bit beats to capture per chip in ONE full-rate,
+    // un-decimated burst (16 B/beat = 4 ns @ 1 GS/s; 512 MB = 0x0200_0000
+    // beats). One adc_capture_start fires both chips together so the two ADC
+    // captures line up 1-to-1. No decimation, no cyclic ring.
+    wire [31:0] adc_capture_beats_rx;
     cdc_vector_sync #(
-        .WIDTH (18)
-    ) u_adc_stream_cfg_sync (
+        .WIDTH (32)
+    ) u_adc_capture_beats_sync (
         .dest_clk (gth_rx_usrclk2),
         .dest_rst (adc_rx_reset),
-        .src      ({rw_reg6[31], rw_reg6[30], rw_reg6[15:0]}),
-        .dest     (adc_stream_cfg_rx)
+        .src      (rw_reg6),
+        .dest     (adc_capture_beats_rx)
     );
-    wire        adc_stream_enable_rx = adc_stream_cfg_rx[17];
-    wire        adc_stream_usecic_rx = adc_stream_cfg_rx[16];
-    wire [15:0] adc_stream_decim_rx = adc_stream_cfg_rx[15:0];
 
-    wire [127:0] adc0_burst_tdata, adc1_burst_tdata;
-    wire [15:0]  adc0_burst_tkeep, adc1_burst_tkeep;
-    wire         adc0_burst_tlast, adc1_burst_tlast;
-    wire         adc0_burst_tvalid, adc1_burst_tvalid;
-    wire [31:0]  adc0_burst_status, adc1_burst_status;
-    wire [127:0] adc0_dec_tdata, adc1_dec_tdata;
-    wire [15:0]  adc0_dec_tkeep, adc1_dec_tkeep;
-    wire         adc0_dec_tlast, adc1_dec_tlast;
-    wire         adc0_dec_tvalid, adc1_dec_tvalid;
-    wire [31:0]  adc0_dec_status, adc1_dec_status;
-    // Chip 1 (ch2/ch3) has two decimator cores selected by adc_stream_usecic_rx
-    // for an A/B compare against chip 0 (ch0/ch1), which is always keep-1-of-D.
-    wire [127:0] adc1_keep_tdata, adc1_cic_tdata;
-    wire [15:0]  adc1_keep_tkeep, adc1_cic_tkeep;
-    wire         adc1_keep_tlast, adc1_cic_tlast;
-    wire         adc1_keep_tvalid, adc1_cic_tvalid;
-    wire [31:0]  adc1_keep_status, adc1_cic_status;
-
-    adc_axis_capture_streamer u_adc0_dma_streamer (
+    adc_burst_capture u_adc0_burst_capture (
         .clk           (gth_rx_usrclk2),
         .rst           (adc_rx_reset),
-        .start         (adc_capture_start & ~adc_stream_enable_rx),
+        .start         (adc_capture_start),
+        .capture_beats (adc_capture_beats_rx),
         .data_valid    (adc1_litejesd_ready_async),
         .frame_data    ({adc_ch1_capture, adc_ch0_capture}),
-        .m_axis_tdata  (adc0_burst_tdata),
-        .m_axis_tkeep  (adc0_burst_tkeep),
-        .m_axis_tlast  (adc0_burst_tlast),
-        .m_axis_tvalid (adc0_burst_tvalid),
-        .m_axis_tready (adc0_dma_axis_tready & ~adc_stream_enable_rx),
-        .status        (adc0_burst_status)
+        .m_axis_tdata  (adc0_dma_axis_tdata),
+        .m_axis_tkeep  (adc0_dma_axis_tkeep),
+        .m_axis_tlast  (adc0_dma_axis_tlast),
+        .m_axis_tvalid (adc0_dma_axis_tvalid),
+        .m_axis_tready (adc0_dma_axis_tready),
+        .status        (adc0_dma_status_async)
     );
 
-    adc_axis_capture_streamer u_adc1_dma_streamer (
+    adc_burst_capture u_adc1_burst_capture (
         .clk           (gth_rx_usrclk2),
         .rst           (adc_rx_reset),
-        .start         (adc_capture_start & ~adc_stream_enable_rx),
+        .start         (adc_capture_start),
+        .capture_beats (adc_capture_beats_rx),
         .data_valid    (adc2_litejesd_ready_async),
         .frame_data    ({adc_ch3_capture, adc_ch2_capture}),
-        .m_axis_tdata  (adc1_burst_tdata),
-        .m_axis_tkeep  (adc1_burst_tkeep),
-        .m_axis_tlast  (adc1_burst_tlast),
-        .m_axis_tvalid (adc1_burst_tvalid),
-        .m_axis_tready (adc1_dma_axis_tready & ~adc_stream_enable_rx),
-        .status        (adc1_burst_status)
+        .m_axis_tdata  (adc1_dma_axis_tdata),
+        .m_axis_tkeep  (adc1_dma_axis_tkeep),
+        .m_axis_tlast  (adc1_dma_axis_tlast),
+        .m_axis_tvalid (adc1_dma_axis_tvalid),
+        .m_axis_tready (adc1_dma_axis_tready),
+        .status        (adc1_dma_status_async)
     );
-
-    adc_stream_decimator u_adc0_stream_decimator (
-        .clk           (gth_rx_usrclk2),
-        .rst           (adc_rx_reset),
-        .enable        (adc_stream_enable_rx),
-        .decim         (adc_stream_decim_rx),
-        .data_valid    (adc1_litejesd_ready_async),
-        .frame_data    ({adc_ch1_capture, adc_ch0_capture}),
-        .m_axis_tdata  (adc0_dec_tdata),
-        .m_axis_tkeep  (adc0_dec_tkeep),
-        .m_axis_tlast  (adc0_dec_tlast),
-        .m_axis_tvalid (adc0_dec_tvalid),
-        .m_axis_tready (adc0_dma_axis_tready & adc_stream_enable_rx),
-        .status        (adc0_dec_status)
-    );
-
-    adc_stream_decimator u_adc1_stream_decimator (
-        .clk           (gth_rx_usrclk2),
-        .rst           (adc_rx_reset),
-        .enable        (adc_stream_enable_rx & ~adc_stream_usecic_rx),
-        .decim         (adc_stream_decim_rx),
-        .data_valid    (adc2_litejesd_ready_async),
-        .frame_data    ({adc_ch3_capture, adc_ch2_capture}),
-        .m_axis_tdata  (adc1_keep_tdata),
-        .m_axis_tkeep  (adc1_keep_tkeep),
-        .m_axis_tlast  (adc1_keep_tlast),
-        .m_axis_tvalid (adc1_keep_tvalid),
-        .m_axis_tready (adc1_dma_axis_tready & adc_stream_enable_rx & ~adc_stream_usecic_rx),
-        .status        (adc1_keep_status)
-    );
-
-    adc_stream_decimator_cic u_adc1_stream_decimator_cic (
-        .clk           (gth_rx_usrclk2),
-        .rst           (adc_rx_reset),
-        .enable        (adc_stream_enable_rx & adc_stream_usecic_rx),
-        .decim         (adc_stream_decim_rx),
-        .data_valid    (adc2_litejesd_ready_async),
-        .frame_data    ({adc_ch3_capture, adc_ch2_capture}),
-        .m_axis_tdata  (adc1_cic_tdata),
-        .m_axis_tkeep  (adc1_cic_tkeep),
-        .m_axis_tlast  (adc1_cic_tlast),
-        .m_axis_tvalid (adc1_cic_tvalid),
-        .m_axis_tready (adc1_dma_axis_tready & adc_stream_enable_rx & adc_stream_usecic_rx),
-        .status        (adc1_cic_status)
-    );
-
-    assign adc1_dec_tdata  = adc_stream_usecic_rx ? adc1_cic_tdata  : adc1_keep_tdata;
-    assign adc1_dec_tkeep  = adc_stream_usecic_rx ? adc1_cic_tkeep  : adc1_keep_tkeep;
-    assign adc1_dec_tlast  = adc_stream_usecic_rx ? adc1_cic_tlast  : adc1_keep_tlast;
-    assign adc1_dec_tvalid = adc_stream_usecic_rx ? adc1_cic_tvalid : adc1_keep_tvalid;
-    assign adc1_dec_status = adc_stream_usecic_rx ? adc1_cic_status : adc1_keep_status;
-
-    assign adc0_dma_axis_tdata = adc_stream_enable_rx ? adc0_dec_tdata : adc0_burst_tdata;
-    assign adc0_dma_axis_tkeep = adc_stream_enable_rx ? adc0_dec_tkeep : adc0_burst_tkeep;
-    assign adc0_dma_axis_tlast = adc_stream_enable_rx ? adc0_dec_tlast : adc0_burst_tlast;
-    assign adc0_dma_axis_tvalid = adc_stream_enable_rx ? adc0_dec_tvalid : adc0_burst_tvalid;
-    assign adc1_dma_axis_tdata = adc_stream_enable_rx ? adc1_dec_tdata : adc1_burst_tdata;
-    assign adc1_dma_axis_tkeep = adc_stream_enable_rx ? adc1_dec_tkeep : adc1_burst_tkeep;
-    assign adc1_dma_axis_tlast = adc_stream_enable_rx ? adc1_dec_tlast : adc1_burst_tlast;
-    assign adc1_dma_axis_tvalid = adc_stream_enable_rx ? adc1_dec_tvalid : adc1_burst_tvalid;
-    assign adc0_dma_status_async = adc_stream_enable_rx ? adc0_dec_status : adc0_burst_status;
-    assign adc1_dma_status_async = adc_stream_enable_rx ? adc1_dec_status : adc1_burst_status;
 `endif
 `else
     assign adc_capture_status_async = 32'd0;

@@ -418,6 +418,102 @@ static void strm_service(void)
     }
 }
 
+/* ---- Full-rate burst readout ----------------------------------------------
+ * The MicroBlaze captures all 4 ADC channels into two fixed DDR regions (BCAP)
+ * and bumps a request counter in the mailbox (BRDO). We drain both regions out
+ * over UDP to the host that registered with a "BRST" packet -- a few packets
+ * per main-loop pass so lwIP keeps servicing TX. Each packet carries its byte
+ * offset within the chip region, so the host can place data despite reorder. */
+#define BURST_MAGIC 0x42435054u
+
+static ip_addr_t burst_addr;
+static u16 burst_port;
+static int burst_have_host = 0;
+static u32 burst_req_last = 0;
+static int burst_active = 0;
+static u32 burst_bytes = 0;
+static u32 burst_base[2];
+static u32 burst_chip = 0;
+static u32 burst_off = 0;
+
+static void strm_mbox_write(u32 offset, u32 val)
+{
+    *(volatile u32 *)(UINTPTR)(STRM_MAILBOX + offset) = val;
+    Xil_DCacheFlushRange((UINTPTR)(STRM_MAILBOX + offset), 4u);
+}
+
+static void burst_send_packet(u32 chip, u32 ddr_addr, u32 offset, u32 bytes)
+{
+    struct pbuf *p;
+    u8 *payload;
+
+    p = pbuf_alloc(PBUF_TRANSPORT, (u16)(DAQ_HEADER_BYTES + bytes), PBUF_RAM);
+    if (p == NULL) {
+        return;
+    }
+    Xil_DCacheInvalidateRange(ddr_addr & ~63u,
+                              ((bytes + (u32)(ddr_addr & 63u) + 63u) & ~63u));
+    payload = (u8 *)p->payload;
+    put_u32_le(payload + 0, STRM_PACKET_MAGIC);
+    put_u16_le(payload + 4, 1u);
+    put_u16_le(payload + 6, DAQ_HEADER_BYTES);
+    put_u32_le(payload + 8, offset / STRM_PAYLOAD_BYTES);
+    put_u32_le(payload + 12, chip);
+    put_u32_le(payload + 16, offset);          /* byte offset within chip region */
+    put_u32_le(payload + 20, bytes);
+    put_u32_le(payload + 24, 0u);
+    put_u32_le(payload + 28, 1u);              /* decim=1: no decimation */
+    memcpy(payload + DAQ_HEADER_BYTES, (const void *)(UINTPTR)ddr_addr, bytes);
+    udp_sendto(tx_pcb, p, &burst_addr, burst_port);
+    pbuf_free(p);
+    mailbox_increment(MBOX_TX_PKTS);
+}
+
+static void burst_service(void)
+{
+    u32 pkts = 0;
+
+    if (!burst_active) {
+        u32 req;
+        if (!burst_have_host) {
+            return;
+        }
+        if (strm_mbox_read(0x00u) != BURST_MAGIC) {
+            return;
+        }
+        req = strm_mbox_read(0x10u);
+        if (req == burst_req_last) {
+            return;
+        }
+        burst_req_last = req;
+        burst_bytes = strm_mbox_read(0x04u);
+        burst_base[0] = strm_mbox_read(0x08u);
+        burst_base[1] = strm_mbox_read(0x0Cu);
+        burst_chip = 0u;
+        burst_off = 0u;
+        burst_active = 1;
+    }
+
+    while (burst_active && (pkts < STRM_PKTS_PER_PASS)) {
+        u32 remaining = burst_bytes - burst_off;
+        u32 n = (remaining > STRM_PAYLOAD_BYTES) ? STRM_PAYLOAD_BYTES : remaining;
+
+        burst_send_packet(burst_chip, burst_base[burst_chip] + burst_off,
+                          burst_off, n);
+        burst_off += n;
+        pkts++;
+        if (burst_off >= burst_bytes) {
+            if (burst_chip == 0u) {
+                burst_chip = 1u;
+                burst_off = 0u;
+            } else {
+                burst_active = 0;
+                strm_mbox_write(0x14u, burst_req_last);   /* readout done */
+            }
+        }
+    }
+}
+
 static void parse_command(const char *cmd, const ip_addr_t *addr, u16 port)
 {
     u32 chip = 2u; /* 2 means both chips. */
@@ -442,6 +538,15 @@ static void parse_command(const char *cmd, const ip_addr_t *addr, u16 port)
     if (strncmp(cmd, "STOP", 4) == 0) {
         strm_running = 0;
         send_status_packet(addr, port, "STRM_END\n");
+        return;
+    }
+
+    if (strncmp(cmd, "BRST", 4) == 0) {
+        /* register this host as the burst-readout destination */
+        burst_addr = *addr;
+        burst_port = port;
+        burst_have_host = 1;
+        send_status_packet(addr, port, "BRST_READY\n");
         return;
     }
 
@@ -591,6 +696,7 @@ int main(void)
         }
 
         strm_service();
+        burst_service();
 
         /* ~4 Hz housekeeping: mailbox heartbeat plus the lwIP ARP timer. */
         XTime_GetTime(&now);
