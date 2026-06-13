@@ -66,8 +66,15 @@ module izh_dac_bank #(
     reg [3:0]        mask;
     reg              global_set;
 
-    wire [1:0] nsel = idx[4:3];               // (idx - A_NBASE) >> 3, for idx>=4
-    wire [2:0] psel = idx[2:0];               // (idx - A_NBASE) & 7
+    // Decode the neuron/param index from the offset INTO the neuron region
+    // (idx - A_NBASE).  Must subtract A_NBASE first: the firmware writes
+    // neuron n at words A_NBASE + n*NSTRIDE + {0..5}, so e.g. neuron 0's a is
+    // at idx=4, which is offset 0 -> nsel=0, psel=0.  (Earlier this decoded
+    // straight off idx, an off-by-A_NBASE bug that left every neuron's a/b/c/d
+    // at their reset defaults -> profiles had no effect.)
+    wire [ADDR_W-1:0] noff = idx - A_NBASE;
+    wire [1:0] nsel = noff[4:3];              // which neuron (0..3)
+    wire [2:0] psel = noff[2:0];              // which param: 0..5 = a,b,c,d,Ic,I
     wire       in_neuron = (idx >= A_NBASE) && (psel <= 3'd5);
 
     integer k;
