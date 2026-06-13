@@ -3,8 +3,8 @@
 
 ADC plot on the left; a control panel on the right. The board does NOT stream
 on connect -- acquisition is opt-in:
-  - Collect Ethernet: one-shot full-rate burst snapshot (BCAP+BRDO, COLLECT_MB
-    MB/chip) in a popup -- the reliable way to grab data.
+  - Collect Ethernet: one-shot full-rate burst snapshot (BCAP+BRDO) in a popup,
+    with a selectable size (MB/chip) -- the reliable way to grab data.
   - Start/Stop Live Stream: toggles the cyclic continuous stream into the main
     plot when you want it (off by default).
 
@@ -56,7 +56,9 @@ LABEL_TO_NSRC = {"DDS": "dds", "BRAM": "bram", "Neuron": "izh"}
 WAVEFORMS = ["Sine", "Triangle", "Trapezoid", "Square", "Sawtooth"]
 CH_COLORS = ["#4FC3F7", "#81C784", "#FFB74D", "#E57373"]
 CAPT_FRAME_OPTIONS = [128, 256, 512, 1024, 2048, 4096]   # 4096 = firmware max
-COLLECT_MB = 4          # "Collect Ethernet": one-shot burst size, MB per chip
+# "Collect Ethernet" one-shot burst sizes, MB per chip (BCAP takes integer MB)
+COLLECT_MB_OPTIONS = [1, 2, 4, 8, 16, 64]
+COLLECT_MB_DEFAULT = 1   # MB; 1 MB/chip = 262144 samples/ch
 # Neuron integration timestep (Q16.16): larger dt -> faster simulation.
 NEURON_DT_OPTIONS = [
     ("0.25x slow", 0x2000),
@@ -586,9 +588,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.capt_frames.addItems([f"{n} frames" for n in CAPT_FRAME_OPTIONS])
         self.capt_frames.setCurrentText("512 frames")
         # one-shot burst-over-Ethernet snapshot (BCAP+BRDO): fresh full-rate
-        # capture of the next COLLECT_MB MB/chip, far more reliable than the
-        # cyclic continuous stream.
-        self.collect_btn = QtWidgets.QPushButton(f"Collect Ethernet ({COLLECT_MB} MB)")
+        # capture of the selected MB/chip, far more reliable than the cyclic
+        # continuous stream. Size is selectable via the combo.
+        self.collect_mb_cb = QtWidgets.QComboBox()
+        self.collect_mb_cb.addItems([f"{m} MB" for m in COLLECT_MB_OPTIONS])
+        self.collect_mb_cb.setCurrentText(f"{COLLECT_MB_DEFAULT} MB")
+        self.collect_btn = QtWidgets.QPushButton("Collect Ethernet")
         self.collect_btn.clicked.connect(self._on_collect_eth)
         # the cyclic continuous stream is OPT-IN -- off until you press this
         self.stream_btn = QtWidgets.QPushButton("Start Live Stream")
@@ -602,7 +607,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         og.addWidget(self.run_btn, 3, 0, 1, 2)
         og.addWidget(self.capt_frames, 4, 0)
         og.addWidget(self.capt_btn, 4, 1)
-        og.addWidget(self.collect_btn, 5, 0, 1, 2)
+        og.addWidget(self.collect_mb_cb, 5, 0)
+        og.addWidget(self.collect_btn, 5, 1)
         og.addWidget(self.stream_btn, 6, 0, 1, 2)
         col.addWidget(opt)
 
@@ -682,8 +688,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     def _set_controls_enabled(self, on):
         for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.collect_btn,
-                  self.stream_btn, self.dt_cb, self.np_target, self.np_loadprof,
-                  self.np_prog_btn):
+                  self.collect_mb_cb, self.stream_btn, self.dt_cb, self.np_target,
+                  self.np_loadprof, self.np_prog_btn):
             w.setEnabled(on)
         for sp in self.np_spins.values():
             sp.setEnabled(on)
@@ -843,8 +849,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if self.tap:
             self.tap.close()
             self.tap = None
-        self.status.setText(f"collecting {COLLECT_MB} MB/chip burst over Ethernet...")
-        mb = COLLECT_MB
+        mb = COLLECT_MB_OPTIONS[self.collect_mb_cb.currentIndex()]
+        self._last_collect_mb = mb
+        self.status.setText(f"collecting {mb} MB/chip burst over Ethernet...")
         self._bg(lambda: self.collected.emit(self._burst_collect(mb)))
 
     def _burst_collect(self, mb):
@@ -932,19 +939,20 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.status.setText("live stream stopped")
 
     def _show_burst(self, chans, cov):
+        mb = getattr(self, "_last_collect_mb", COLLECT_MB_DEFAULT)
         win = pg.GraphicsLayoutWidget()
-        win.setWindowTitle(f"Ethernet burst -- {COLLECT_MB} MB/chip")
+        win.setWindowTitle(f"Ethernet burst -- {mb} MB/chip")
         win.setBackground("#101418")
         win.resize(1000, 720)
         for ch in range(4):
             p = win.addPlot(row=ch, col=0)
             p.showGrid(x=True, y=True, alpha=0.25)
             p.setLabel("left", f"ch{ch}", units="V")
-            p.setDownsampling(auto=True, mode="peak")   # 1M pts render smoothly
+            p.setDownsampling(auto=True, mode="peak")   # big arrays render smoothly
             p.setClipToView(True)
             y = chans[ch].astype(np.float32) * VOLTS_PER_COUNT
             p.plot(np.arange(len(y)), y, pen=pg.mkPen(CH_COLORS[ch], width=1.0))
-        win.addLabel(f"BCAP {COLLECT_MB} MB/chip @ 1 GS/s  (x = ns; "
+        win.addLabel(f"BCAP {mb} MB/chip @ 1 GS/s  (x = ns; "
                      f"coverage {100 * cov:.1f}%)", row=4, col=0)
         win.show()
         self._popup = win
