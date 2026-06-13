@@ -1,237 +1,172 @@
 `timescale 1ns/1ps
 
-module izh_dac_bank (
-    input  wire        clk,
-    input  wire        reset,
-    input  wire        cfg_strobe,
-    input  wire [1:0]  cfg_channel,
-    input  wire        cfg_all,
-    input  wire [3:0]  cfg_param,
-    input  wire [31:0] cfg_value,
-    input  wire [2:0]  debug_channel,
+// Izhikevich neuron bank (runs in the slow clk_50 neuron domain).
+//
+// Config is loaded from a dual-clock BRAM ("config bank"): the MicroBlaze
+// writes the profile image over AXI on port A; this module reads it on port B
+// when a start pulse arrives (already synchronized into clk). One reader walks
+// the whole BRAM each pulse, gated by the control word at address 0:
+//
+//   addr 0 : control   [3:0] = neuron program mask (bit n -> program neuron n)
+//                       [8]   = global-set (program the global region)
+//   addr 1 : global dt              (Q16.16)
+//   addr 2 : global update_period   (counts of clk; low 24 bits)
+//   addr 4 + n*8 + {0..5} : neuron n profile = a, b, c, d, Ic, I  (Q16.16)
+//
+// While a neuron is being (re)programmed it is held in reset; the others keep
+// free-running and streaming spikes. Source selection and pulse shaping happen
+// downstream in the GT clock domain and are NOT part of this bank.
 
-    output wire [7:0]  source_modes,
-    output wire [31:0] debug_word,
-    output wire [3:0]  spike_flags
+module izh_dac_bank #(
+    parameter integer ADDR_W = 6              // 64-word config BRAM
+) (
+    input  wire                   clk,        // clk_50 (neuron domain)
+    input  wire                   reset,      // global reset, active high
+    input  wire                   prog_start, // 1-cycle pulse (CDC'd to clk): load bank
+
+    output reg  [ADDR_W-1:0]      cfg_addr,   // config BRAM port-B read address
+    input  wire [31:0]            cfg_data,   // config BRAM port-B read data (1-cycle latency)
+
+    output wire [3:0]             spike_flags,    // per-neuron spike (-> GT pulse shaper)
+    output wire [31:0]            debug_word
 );
+    // ---- defaults (regular-spiking; a=0.02 b=0.20 c=-65 d=8 Ic=10 I=0) -------
+    localparam signed [31:0] DEF_A      = 32'sh0000_051F;
+    localparam signed [31:0] DEF_B      = 32'sh0000_3333;
+    localparam signed [31:0] DEF_C      = 32'shFFBF_0000;
+    localparam signed [31:0] DEF_D      = 32'sh0008_0000;
+    localparam signed [31:0] DEF_I      = 32'sh0000_0000;
+    localparam signed [31:0] DEF_ICONST = 32'sh000A_0000;
+    localparam signed [31:0] DEF_DT     = 32'sh0000_1000; // 0.0625
+    localparam [23:0]        DEF_PERIOD = 24'd256;        // ~5.12 us @ 50 MHz
 
-    // Izhikevich regular-spiking defaults:
-    //   a=0.02, b=0.20, c=-65, d=8, I_input=0, I_constant=10.
-    localparam signed [31:0] DEFAULT_A      = 32'sh0000_051F; // 0.02
-    localparam signed [31:0] DEFAULT_B      = 32'sh0000_3333; // 0.20
-    localparam signed [31:0] DEFAULT_C      = 32'shFFBF_0000; // -65 mV
-    localparam signed [31:0] DEFAULT_D      = 32'sh0008_0000; // 8
-    localparam signed [31:0] DEFAULT_I      = 32'sh0000_0000; // external I input held at 0
-    localparam signed [31:0] DEFAULT_DT     = 32'sh0000_1000; // 0.0625
-    localparam signed [31:0] DEFAULT_ICONST = 32'sh000A_0000; // constant drive 10
-    localparam signed [31:0] DEFAULT_OFFSET = 32'sh0000_0000;
-    // update_period counts neuron-clock cycles.  The bank now runs on the
-    // 50 MHz neuron clock (was 200 MHz), so 256 keeps the same ~5.12 us
-    // default step rate the firmware and host scripts were tuned against.
-    localparam [23:0] DEFAULT_UPDATE_PERIOD = 24'd256;
-
+    // ---- config registers ----------------------------------------------------
     reg signed [31:0] a_param [0:3];
     reg signed [31:0] b_param [0:3];
     reg signed [31:0] c_param [0:3];
     reg signed [31:0] d_param [0:3];
     reg signed [31:0] i_param [0:3];
-    reg signed [31:0] timestep_param [0:3];
-    reg signed [31:0] i_constant [0:3];
-    reg signed [31:0] v_offset [0:3];
-    reg [23:0] update_period [0:3];
-    reg direct_vout_mode [0:3];
-    reg [1:0] source_mode [0:3];
-    reg [3:0] neuron_reset = 4'hF;
-    reg [23:0] spike_counter [0:3];
-    reg [23:0] last_spike_interval [0:3];
+    reg signed [31:0] i_const [0:3];
+    reg signed [31:0] g_dt;
+    reg [23:0]        g_period;
+    reg [3:0]         neuron_reset;
 
-    wire signed [31:0] v_out [0:3];
-    wire signed [31:0] u_out [0:3];
-    wire [3:0] spike;
-    wire [3:0] step_enable;
+    // ---- BRAM layout constants ----------------------------------------------
+    localparam [ADDR_W-1:0] A_CTRL   = 6'd0;
+    localparam [ADDR_W-1:0] A_DT     = 6'd1;
+    localparam [ADDR_W-1:0] A_PERIOD = 6'd2;
+    localparam [ADDR_W-1:0] A_NBASE  = 6'd4;
+    localparam integer      NSTRIDE  = 8;
+    localparam [ADDR_W-1:0] A_LAST   = A_NBASE + 4 * NSTRIDE - 1;  // 35
 
-    integer cfg_i;
+    // ---- reader FSM (2 cycles/word: address then registered data) -----------
+    localparam [2:0] S_IDLE = 3'd0, S_WAIT = 3'd1, S_READ = 3'd2, S_DONE = 3'd3;
+    reg [2:0]        st;
+    reg [ADDR_W-1:0] idx;
+    reg [3:0]        mask;
+    reg              global_set;
 
-    task set_defaults;
-        input integer idx;
-        begin
-            a_param[idx]        <= DEFAULT_A;
-            b_param[idx]        <= DEFAULT_B;
-            c_param[idx]        <= DEFAULT_C;
-            d_param[idx]        <= DEFAULT_D;
-            i_param[idx]        <= DEFAULT_I;
-            timestep_param[idx] <= DEFAULT_DT;
-            i_constant[idx]     <= DEFAULT_ICONST;
-            v_offset[idx]       <= DEFAULT_OFFSET;
-            update_period[idx]  <= DEFAULT_UPDATE_PERIOD;
-            direct_vout_mode[idx] <= 1'b0;
-            source_mode[idx]    <= 2'd0;
-        end
-    endtask
+    wire [1:0] nsel = idx[4:3];               // (idx - A_NBASE) >> 3, for idx>=4
+    wire [2:0] psel = idx[2:0];               // (idx - A_NBASE) & 7
+    wire       in_neuron = (idx >= A_NBASE) && (psel <= 3'd5);
 
-    task write_param;
-        input integer idx;
-        input [3:0] param;
-        input [31:0] value;
-        begin
-            case (param)
-            4'd0: a_param[idx]        <= value;
-            4'd1: b_param[idx]        <= value;
-            4'd2: c_param[idx]        <= value;
-            4'd3: d_param[idx]        <= value;
-            4'd4: i_param[idx]        <= value;
-            4'd5: timestep_param[idx] <= value;
-            4'd6: i_constant[idx]     <= value;
-            4'd7: v_offset[idx]       <= value;
-            4'd8: source_mode[idx]    <= value[1:0];
-            4'd9: update_period[idx]  <= value[23:0];
-            4'd10: direct_vout_mode[idx] <= value[0];
-            default: begin end
-            endcase
-        end
-    endtask
-
+    integer k;
     always @(posedge clk) begin
         if (reset) begin
-            for (cfg_i = 0; cfg_i < 4; cfg_i = cfg_i + 1) begin
-                set_defaults(cfg_i);
-                spike_counter[cfg_i] <= 24'd0;
-                last_spike_interval[cfg_i] <= 24'd0;
+            for (k = 0; k < 4; k = k + 1) begin
+                a_param[k] <= DEF_A; b_param[k] <= DEF_B;
+                c_param[k] <= DEF_C; d_param[k] <= DEF_D;
+                i_param[k] <= DEF_I; i_const[k] <= DEF_ICONST;
             end
+            g_dt <= DEF_DT; g_period <= DEF_PERIOD;
             neuron_reset <= 4'hF;
+            st <= S_IDLE; idx <= 0; cfg_addr <= 0; mask <= 0; global_set <= 0;
         end else begin
-            for (cfg_i = 0; cfg_i < 4; cfg_i = cfg_i + 1) begin
-                if (spike[cfg_i]) begin
-                    last_spike_interval[cfg_i] <= spike_counter[cfg_i];
-                    spike_counter[cfg_i] <= 24'd0;
-                end else if (spike_counter[cfg_i] != 24'hFF_FFFF) begin
-                    spike_counter[cfg_i] <= spike_counter[cfg_i] + 1'b1;
-                end
-            end
-
-            neuron_reset <= 4'h0;
-
-            if (cfg_strobe) begin
-                if (cfg_param == 4'hE) begin
-                    if (cfg_all) begin
-                        for (cfg_i = 0; cfg_i < 4; cfg_i = cfg_i + 1) begin
-                            set_defaults(cfg_i);
-                            spike_counter[cfg_i] <= 24'd0;
-                            last_spike_interval[cfg_i] <= 24'd0;
-                        end
-                        neuron_reset <= 4'hF;
-                    end else begin
-                        set_defaults(cfg_channel);
-                        spike_counter[cfg_channel] <= 24'd0;
-                        last_spike_interval[cfg_channel] <= 24'd0;
-                        neuron_reset[cfg_channel] <= 1'b1;
-                    end
-                end else if (cfg_param == 4'hF) begin
-                    if (cfg_all) begin
-                        neuron_reset <= 4'hF;
-                        for (cfg_i = 0; cfg_i < 4; cfg_i = cfg_i + 1) begin
-                            spike_counter[cfg_i] <= 24'd0;
-                            last_spike_interval[cfg_i] <= 24'd0;
-                        end
-                    end else begin
-                        neuron_reset[cfg_channel] <= 1'b1;
-                        spike_counter[cfg_channel] <= 24'd0;
-                        last_spike_interval[cfg_channel] <= 24'd0;
-                    end
-                end else begin
-                    if (cfg_all) begin
-                        for (cfg_i = 0; cfg_i < 4; cfg_i = cfg_i + 1) begin
-                            write_param(cfg_i, cfg_param, cfg_value);
-                            spike_counter[cfg_i] <= 24'd0;
-                            last_spike_interval[cfg_i] <= 24'd0;
-                        end
-                        neuron_reset <= 4'hF;
-                    end else begin
-                        write_param(cfg_channel, cfg_param, cfg_value);
-                        neuron_reset[cfg_channel] <= 1'b1;
-                        spike_counter[cfg_channel] <= 24'd0;
-                        last_spike_interval[cfg_channel] <= 24'd0;
+            case (st)
+                S_IDLE: begin
+                    neuron_reset <= 4'h0;          // all neurons free-run
+                    if (prog_start) begin
+                        idx <= A_CTRL; cfg_addr <= A_CTRL; st <= S_WAIT;
                     end
                 end
-            end
+                S_WAIT: st <= S_READ;              // 1-cycle BRAM read latency
+                S_READ: begin
+                    if (idx == A_CTRL) begin
+                        mask <= cfg_data[3:0];
+                        global_set <= cfg_data[8];
+                        neuron_reset <= cfg_data[3:0];     // hold masked in reset
+                    end else if (idx == A_DT && global_set) begin
+                        g_dt <= cfg_data;
+                    end else if (idx == A_PERIOD && global_set) begin
+                        g_period <= cfg_data[23:0];
+                    end else if (in_neuron && mask[nsel]) begin
+                        case (psel)
+                        3'd0: a_param[nsel] <= cfg_data;
+                        3'd1: b_param[nsel] <= cfg_data;
+                        3'd2: c_param[nsel] <= cfg_data;
+                        3'd3: d_param[nsel] <= cfg_data;
+                        3'd4: i_const[nsel] <= cfg_data;   // Ic
+                        3'd5: i_param[nsel] <= cfg_data;   // I
+                        default: ;
+                        endcase
+                    end
+
+                    if (idx == A_LAST) begin
+                        st <= S_DONE;
+                    end else begin
+                        idx <= idx + 1'b1; cfg_addr <= idx + 1'b1; st <= S_WAIT;
+                    end
+                end
+                S_DONE: begin
+                    neuron_reset <= 4'h0;          // release the reprogrammed neurons
+                    st <= S_IDLE;
+                end
+                default: st <= S_IDLE;
+            endcase
         end
     end
 
-    genvar neuron_idx;
+    // ---- neurons (core explicitly emits SPIKE; spikes go to the GT shaper) ---
+    wire [3:0]         spike;
+    wire signed [31:0] v_out [0:3];
+    wire signed [31:0] u_out [0:3];
+
+    genvar n;
     generate
-        for (neuron_idx = 0; neuron_idx < 4; neuron_idx = neuron_idx + 1) begin : gen_izh_channels
-            reg [23:0] update_counter = 24'd0;
-            wire [23:0] update_reload = (update_period[neuron_idx] <= 24'd1) ?
-                                         24'd0 : (update_period[neuron_idx] - 1'b1);
+        for (n = 0; n < 4; n = n + 1) begin : gen_neuron
+            reg [23:0] upd_cnt = 24'd0;
+            wire [23:0] reload = (g_period <= 24'd1) ? 24'd0 : (g_period - 1'b1);
+            wire step = (upd_cnt == 24'd0);
 
             always @(posedge clk) begin
-                if (reset | neuron_reset[neuron_idx]) begin
-                    update_counter <= 24'd0;
-                end else if (update_reload == 24'd0) begin
-                    update_counter <= 24'd0;
-                end else if (update_counter == update_reload) begin
-                    update_counter <= 24'd0;
-                end else begin
-                    update_counter <= update_counter + 1'b1;
-                end
+                if (reset | neuron_reset[n] | (reload == 24'd0))
+                    upd_cnt <= 24'd0;
+                else if (upd_cnt == reload)
+                    upd_cnt <= 24'd0;
+                else
+                    upd_cnt <= upd_cnt + 1'b1;
             end
-
-            assign step_enable[neuron_idx] = (update_counter == 24'd0);
 
             izh_neuron u_izh_neuron (
                 .clk        (clk),
-                .reset      (reset | neuron_reset[neuron_idx]),
-                .a_param    (a_param[neuron_idx]),
-                .b_param    (b_param[neuron_idx]),
-                .c_param    (c_param[neuron_idx]),
-                .d_param    (d_param[neuron_idx]),
-                .I          (i_param[neuron_idx]),
-                .v_timestep (timestep_param[neuron_idx]),
-                .I_constant (i_constant[neuron_idx]),
-                .step_enable(step_enable[neuron_idx]),
-                .SPIKE      (spike[neuron_idx]),
-                .v_out      (v_out[neuron_idx]),
-                .u_out      (u_out[neuron_idx])
+                .reset      (reset | neuron_reset[n]),
+                .a_param    (a_param[n]),
+                .b_param    (b_param[n]),
+                .c_param    (c_param[n]),
+                .d_param    (d_param[n]),
+                .I          (i_param[n]),
+                .v_timestep (g_dt),
+                .I_constant (i_const[n]),
+                .step_enable(step),
+                .SPIKE      (spike[n]),
+                .v_out      (v_out[n]),
+                .u_out      (u_out[n])
             );
         end
     endgenerate
 
-    assign source_modes = {
-        source_mode[3],
-        source_mode[2],
-        source_mode[1],
-        source_mode[0]
-    };
-
-    wire [1:0] dbg_idx = (debug_channel >= 3'd1 && debug_channel <= 3'd4) ?
-                         (debug_channel[1:0] - 2'd1) : 2'd0;
-
-    reg [31:0] debug_word_r;
-    always @(*) begin
-        case (debug_channel)
-        3'd5: begin
-            debug_word_r = {8'h1D, timestep_param[0][23:0]};
-        end
-        3'd6: begin
-            debug_word_r = {8'h1E, last_spike_interval[0]};
-        end
-        3'd7: begin
-            debug_word_r = {8'h1F, update_period[0]};
-        end
-        default: begin
-            debug_word_r = {
-                8'h1A,
-                direct_vout_mode[dbg_idx],
-                source_mode[dbg_idx],
-                spike[dbg_idx],
-                dbg_idx,
-                last_spike_interval[dbg_idx][17:0]
-            };
-        end
-        endcase
-    end
-
-    assign debug_word = debug_word_r;
+    wire busy = (st != S_IDLE);
     assign spike_flags = spike;
+    assign debug_word  = {8'h1A, mask, busy, global_set, v_out[0][17:0]};
 
 endmodule
