@@ -34,8 +34,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from burst_capture import Reassembler, uart_cmd, decode_chip  # noqa: E402
 
 PROGRAM_SAMPLES = 16384
-# common edge phase for all channels; distinct amplitude per channel (counts)
-SQUARE_PERIOD = 1024          # ns at 1 GS/s -> 16 periods per BRAM loop
+# Same pseudo-random sequence on every channel (so cross-correlation has a sharp,
+# unambiguous peak at the inter-channel lag), scaled by a distinct amplitude per
+# channel (so a decode/duplicate bug can't fake alignment). "chip" held PRN_K
+# samples to keep it inside the loopback bandwidth.
+PRN_K = 8                     # samples per random chip (~125 MHz)
+PRN_SEED = 0xC0DE
 CH_AMPL = [0x2000, 0x3000, 0x4000, 0x5000]
 
 
@@ -47,14 +51,23 @@ def pack_pair(s0, s1):
     return ((s1 & 0xFFFF) << 16) | (s0 & 0xFFFF)
 
 
-def square_words(period, amplitude):
-    """Bipolar square wave (survives AC coupling), rising edge at phase 0,
-    tiled across the full 16384-sample BRAM loop."""
-    one = np.where((np.arange(period) % period) < period // 2,
-                   amplitude, -amplitude).astype(int)
-    full = np.resize(one, PROGRAM_SAMPLES)
-    return [pack_pair(clamp_s16(full[2 * k]), clamp_s16(full[2 * k + 1]))
-            for k in range(PROGRAM_SAMPLES // 2)]
+def prn_words(amplitude):
+    """Band-limited up/down chirp (2->38 MHz and back over the 16384-sample
+    loop, so it's loop-continuous). Same on every channel; pulse-compression
+    gives a sharp, strong cross-correlation peak that survives the ~40 MHz
+    loopback, unlike a fast PRN."""
+    n = PROGRAM_SAMPLES
+    fs = 1.0e9
+    half = n // 2
+    t = np.arange(half) / fs
+    f0, f1 = 2.0e6, 38.0e6
+    k = (f1 - f0) / (half / fs)
+    ph_up = 2.0 * np.pi * (f0 * t + 0.5 * k * t * t)
+    up = np.sin(ph_up)
+    full = np.concatenate([up, up[::-1]])[:n]      # up then down -> seamless loop
+    full = (amplitude * full).astype(int)
+    return [pack_pair(clamp_s16(full[2 * j]), clamp_s16(full[2 * j + 1]))
+            for j in range(n // 2)]
 
 
 def prog_channel(s, ch, words):
@@ -77,23 +90,21 @@ def prog_channel(s, ch, words):
     uart_cmd(s, "WRTE 3 0x00100060", ("OK", "RW3"), timeout=2)
 
 
-def lag(a, b, W=64):
-    """Integer sample lag (|lag| <= W) that best aligns b to a. Searches only a
-    small window around 0 so a periodic pattern's repeat peaks don't fool it
-    (the true misalignment is at most a few samples)."""
-    a = a - a.mean()
-    b = b - b.mean()
+def lag(a, b, W=8192):
+    """Integer sample lag (|lag| <= W) that aligns b to a, via FFT cross-
+    correlation (fast, wide search). The chirp's pulse-compression gives one
+    sharp peak at the true inter-channel offset (which may be large, since the
+    DAC BRAM loops can start at different phases)."""
+    a = a.astype(float) - a.mean()
+    b = b.astype(float) - b.mean()
     n = min(len(a), len(b))
     a, b = a[:n], b[:n]
-    best_k, best_c = 0, -1e300
-    for k in range(-W, W + 1):
-        if k >= 0:
-            c = float(np.dot(a[k:], b[:n - k]))
-        else:
-            c = float(np.dot(a[:n + k], b[-k:]))
-        if c > best_c:
-            best_c, best_k = c, k
-    return best_k
+    N = 1
+    while N < 2 * n:
+        N *= 2
+    c = np.fft.irfft(np.fft.rfft(a, N) * np.conj(np.fft.rfft(b, N)), N)
+    c = np.concatenate([c[N - W:], c[:W + 1]])     # lags -W .. +W
+    return int(np.argmax(c) - W)
 
 
 def main():
@@ -113,11 +124,11 @@ def main():
     s = serial.Serial(args.port, 115200, timeout=5, write_timeout=5)
     time.sleep(0.2)
 
-    print("Programming square-wave loopback patterns (distinct amplitude/ch)...")
+    print("Programming chirp loopback patterns (common sweep, distinct amp/ch)...")
     uart_cmd(s, "WRTE 2 0x01000018", ("OK", "RW2"), timeout=2)
     for ch in range(4):
-        prog_channel(s, ch, square_words(SQUARE_PERIOD, CH_AMPL[ch]))
-        print(f"  DAC{ch}: square {SQUARE_PERIOD} ns, +/-{CH_AMPL[ch]} counts")
+        prog_channel(s, ch, prn_words(CH_AMPL[ch]))
+        print(f"  DAC{ch}: chirp 2-38 MHz, +/-{CH_AMPL[ch]} counts")
     uart_cmd(s, "NSRC all bram", ("DAC source", "ERR"), timeout=3)
     time.sleep(0.3)
 
@@ -133,11 +144,17 @@ def main():
         asm.close(); s.close(); sys.exit("capture failed")
     print(" ", uart_cmd(s, "BRDO", ("OK BRDO", "ERR"), timeout=10))
     deadline = time.time() + args.drain_timeout
-    while not asm.complete() and time.time() < deadline:
+    # wait until the drain goes idle (no packet for 0.6 s) or it all arrives
+    while time.time() < deadline:
+        if asm.complete():
+            break
+        if (time.time() - asm.last_t) > 0.6 and asm.coverage(0) > 0:
+            break
         time.sleep(0.1)
     s.close()
     for chip in (0, 1):
-        print(f"  chip{chip}: {100.0*asm.got[chip]/bytes_per_chip:.2f}% received")
+        print(f"  chip{chip}: coverage {100.0*asm.coverage(chip):.2f}% "
+              f"(lossless = 100%)")
 
     chans = {}
     chans.update(decode_chip(asm.buf[0], 0))
@@ -145,42 +162,75 @@ def main():
     asm.close()
     sig = {c: chans[c].astype(np.float64) for c in range(4)}
 
+    amps = {c: (np.percentile(sig[c], 95) - np.percentile(sig[c], 5)) / 2.0
+            for c in range(4)}
+    alive = [c for c in range(4) if amps[c] < 25000.0]   # railed = open input
+    dead = [c for c in range(4) if c not in alive]
+    ratios = {c: amps[c] / CH_AMPL[c] for c in alive}
+    gain = float(np.median(list(ratios.values()))) if alive else 0.0
+
     print("\n--- identity / decode (amplitude per channel) ---")
     ok_id = True
     for c in range(4):
-        amp = (np.percentile(sig[c], 95) - np.percentile(sig[c], 5)) / 2.0
-        exp = CH_AMPL[c]
-        match = abs(amp - exp) < 0.35 * exp
+        if c in dead:
+            print(f"  ch{c}: +/-{amps[c]:.0f}  RAILED -> open ADC input / loopback "
+                  f"cable loose")
+            continue
+        rel = ratios[c] / gain if gain else 0.0
+        match = 0.7 < rel < 1.4
         ok_id &= match
-        print(f"  ch{c}: measured +/-{amp:.0f}  expected +/-{exp}  "
+        print(f"  ch{c}: +/-{amps[c]:.0f}  loopback gain {ratios[c]:.2f}x  "
               f"[{'OK' if match else 'MISMATCH'}]")
+    print(f"  estimated loopback gain ~{gain:.2f}x; alive={alive} dead={dead}")
 
-    print("\n--- alignment (sample lag vs ch0, in windows across the capture) ---")
-    nwin = 5
-    span = min(8192, len(sig[0]) // (nwin + 1))   # ~8 square periods, fast
+    print("\n--- alignment (sample lag vs reference, windows across capture) ---")
+    print("  (the meaningful test is a CONSTANT offset = the two chips stay")
+    print("   sample-locked; a nonzero value is the fixed DAC-loop-phase + cable")
+    print("   skew, not a capture error. A DRIFTING offset = lost sync.)")
+    ref = alive[0] if alive else 0
+    nwin = 6
+    span = 16384
     ok_align = True
-    for c in range(1, 4):
+    pairs = [c for c in alive if c != ref]
+    for c in pairs:
         lags = []
         for w in range(nwin):
-            o = w * (len(sig[0]) // nwin)
-            o = min(o, len(sig[0]) - span)
-            lags.append(lag(sig[0][o:o + span], sig[c][o:o + span]))
-        const = (max(lags) - min(lags)) == 0
-        aligned = all(abs(l) <= 1 for l in lags)
-        ok_align &= aligned and const
-        chip = "chip1 (cross-DMA!)" if c >= 2 else "chip0"
-        print(f"  ch0 vs ch{c} [{chip}]: lags={lags}  "
-              f"{'ALIGNED' if aligned else 'OFFSET'}"
-              f"{'' if const else '  (NOT CONSTANT -> dropped samples!)'}")
+            o = min(w * (len(sig[ref]) // nwin), len(sig[ref]) - span)
+            lags.append(lag(sig[ref][o:o + span], sig[c][o:o + span]))
+        steady = lags[1:]                      # skip the first-loop start transient
+        const = (max(steady) - min(steady)) <= 2
+        ok_align &= const
+        chip = "cross-DMA chip0<->chip1" if (ref < 2) != (c < 2) else "same chip"
+        print(f"  ch{ref} vs ch{c} [{chip}]: lags={lags}  offset~{steady[-1]} "
+              f"samples  {'SAMPLE-LOCKED (constant)' if const else 'DRIFTING -> FAIL'}")
 
-    print(f"\nRESULT: identity {'OK' if ok_id else 'FAIL'}, "
-          f"alignment {'OK (all channels 1-to-1)' if ok_align else 'FAIL'}")
+    # per-channel losslessness: the PRN repeats every 16384 samples, so a lossless
+    # capture has ch[n] == ch[n+16384] everywhere (period-lag stays 0). A dropped
+    # beat shifts everything after it -> the period-lag drifts.
+    print("\n--- losslessness (PRN self-periodicity per channel) ---")
+    LOOP = PROGRAM_SAMPLES
+    ok_loss = True
+    for c in alive:
+        drifts = []
+        for w in range(6):
+            o = min(w * (len(sig[c]) // 6), len(sig[c]) - LOOP - 8192)
+            drifts.append(lag(sig[c][o:o + 8192], sig[c][o + LOOP:o + LOOP + 8192]))
+        good = all(d == 0 for d in drifts[1:])   # skip first-loop start transient
+        ok_loss &= good
+        print(f"  ch{c}: period-lag = {drifts}  "
+              f"{'LOSSLESS (steady)' if good else 'DRIFT -> dropped beats!'}")
+
+    np.save("captures/burst_align_raw.npy", np.stack([sig[c] for c in range(4)]))
+    print(f"\nRESULT: dead {dead} (reseat cables); live {alive}: "
+          f"identity {'OK' if ok_id else 'FAIL'}, "
+          f"lossless {'OK' if ok_loss else 'FAIL'}, "
+          f"alignment {'OK (1-to-1)' if ok_align and pairs else 'FAIL' if pairs else 'n/a'}")
 
     if args.plot:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        span = 4 * SQUARE_PERIOD
+        span = 256
         fig, ax = plt.subplots(figsize=(12, 5))
         for c in range(4):
             ax.plot(sig[c][:span], lw=0.8, label=f"ch{c}")

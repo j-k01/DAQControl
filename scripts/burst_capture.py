@@ -38,7 +38,13 @@ class Reassembler:
                  rcvbuf=256 << 20):
         self.bytes_per_chip = bytes_per_chip
         self.buf = [bytearray(bytes_per_chip), bytearray(bytes_per_chip)]
-        self.got = [0, 0]               # bytes successfully placed per chip
+        self.got = [0, 0]               # packets placed per chip (may double-count dups)
+        # coverage bitmap per chip in PAYLOAD-sized slots -> true unique coverage
+        slot = 1408
+        self.nslot = (bytes_per_chip + slot - 1) // slot
+        self.slot = slot
+        self.cov = [np.zeros(self.nslot, dtype=bool), np.zeros(self.nslot, dtype=bool)]
+        self.last_t = time.time()
         self.lock = threading.Lock()
         self.running = True
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -70,9 +76,17 @@ class Reassembler:
                 continue
             self.buf[chip][off:off + len(payload)] = payload
             self.got[chip] += len(payload)
+            self.cov[chip][off // self.slot] = True
+            self.last_t = time.time()
+
+    def coverage(self, chip):
+        return float(self.cov[chip].mean())
+
+    def idle(self, secs):
+        return (time.time() - self.last_t) > secs
 
     def complete(self):
-        return self.got[0] >= self.bytes_per_chip and self.got[1] >= self.bytes_per_chip
+        return self.cov[0].all() and self.cov[1].all()
 
     def close(self):
         self.running = False

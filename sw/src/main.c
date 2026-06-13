@@ -1859,7 +1859,9 @@ static void cmd_burst(char *args)
     dma_arm_burst(0u, BURST_DDR_BASE0, bytes);
     dma_arm_burst(1u, BURST_DDR_BASE1, bytes);
 
-    /* publish region info for the A53 readout (and reset the readout handshake) */
+    /* publish region info for the A53 readout. readout_req (0x10) stays
+     * monotonic across captures -- the A53 drains on any change -- so we do not
+     * reset it here. */
     Xil_Out32(STRM_MAILBOX + 0x04u, bytes);
     Xil_Out32(STRM_MAILBOX + 0x08u, BURST_DDR_BASE0);
     Xil_Out32(STRM_MAILBOX + 0x0Cu, BURST_DDR_BASE1);
