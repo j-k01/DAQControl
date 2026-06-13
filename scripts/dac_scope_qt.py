@@ -56,9 +56,19 @@ LABEL_TO_NSRC = {"DDS": "dds", "BRAM": "bram", "Neuron": "izh"}
 WAVEFORMS = ["Sine", "Triangle", "Trapezoid", "Square", "Sawtooth"]
 CH_COLORS = ["#4FC3F7", "#81C784", "#FFB74D", "#E57373"]
 CAPT_FRAME_OPTIONS = [128, 256, 512, 1024, 2048, 4096]   # 4096 = firmware max
-# "Collect Ethernet" one-shot burst sizes, MB per chip (BCAP takes integer MB)
-COLLECT_MB_OPTIONS = [1, 2, 4, 8, 16, 64]
-COLLECT_MB_DEFAULT = 1   # MB; 1 MB/chip = 262144 samples/ch
+# "Collect Ethernet" one-shot burst sizes, BYTES per chip (sent as BCAP <KB>k;
+# samples/ch = bytes/4 since each chip = 2 channels x int16).
+COLLECT_SIZE_OPTIONS = [
+    (64 * 1024,   "64 KB (16k/ch)"),
+    (128 * 1024,  "128 KB (32k/ch)"),
+    (256 * 1024,  "256 KB (64k/ch)"),
+    (512 * 1024,  "512 KB (128k/ch)"),
+    (1 << 20,     "1 MB (256k/ch)"),
+    (4 << 20,     "4 MB (1M/ch)"),
+    (16 << 20,    "16 MB (4M/ch)"),
+    (64 << 20,    "64 MB (16M/ch)"),
+]
+COLLECT_SIZE_DEFAULT_IDX = 0   # 64 KB/chip
 # Neuron integration timestep (Q16.16): larger dt -> faster simulation.
 NEURON_DT_OPTIONS = [
     ("0.25x slow", 0x2000),
@@ -591,8 +601,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         # capture of the selected MB/chip, far more reliable than the cyclic
         # continuous stream. Size is selectable via the combo.
         self.collect_mb_cb = QtWidgets.QComboBox()
-        self.collect_mb_cb.addItems([f"{m} MB" for m in COLLECT_MB_OPTIONS])
-        self.collect_mb_cb.setCurrentText(f"{COLLECT_MB_DEFAULT} MB")
+        self.collect_mb_cb.addItems([lbl for _, lbl in COLLECT_SIZE_OPTIONS])
+        self.collect_mb_cb.setCurrentIndex(COLLECT_SIZE_DEFAULT_IDX)
         self.collect_btn = QtWidgets.QPushButton("Collect Ethernet")
         self.collect_btn.clicked.connect(self._on_collect_eth)
         # the cyclic continuous stream is OPT-IN -- off until you press this
@@ -849,21 +859,23 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if self.tap:
             self.tap.close()
             self.tap = None
-        mb = COLLECT_MB_OPTIONS[self.collect_mb_cb.currentIndex()]
-        self._last_collect_mb = mb
-        self.status.setText(f"collecting {mb} MB/chip burst over Ethernet...")
-        self._bg(lambda: self.collected.emit(self._burst_collect(mb)))
+        nbytes, lbl = COLLECT_SIZE_OPTIONS[self.collect_mb_cb.currentIndex()]
+        self._last_collect_bytes = nbytes
+        self.status.setText(f"collecting {lbl} burst over Ethernet...")
+        self._bg(lambda: self.collected.emit(self._burst_collect(nbytes)))
 
-    def _burst_collect(self, mb):
+    def _burst_collect(self, nbytes):
         """One-shot BCAP+BRDO -> {ch: int16[], '_cov': fraction} or None.
-        Fires a fresh full-rate capture of the next `mb` MB/chip and drains it
-        over UDP on the same local port the live stream uses (now released).
-        Reuses burst_capture.Reassembler for offset-bitmap (dedup'd) coverage."""
+        Fires a fresh full-rate capture of `nbytes` bytes/chip (sent as
+        BCAP <KB>k) and drains it over UDP on the same local port the live
+        stream uses (now released). Reuses burst_capture.Reassembler for
+        offset-bitmap (dedup'd) coverage."""
         try:
             from burst_capture import Reassembler, decode_chip
         except Exception:  # noqa: BLE001
             return None
-        bpc = mb << 20
+        bpc = nbytes
+        kb = nbytes // 1024
         try:
             asm = Reassembler(self.args.board_ip, self.args.cmd_port,
                               self.args.local_ip, self.args.local_port, bpc)
@@ -875,7 +887,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.dac.stop_stream()
             asm.register()
             time.sleep(0.3)
-            if not self.dac.cmd(f"BCAP {mb}",
+            if not self.dac.cmd(f"BCAP {kb}k",
                                 ok=("OK BCAP", "ERR")).startswith("OK BCAP"):
                 return None
             self.dac.cmd("BRDO", ok=("OK BRDO", "ERR"))
@@ -939,9 +951,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.status.setText("live stream stopped")
 
     def _show_burst(self, chans, cov):
-        mb = getattr(self, "_last_collect_mb", COLLECT_MB_DEFAULT)
+        nbytes = getattr(self, "_last_collect_bytes", 1 << 20)
+        size_lbl = (f"{nbytes >> 20} MB" if nbytes >= (1 << 20)
+                    else f"{nbytes >> 10} KB")
         win = pg.GraphicsLayoutWidget()
-        win.setWindowTitle(f"Ethernet burst -- {mb} MB/chip")
+        win.setWindowTitle(f"Ethernet burst -- {size_lbl}/chip")
         win.setBackground("#101418")
         win.resize(1000, 720)
         for ch in range(4):
@@ -952,7 +966,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             p.setClipToView(True)
             y = chans[ch].astype(np.float32) * VOLTS_PER_COUNT
             p.plot(np.arange(len(y)), y, pen=pg.mkPen(CH_COLORS[ch], width=1.0))
-        win.addLabel(f"BCAP {mb} MB/chip @ 1 GS/s  (x = ns; "
+        win.addLabel(f"BCAP {size_lbl}/chip @ 1 GS/s  (x = ns; "
                      f"coverage {100 * cov:.1f}%)", row=4, col=0)
         win.show()
         self._popup = win

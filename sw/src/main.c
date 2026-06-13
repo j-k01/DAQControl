@@ -1840,12 +1840,15 @@ static void cmd_dma_capture(u32 frames)
 
 static u32 burst_bytes = BURST_MAX_BYTES;
 
-/* BCAP [MB] -- full-rate, un-decimated, sample-aligned burst capture of all 4
- * ADC channels into two 512 MB DDR regions. Default 512 MB/chip. */
+/* BCAP [N[k|m]] -- full-rate, un-decimated, sample-aligned burst capture of all
+ * 4 ADC channels into two 512 MB DDR regions. N defaults to MB ('m' optional,
+ * back-compatible with BCAP <MB>); a 'k' suffix means KB for small grabs
+ * (e.g. BCAP 64k = 64 KB/chip = 16384 samples/ch). Default 512 MB/chip. */
 static void cmd_burst(char *args)
 {
     char *p = args;
-    u32 mb = 512u;
+    u32 cnt = 512u;
+    u32 unit = 0x100000u;                   /* default unit: MB */
     u32 bytes;
     u32 beats;
     u32 s0 = 0;
@@ -1854,15 +1857,25 @@ static void cmd_burst(char *args)
     while (*p == ' ') {
         p++;
     }
-    parse_u32_arg(&p, &mb);
-    if (mb == 0u) {
-        mb = 512u;
+    parse_u32_arg(&p, &cnt);
+    if (*p == 'k' || *p == 'K') {           /* KB */
+        unit = 0x400u;
+        p++;
+    } else if (*p == 'm' || *p == 'M') {    /* MB (explicit) */
+        p++;
     }
-    bytes = mb * 0x100000u;                 /* MB -> bytes */
+    if (cnt == 0u) {
+        cnt = 512u;
+        unit = 0x100000u;
+    }
+    bytes = cnt * unit;
     if (bytes > BURST_MAX_BYTES) {
         bytes = BURST_MAX_BYTES;
     }
     bytes &= ~0x0Fu;                         /* whole 16 B beats */
+    if (bytes == 0u) {
+        bytes = 0x10u;                       /* at least one beat */
+    }
     beats = bytes >> 4;
     burst_bytes = bytes;
 
