@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """Real-time 4-channel ADC scope (PyQtGraph) with DAC control + UART capture.
 
-Live Ethernet ADC stream on the left; a control panel on the right:
-  - Connection: pick the UART COM port and connect/reconnect.
+ADC plot on the left; a control panel on the right. The board does NOT stream
+on connect -- acquisition is opt-in:
+  - Collect Ethernet: one-shot full-rate burst snapshot (BCAP+BRDO, COLLECT_MB
+    MB/chip) in a popup -- the reliable way to grab data.
+  - Start/Stop Live Stream: toggles the cyclic continuous stream into the main
+    plot when you want it (off by default).
+
+  - Connection: pick the UART COM port and connect/reconnect (no streaming).
   - Per channel: source = DDS / BRAM / Neuron, plus a neuron-profile dropdown.
   - Neuron params: a/b/c/d/I spinboxes (physical Izhikevich units). Set them
     (or "load profile" to stage a built-in profile), pick target = all or a
     single channel, then hit "Program neurons" to apply -- each NEUR write
     resets + reloads the target, so it runs fresh with exactly these values.
-    Watch the live stream to verify the dynamics.
+    Collect Ethernet (or Start Live Stream) to verify the dynamics.
   - BRAM waveform builder: pick a shape (Sine/Triangle/Trapezoid/Square/Saw),
     period (ns), pulse width (ns), and a voltage range (clamped to the DAC's
     allowable range, default 0 V .. max), then program it to a channel.
@@ -203,13 +209,20 @@ class DacControl:
     def set_cic(self, on):
         return self.cmd(f"STRM CIC {'on' if on else 'off'}", ok=("OK STRM", "ERR"))
 
-    def base_setup(self, decim, usecic):
+    def base_setup(self):
+        """Board init only -- does NOT start the live stream (opt-in)."""
         self.cmd("WRTE 2 0x01000018")
         for ch, prof in enumerate(NEURON_PROFILES):
             self.cmd(f"NEUR {ch} {prof}")
         self.cmd("NEUR all period 1")
         self.cmd("NEUR all dt 0x8000")
-        self.cmd(f"STRM {decim}{' cic' if usecic else ''}", ok=("OK STRM", "ERR"))
+
+    def start_stream(self, decim, usecic):
+        return self.cmd(f"STRM {decim}{' cic' if usecic else ''}",
+                        ok=("OK STRM", "ERR"))
+
+    def stop_stream(self):
+        return self.cmd("STRM STOP", ok=("OK STRM", "ERR"))
 
     def uart_capture(self, frames):
         """PCAP <frames> -> 4-channel snapshot. PCAP keeps RW3_DAC_PROGRAM_EN
@@ -577,6 +590,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
         # cyclic continuous stream.
         self.collect_btn = QtWidgets.QPushButton(f"Collect Ethernet ({COLLECT_MB} MB)")
         self.collect_btn.clicked.connect(self._on_collect_eth)
+        # the cyclic continuous stream is OPT-IN -- off until you press this
+        self.stream_btn = QtWidgets.QPushButton("Start Live Stream")
+        self.stream_btn.setCheckable(True)
+        self.stream_btn.clicked.connect(self._on_stream_toggle)
         og.addWidget(self.cic_chk, 0, 0, 1, 2)
         og.addWidget(self.auto_chk, 1, 0)
         og.addWidget(self.trig_chk, 1, 1)
@@ -586,6 +603,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         og.addWidget(self.capt_frames, 4, 0)
         og.addWidget(self.capt_btn, 4, 1)
         og.addWidget(self.collect_btn, 5, 0, 1, 2)
+        og.addWidget(self.stream_btn, 6, 0, 1, 2)
         col.addWidget(opt)
 
         col.addStretch(1)
@@ -639,7 +657,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         # ---- UART (required): everything in the panel works over this ----
         try:
             self.dac = DacControl(port)
-            self.dac.base_setup(self.args.decim, self.args.cic)
+            self.dac.base_setup()
             for ch in range(4):
                 self.dac.set_source(ch, self.args.initial)
         except Exception as e:  # noqa: BLE001
@@ -649,26 +667,23 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return
         self.connect_btn.setText("Reconnect")
         self._set_controls_enabled(True)
-        # ---- Ethernet stream (optional): the live plot. If the NIC/cable
-        #      isn't up, the panel + UART Capture still fully work. ----
-        try:
-            self.tap = StreamTap(self.args.board_ip, self.args.cmd_port,
-                                 self.args.local_ip, self.args.local_port,
-                                 self.args.window, self.args.rcvbuf)
-            self.conn_lbl.setText(f"connected {port} + Ethernet stream")
-            self.conn_lbl.setStyleSheet("color:#81C784;")
-        except Exception as e:  # noqa: BLE001
-            self.tap = None
-            self.conn_lbl.setText(f"connected {port} (UART only - no stream)")
-            self.conn_lbl.setStyleSheet("color:#FFB74D;")
-            self.status.setText(
-                f"UART connected - controls + UART Capture work. Live plot "
-                f"needs the NIC at {self.args.local_ip} and an Ethernet link "
-                f"({type(e).__name__}).")
+        # The live stream is OPT-IN: nothing streams until the user presses
+        # "Start Live Stream". Use "Collect Ethernet" for one-shot snapshots.
+        self.tap = None
+        if self.stream_btn.isChecked():
+            self.stream_btn.blockSignals(True)
+            self.stream_btn.setChecked(False)
+            self.stream_btn.setText("Start Live Stream")
+            self.stream_btn.blockSignals(False)
+        self.conn_lbl.setText(f"connected {port} (stream off)")
+        self.conn_lbl.setStyleSheet("color:#81C784;")
+        self.status.setText("Connected. Use Collect Ethernet for a snapshot, "
+                            "or Start Live Stream for continuous.")
 
     def _set_controls_enabled(self, on):
         for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.collect_btn,
-                  self.dt_cb, self.np_target, self.np_loadprof, self.np_prog_btn):
+                  self.stream_btn, self.dt_cb, self.np_target, self.np_loadprof,
+                  self.np_prog_btn):
             w.setEnabled(on)
         for sp in self.np_spins.values():
             sp.setEnabled(on)
@@ -848,6 +863,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         except OSError:
             return None
         try:
+            # ensure the DMA is free: a cyclic stream and a one-shot burst
+            # can't share the DMA, so stop streaming before BCAP (no-op if off).
+            self.dac.stop_stream()
             asm.register()
             time.sleep(0.3)
             if not self.dac.cmd(f"BCAP {mb}",
@@ -871,7 +889,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     def _on_collected(self, chans):
         self.collect_btn.setEnabled(True)
-        if getattr(self, "_resume_after_collect", False):
+        # resume the live stream only if it was running before the collect
+        if getattr(self, "_resume_after_collect", False) and self.dac:
+            self.dac.start_stream(self.args.decim, self.args.cic)
             try:
                 self.tap = StreamTap(self.args.board_ip, self.args.cmd_port,
                                      self.args.local_ip, self.args.local_port,
@@ -883,6 +903,33 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return
         cov = chans.pop("_cov", 1.0)
         self._show_burst(chans, cov)
+
+    def _on_stream_toggle(self, checked):
+        if not self.dac:
+            self.stream_btn.setChecked(False)
+            return
+        if checked:
+            self.stream_btn.setText("Stop Live Stream")
+            self.status.setText("starting live stream...")
+            self.dac.start_stream(self.args.decim, self.args.cic)
+            try:
+                self.tap = StreamTap(self.args.board_ip, self.args.cmd_port,
+                                     self.args.local_ip, self.args.local_port,
+                                     self.args.window, self.args.rcvbuf)
+                self.status.setText("live stream ON")
+            except OSError as e:  # noqa: BLE001
+                self.tap = None
+                self.dac.stop_stream()
+                self.stream_btn.setChecked(False)
+                self.stream_btn.setText("Start Live Stream")
+                self.status.setText(f"stream socket failed: {e}")
+        else:
+            if self.tap:
+                self.tap.close()
+                self.tap = None
+            self.dac.stop_stream()
+            self.stream_btn.setText("Start Live Stream")
+            self.status.setText("live stream stopped")
 
     def _show_burst(self, chans, cov):
         win = pg.GraphicsLayoutWidget()
