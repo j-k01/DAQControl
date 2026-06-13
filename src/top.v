@@ -63,6 +63,9 @@ module top #(
     wire clk_100;
     wire clk_125;
     wire clk_50;
+    wire clk_300;       // ADC DMA drain clock: faster than the 250 MHz beat
+                        // clock so the S2MM/HP path has bandwidth headroom to
+                        // recover from DDR backpressure (lossless burst).
     wire mmcm_locked;
 
     clk_wiz_0 u_clk_wiz (
@@ -72,6 +75,7 @@ module top #(
         .clk_out2  (clk_100),
         .clk_out3  (clk_125),
         .clk_out4  (clk_50),
+        .clk_out5  (clk_300),
         .locked    (mmcm_locked)
     );
 
@@ -273,7 +277,9 @@ module top #(
         .RO_REG7_RDINT_0      (ro_reg7_rdint)
 `ifdef DAQ_WITH_PS_DDR_DMA
         ,
-        .gt_rx_usrclk_2       (gth_rx_usrclk2),
+        // DMA S2MM/SG + both HP ports run on clk_300 (drain headroom over the
+        // 250 MHz ADC beat clock). The async capture FIFO crosses 250->300.
+        .gt_rx_usrclk_2       (clk_300),
         .reset_rtl            (fabric_rst),
         .S_AXIS_S2MM_0_tdata  (adc0_dma_axis_tdata),
         .S_AXIS_S2MM_0_tkeep  (adc0_dma_axis_tkeep),
@@ -1643,6 +1649,7 @@ module top #(
 
     adc_burst_capture u_adc0_burst_capture (
         .clk           (gth_rx_usrclk2),
+        .rd_clk        (clk_300),
         .rst           (adc_rx_reset),
         .start         (adc_capture_start),
         .capture_beats (adc_capture_beats_rx),
@@ -1658,6 +1665,7 @@ module top #(
 
     adc_burst_capture u_adc1_burst_capture (
         .clk           (gth_rx_usrclk2),
+        .rd_clk        (clk_300),
         .rst           (adc_rx_reset),
         .start         (adc_capture_start),
         .capture_beats (adc_capture_beats_rx),

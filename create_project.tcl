@@ -341,7 +341,12 @@ proc verify_bram_dataplane_ips {} {
 
 proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
     set fabric_clk_hz 200000000
-    set adc_dma_clk_hz 250000000
+    # DMA S2MM/SG + HP-port clock. Runs FASTER than the 250 MHz ADC beat clock
+    # so the DMA drain has bandwidth headroom over the 4 GB/s/chip fill rate and
+    # can recover from DDR backpressure -> lossless burst capture. The capture
+    # FIFO (src/adc_burst_capture.v) is async and crosses 250 MHz -> this clock,
+    # which top.v drives from clk_wiz CLKOUT5 (clk_300).
+    set adc_dma_clk_hz 300000000
 
     create_bd_design $bd_name
     current_bd_design $bd_name
@@ -501,6 +506,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
                 CONFIG.c_m_axi_s2mm_data_width {128} \
                 CONFIG.c_s_axis_s2mm_tdata_width {128} \
                 CONFIG.c_sg_length_width {26} \
+                CONFIG.c_s2mm_burst_size {256} \
             ] [get_bd_cells axi_dma_${dma}]
 
             create_bd_cell -type ip -vlnv xilinx.com:ip:axi_clock_converter:* axi_clock_converter_${dma}
@@ -848,6 +854,8 @@ set_property -dict [list \
     CONFIG.CLKOUT3_REQUESTED_OUT_FREQ {125.000} \
     CONFIG.CLKOUT4_USED               {true} \
     CONFIG.CLKOUT4_REQUESTED_OUT_FREQ {50.000} \
+    CONFIG.CLKOUT5_USED               {true} \
+    CONFIG.CLKOUT5_REQUESTED_OUT_FREQ {300.000} \
     CONFIG.USE_LOCKED                 {true} \
     CONFIG.USE_RESET                  {false} \
 ] [get_ips clk_wiz_0]
