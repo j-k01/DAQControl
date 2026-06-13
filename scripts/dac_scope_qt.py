@@ -50,6 +50,7 @@ LABEL_TO_NSRC = {"DDS": "dds", "BRAM": "bram", "Neuron": "izh"}
 WAVEFORMS = ["Sine", "Triangle", "Trapezoid", "Square", "Sawtooth"]
 CH_COLORS = ["#4FC3F7", "#81C784", "#FFB74D", "#E57373"]
 CAPT_FRAME_OPTIONS = [128, 256, 512, 1024, 2048, 4096]   # 4096 = firmware max
+COLLECT_MB = 4          # "Collect Ethernet": one-shot burst size, MB per chip
 # Neuron integration timestep (Q16.16): larger dt -> faster simulation.
 NEURON_DT_OPTIONS = [
     ("0.25x slow", 0x2000),
@@ -370,6 +371,7 @@ class StreamTap:
 # --------------------------------------------------------------- GUI
 class ScopeWindow(QtWidgets.QMainWindow):
     captured = QtCore.pyqtSignal(object)      # emits {ch: int16[]} from worker
+    collected = QtCore.pyqtSignal(object)     # emits {ch: int16[]} burst-over-eth
     stat_result = QtCore.pyqtSignal(bool, str)  # board-verify result from worker
 
     def __init__(self, args):
@@ -570,6 +572,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.capt_frames = QtWidgets.QComboBox()
         self.capt_frames.addItems([f"{n} frames" for n in CAPT_FRAME_OPTIONS])
         self.capt_frames.setCurrentText("512 frames")
+        # one-shot burst-over-Ethernet snapshot (BCAP+BRDO): fresh full-rate
+        # capture of the next COLLECT_MB MB/chip, far more reliable than the
+        # cyclic continuous stream.
+        self.collect_btn = QtWidgets.QPushButton(f"Collect Ethernet ({COLLECT_MB} MB)")
+        self.collect_btn.clicked.connect(self._on_collect_eth)
         og.addWidget(self.cic_chk, 0, 0, 1, 2)
         og.addWidget(self.auto_chk, 1, 0)
         og.addWidget(self.trig_chk, 1, 1)
@@ -578,6 +585,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         og.addWidget(self.run_btn, 3, 0, 1, 2)
         og.addWidget(self.capt_frames, 4, 0)
         og.addWidget(self.capt_btn, 4, 1)
+        og.addWidget(self.collect_btn, 5, 0, 1, 2)
         col.addWidget(opt)
 
         col.addStretch(1)
@@ -589,6 +597,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._apply_view_ranges()
         self._set_controls_enabled(False)
         self.captured.connect(self._show_capture)
+        self.collected.connect(self._on_collected)
         self.stat_result.connect(self._show_stat)
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._update)
@@ -658,8 +667,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 f"({type(e).__name__}).")
 
     def _set_controls_enabled(self, on):
-        for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.dt_cb,
-                  self.np_target, self.np_loadprof, self.np_prog_btn):
+        for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.collect_btn,
+                  self.dt_cb, self.np_target, self.np_loadprof, self.np_prog_btn):
             w.setEnabled(on)
         for sp in self.np_spins.values():
             sp.setEnabled(on)
@@ -808,6 +817,92 @@ class ScopeWindow(QtWidgets.QMainWindow):
         win.show()
         self._popup = win                  # keep a reference so it isn't GC'd
         self.status.setText(f"UART capture: {len(chans[0])} samples/ch.")
+
+    # ---- one-shot burst capture over Ethernet (BCAP + BRDO) ----
+    def _on_collect_eth(self):
+        if not self.dac:
+            return
+        self.collect_btn.setEnabled(False)
+        # free the UDP socket the live stream holds so the burst readout can use it
+        self._resume_after_collect = self.tap is not None
+        if self.tap:
+            self.tap.close()
+            self.tap = None
+        self.status.setText(f"collecting {COLLECT_MB} MB/chip burst over Ethernet...")
+        mb = COLLECT_MB
+        self._bg(lambda: self.collected.emit(self._burst_collect(mb)))
+
+    def _burst_collect(self, mb):
+        """One-shot BCAP+BRDO -> {ch: int16[], '_cov': fraction} or None.
+        Fires a fresh full-rate capture of the next `mb` MB/chip and drains it
+        over UDP on the same local port the live stream uses (now released).
+        Reuses burst_capture.Reassembler for offset-bitmap (dedup'd) coverage."""
+        try:
+            from burst_capture import Reassembler, decode_chip
+        except Exception:  # noqa: BLE001
+            return None
+        bpc = mb << 20
+        try:
+            asm = Reassembler(self.args.board_ip, self.args.cmd_port,
+                              self.args.local_ip, self.args.local_port, bpc)
+        except OSError:
+            return None
+        try:
+            asm.register()
+            time.sleep(0.3)
+            if not self.dac.cmd(f"BCAP {mb}",
+                                ok=("OK BCAP", "ERR")).startswith("OK BCAP"):
+                return None
+            self.dac.cmd("BRDO", ok=("OK BRDO", "ERR"))
+            deadline = time.time() + 8.0
+            while time.time() < deadline:
+                if asm.complete():
+                    break
+                if (time.time() - asm.last_t) > 0.6 and asm.coverage(0) > 0:
+                    break
+                time.sleep(0.05)
+            chans = {}
+            chans.update(decode_chip(asm.buf[0], 0))
+            chans.update(decode_chip(asm.buf[1], 2))
+            chans["_cov"] = min(asm.coverage(0), asm.coverage(1))
+        finally:
+            asm.close()
+        return chans
+
+    def _on_collected(self, chans):
+        self.collect_btn.setEnabled(True)
+        if getattr(self, "_resume_after_collect", False):
+            try:
+                self.tap = StreamTap(self.args.board_ip, self.args.cmd_port,
+                                     self.args.local_ip, self.args.local_port,
+                                     self.args.window, self.args.rcvbuf)
+            except OSError:
+                self.tap = None
+        if chans is None:
+            self.status.setText("Collect Ethernet failed (capture/drain timeout).")
+            return
+        cov = chans.pop("_cov", 1.0)
+        self._show_burst(chans, cov)
+
+    def _show_burst(self, chans, cov):
+        win = pg.GraphicsLayoutWidget()
+        win.setWindowTitle(f"Ethernet burst -- {COLLECT_MB} MB/chip")
+        win.setBackground("#101418")
+        win.resize(1000, 720)
+        for ch in range(4):
+            p = win.addPlot(row=ch, col=0)
+            p.showGrid(x=True, y=True, alpha=0.25)
+            p.setLabel("left", f"ch{ch}", units="V")
+            p.setDownsampling(auto=True, mode="peak")   # 1M pts render smoothly
+            p.setClipToView(True)
+            y = chans[ch].astype(np.float32) * VOLTS_PER_COUNT
+            p.plot(np.arange(len(y)), y, pen=pg.mkPen(CH_COLORS[ch], width=1.0))
+        win.addLabel(f"BCAP {COLLECT_MB} MB/chip @ 1 GS/s  (x = ns; "
+                     f"coverage {100 * cov:.1f}%)", row=4, col=0)
+        win.show()
+        self._popup = win
+        self.status.setText(f"Ethernet burst: {len(chans[0])} samples/ch, "
+                            f"coverage {100 * cov:.1f}%.")
 
     # ---- display ----
     def _apply_view_ranges(self):
