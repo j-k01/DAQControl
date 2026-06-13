@@ -232,7 +232,11 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
 #define BURST_DDR_BASE0   0x40000000u    /* chip0 capture region (512 MB)     */
 #define BURST_DDR_BASE1   0x60000000u    /* chip1 capture region (512 MB)     */
 #define BURST_MAX_BYTES   0x20000000u    /* 512 MB/chip                       */
-#define BURST_DESC_BYTES  0x04000000u    /* 64 MB = SG 26-bit length max      */
+/* Per-descriptor byte count. MUST fit the SG buffer-length field, which is 26
+ * bits (c_sg_length_width=26) -> max 0x03FFFFFF. 0x04000000 (64 MB) is 2^26,
+ * one too many: it masks to length 0 -> zero-length descriptor -> DMAIntErr on
+ * any capture >= 64 MB/chip. 32 MB chunks fit and split 512 MB into 16 descs. */
+#define BURST_DESC_BYTES  0x02000000u    /* 32 MB/descriptor (fits 26-bit len) */
 #define BURST_MAGIC       0x42435054u    /* mailbox magic: burst armed        */
 /* burst mailbox layout (at STRM_MAILBOX): 00=magic 04=bytes/chip 08=base0
  * 0C=base1 10=readout_req(MB++) 14=readout_done(A53 echo) 18=beats */
