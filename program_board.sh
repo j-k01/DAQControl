@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Program the ZCU102 from a plain command line (Linux shell or git-bash/Windows).
 #
-#   ./program_board.sh            # FPGA + MicroBlaze + A53 PS-eth app (--init-ps)
-#   ./program_board.sh --no-eth   # FPGA + MicroBlaze only (UART features)
-#   ./program_board.sh --no-init  # load A53 app WITHOUT psu_init (already inited)
+#   ./program_board.sh                  # FPGA + MicroBlaze + A53 PS-eth (--init-ps)
+#   ./program_board.sh --no-eth         # FPGA + MicroBlaze only (UART features)
+#   ./program_board.sh --no-init        # load A53 app WITHOUT psu_init
+#   ./program_board.sh --vivado 2024.1  # pin a Vivado version (default: newest)
 #
+# Two Vivado versions installed? It defaults to the newest and pins vivado +
+# xsdb/xsct to the SAME version; use --vivado <ver> (or XVER=<ver>) to choose.
 # Tool discovery (first hit wins): explicit env (VIVADO=/XSCT=), a
-# `with_xilinx_2024_1` wrapper on PATH (capitolpeak), `vivado`/`xsdb` on PATH,
-# $XILINX_VIVADO / $XILINX_VITIS, then C:\Xilinx (Windows). Override e.g.:
+# `with_xilinx_2024_1` wrapper (capitolpeak), the version-pinned C:\Xilinx dirs,
+# PATH, then $XILINX_VIVADO / $XILINX_VITIS. Override e.g.:
 #   VIVADO=/c/Xilinx/Vivado/2024.1/bin/vivado.bat ./program_board.sh
 #
 # Headless note: Vitis' launcher probes the X server with `xlsclients`; on a
@@ -20,12 +23,17 @@ cd "$(dirname "$0")"
 
 DO_ETH=1
 INIT_PS="--init-ps"
-for arg in "$@"; do
-    case "$arg" in
-        --no-eth)  DO_ETH=0 ;;
-        --no-init) INIT_PS="" ;;
-        *) echo "unknown arg: $arg" >&2; exit 2 ;;
+XVER="${XVER:-}"          # pin a Vivado/Vitis version, e.g. 2024.1; empty = newest
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --no-eth)   DO_ETH=0 ;;
+        --no-init)  INIT_PS="" ;;
+        --vivado)   shift; XVER="${1:-}" ;;
+        --vivado=*) XVER="${1#*=}" ;;
+        -h|--help)  sed -n '2,20p' "$0"; exit 0 ;;
+        *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
+    shift
 done
 
 # --- satisfy Vitis' X-server probe (Linux + Windows) -------------------------
@@ -43,12 +51,35 @@ if command -v with_xilinx_2024_1 >/dev/null 2>&1; then
     WRAP="with_xilinx_2024_1"      # capitolpeak env wrapper: prefixes the tool
 fi
 
+list_versions() {   # version dir names present under Xilinx, newest first
+    { ls -d /c/Xilinx/Vivado/*/ /c/Xilinx/Vitis/*/ 2>/dev/null || true; } \
+        | sed 's:/*$::; s:.*/::' | sort -Vru || true
+}
+pick_version() {    # the chosen version: --vivado/XVER if set, else newest
+    if [ -n "$XVER" ]; then echo "$XVER"; else list_versions | head -n1; fi
+}
+
 resolve() {   # echo a runnable command for base tool $1 (vivado/xsct/xsdb), or ""
     base="$1"
     [ -n "$WRAP" ] && { echo "$base"; return; }          # wrapper puts it on PATH
-    # On Windows (git-bash/MSYS) the extensionless launcher in bin/ is the *Linux*
-    # script (it execs unwrapped/lnx64.o/rlwrap and dies); the .bat is the real
-    # Windows entry point, so try .bat/.cmd FIRST there. On POSIX, bare name first.
+    ver="$(pick_version)"
+    # version-pinned Windows install dirs first, so vivado + xsdb/xsct come from
+    # the SAME version (xsdb ships under Vivado; xsct under Vitis).
+    case "$base" in
+        vivado) vdirs="/c/Xilinx/Vivado/$ver/bin" ;;
+        xsct)   vdirs="/c/Xilinx/Vitis/$ver/bin /c/Xilinx/Vivado/$ver/bin" ;;
+        xsdb)   vdirs="/c/Xilinx/Vivado/$ver/bin /c/Xilinx/Vitis/$ver/bin" ;;
+        *)      vdirs="" ;;
+    esac
+    if [ -n "$ver" ]; then
+        for d in $vdirs; do
+            for ext in .bat .cmd; do
+                [ -e "$d/$base$ext" ] && { echo "$d/$base$ext"; return; }
+            done
+        done
+    fi
+    # then PATH. On Windows the extensionless launcher in bin/ is the *Linux*
+    # script (execs unwrapped/lnx64.o/rlwrap and dies), so try .bat/.cmd FIRST.
     case "$(uname -s 2>/dev/null)" in
         MINGW*|MSYS*|CYGWIN*) try="$base.bat $base.cmd $base" ;;
         *)                    try="$base $base.bat $base.cmd" ;;
@@ -56,6 +87,7 @@ resolve() {   # echo a runnable command for base tool $1 (vivado/xsct/xsdb), or 
     for name in $try; do
         if command -v "$name" >/dev/null 2>&1; then command -v "$name"; return; fi
     done
+    # then $XILINX_* env roots
     case "$base" in
         vivado)     root="${XILINX_VIVADO:-}" ;;
         xsct|xsdb)  root="${XILINX_VITIS:-}" ;;
@@ -66,11 +98,6 @@ resolve() {   # echo a runnable command for base tool $1 (vivado/xsct/xsdb), or 
             [ -e "$root/bin/$base$ext" ] && { echo "$root/bin/$base$ext"; return; }
         done
     fi
-    # last resort: scan common Windows installs -- xsdb ships under Vivado too
-    for d in /c/Xilinx/Vivado /c/Xilinx/Vitis; do
-        cand=$(ls -d "$d"/*/bin/"$base".bat 2>/dev/null | sort -Vr | head -n1)
-        [ -n "$cand" ] && { echo "$cand"; return; }
-    done
 }
 
 run() {   # run resolved tool $1 with the wrapper if needed; rest = args
@@ -78,13 +105,21 @@ run() {   # run resolved tool $1 with the wrapper if needed; rest = args
     if [ -n "$WRAP" ]; then "$WRAP" "$cmd" "$@"; else "$cmd" "$@"; fi
 }
 
+if [ -z "$WRAP" ]; then
+    avail="$(list_versions | tr '\n' ' ')"
+    [ -n "$avail" ] && echo "Xilinx versions found: $avail"
+    [ -n "$XVER" ] && echo "using version: $XVER"   || true
+fi
+
 VIVADO="${VIVADO:-$(resolve vivado)}"
 # prefer xsdb (headless debugger) over xsct for the ELF load
 XSCT="${XSCT:-$(resolve xsdb)}"
 [ -z "$XSCT" ] && XSCT="$(resolve xsct)"
 
 if [ -z "$VIVADO" ]; then
-    echo "ERROR: vivado not found. Set VIVADO=/full/path/to/vivado[.bat]." >&2
+    echo "ERROR: vivado not found${XVER:+ for version $XVER}." >&2
+    echo "  Installed: $(list_versions | tr '\n' ' ')" >&2
+    echo "  Pick one with --vivado <ver>, or set VIVADO=/full/path/to/vivado.bat" >&2
     exit 1
 fi
 
