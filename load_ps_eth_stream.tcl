@@ -59,7 +59,7 @@ proc run_psu_init_if_requested {script_dir run_ps_init} {
     }
 
     set psu_init_file ""
-    foreach root [list [file join $script_dir hw] [file join $script_dir sw workspace] [file join $script_dir sw ps_eth_workspace]] {
+    foreach root [list [file join $script_dir hw] [file join $script_dir sw workspace] [file join $script_dir sw ps_eth_workspace] [file join $script_dir prebuilt]] {
         set psu_init_file [find_first_named_file $root psu_init.tcl]
         if {$psu_init_file ne ""} {
             break
