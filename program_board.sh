@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# Program the ZCU102 from a plain command line (git-bash on Windows).
+# Program the ZCU102 from a plain command line (Linux shell or git-bash/Windows).
 #
 #   ./program_board.sh            # FPGA + MicroBlaze + A53 PS-eth app (--init-ps)
 #   ./program_board.sh --no-eth   # FPGA + MicroBlaze only (UART features)
 #   ./program_board.sh --no-init  # load A53 app WITHOUT psu_init (already inited)
 #
-# Override tool locations if Xilinx isn't under C:\Xilinx:
-#   VIVADO_BAT=/c/Tools/Vivado/2024.1/bin/vivado.bat \
-#   XSCT_BAT=/c/Tools/Vitis/2024.1/bin/xsct.bat ./program_board.sh
+# Tool discovery (first hit wins): explicit env (VIVADO=/XSCT=), a
+# `with_xilinx_2024_1` wrapper on PATH (capitolpeak), `vivado`/`xsdb` on PATH,
+# $XILINX_VIVADO / $XILINX_VITIS, then C:\Xilinx (Windows). Override e.g.:
+#   VIVADO=/c/Xilinx/Vivado/2024.1/bin/vivado.bat ./program_board.sh
+#
+# Headless note: Vitis' launcher probes the X server with `xlsclients`; on a
+# box without it that prints "xlsclients not available on the system" and can
+# abort the load. We put a tiny no-op `xlsclients` on PATH for the duration --
+# the truthful answer on a headless host is "no X clients" -- so the launcher
+# proceeds normally. (We also prefer `xsdb`, the headless debugger shell.)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -21,30 +28,68 @@ for arg in "$@"; do
     esac
 done
 
-# Pick the newest install if several versions exist (override via env vars).
-find_bat() {  # $1 = product root, $2 = exe name -> newest match or empty
-    ls -d "$1"/*/bin/"$2" 2>/dev/null | sort -Vr | head -n1
-}
-VIVADO_BAT="${VIVADO_BAT:-$(find_bat /c/Xilinx/Vivado vivado.bat)}"
-XSCT_BAT="${XSCT_BAT:-$(find_bat /c/Xilinx/Vitis xsct.bat)}"
+# --- satisfy Vitis' X-server probe (Linux + Windows) -------------------------
+# The Vitis/XSCT launcher runs `xlsclients` to detect X sessions; on a headless
+# Linux box (or on Windows, where it doesn't exist) that aborts immediately with
+# "xlsclients not available on the system". tools/ holds no-op shims
+# (xlsclients.bat/.cmd for the Windows launcher, a POSIX script for Linux) that
+# truthfully report "no X clients" (exit 0) so the launcher proceeds. Prepend
+# tools/ for this run.
+PATH="$(pwd)/tools:$PATH"; export PATH
 
-if [ -z "$VIVADO_BAT" ] || [ ! -e "$VIVADO_BAT" ]; then
-    echo "ERROR: vivado.bat not found. Set VIVADO_BAT to its full path." >&2
+# --- locate the tools --------------------------------------------------------
+WRAP=""
+if command -v with_xilinx_2024_1 >/dev/null 2>&1; then
+    WRAP="with_xilinx_2024_1"      # capitolpeak env wrapper: prefixes the tool
+fi
+
+resolve() {   # echo a runnable command for base tool $1 (vivado/xsct/xsdb), or ""
+    base="$1"
+    [ -n "$WRAP" ] && { echo "$base"; return; }          # wrapper puts it on PATH
+    for name in "$base" "$base.bat"; do
+        if command -v "$name" >/dev/null 2>&1; then command -v "$name"; return; fi
+    done
+    case "$base" in
+        vivado)     root="${XILINX_VIVADO:-}" ;;
+        xsct|xsdb)  root="${XILINX_VITIS:-}" ;;
+        *)          root="" ;;
+    esac
+    if [ -n "$root" ]; then
+        for ext in "" ".bat"; do
+            [ -x "$root/bin/$base$ext" ] && { echo "$root/bin/$base$ext"; return; }
+        done
+    fi
+    case "$base" in
+        vivado)     ls -d /c/Xilinx/Vivado/*/bin/vivado.bat 2>/dev/null | sort -Vr | head -n1 ;;
+        xsct|xsdb)  ls -d /c/Xilinx/Vitis/*/bin/"$base".bat 2>/dev/null | sort -Vr | head -n1 ;;
+    esac
+}
+
+run() {   # run resolved tool $1 with the wrapper if needed; rest = args
+    cmd="$1"; shift
+    if [ -n "$WRAP" ]; then "$WRAP" "$cmd" "$@"; else "$cmd" "$@"; fi
+}
+
+VIVADO="${VIVADO:-$(resolve vivado)}"
+# prefer xsdb (headless debugger) over xsct for the ELF load
+XSCT="${XSCT:-$(resolve xsdb)}"
+[ -z "$XSCT" ] && XSCT="$(resolve xsct)"
+
+if [ -z "$VIVADO" ]; then
+    echo "ERROR: vivado not found. Set VIVADO=/full/path/to/vivado[.bat]." >&2
     exit 1
 fi
 
-echo "==> FPGA bitstream + MicroBlaze firmware"
-echo "    $VIVADO_BAT"
-"$VIVADO_BAT" -mode batch -source program_and_load.tcl
+echo "==> FPGA bitstream + MicroBlaze firmware   ($VIVADO)"
+run "$VIVADO" -mode batch -source program_and_load.tcl
 
 if [ "$DO_ETH" -eq 1 ]; then
-    if [ -z "$XSCT_BAT" ] || [ ! -e "$XSCT_BAT" ]; then
-        echo "ERROR: xsct.bat not found. Set XSCT_BAT, or pass --no-eth." >&2
+    if [ -z "$XSCT" ]; then
+        echo "ERROR: xsdb/xsct not found. Set XSCT=/full/path, or pass --no-eth." >&2
         exit 1
     fi
-    echo "==> A53 PS-Ethernet app ${INIT_PS:-(no psu_init)}"
-    echo "    $XSCT_BAT"
-    "$XSCT_BAT" load_ps_eth_stream.tcl $INIT_PS
+    echo "==> A53 PS-Ethernet app ${INIT_PS:-(no psu_init)}   ($XSCT)"
+    run "$XSCT" load_ps_eth_stream.tcl $INIT_PS
 fi
 
 echo "==> Done. Verify with: python scripts/uart_cmds.py --port COM10 STAT"

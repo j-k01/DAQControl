@@ -1,0 +1,5 @@
+#!/bin/sh
+# No-op shim for the Vitis/XSCT launcher's X-server probe (POSIX / Linux).
+# Headless: zero X clients. Reporting success lets xsct/vivado proceed instead
+# of aborting with "xlsclients not available on the system".
+exit 0
