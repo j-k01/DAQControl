@@ -46,7 +46,14 @@ fi
 resolve() {   # echo a runnable command for base tool $1 (vivado/xsct/xsdb), or ""
     base="$1"
     [ -n "$WRAP" ] && { echo "$base"; return; }          # wrapper puts it on PATH
-    for name in "$base" "$base.bat"; do
+    # On Windows (git-bash/MSYS) the extensionless launcher in bin/ is the *Linux*
+    # script (it execs unwrapped/lnx64.o/rlwrap and dies); the .bat is the real
+    # Windows entry point, so try .bat/.cmd FIRST there. On POSIX, bare name first.
+    case "$(uname -s 2>/dev/null)" in
+        MINGW*|MSYS*|CYGWIN*) try="$base.bat $base.cmd $base" ;;
+        *)                    try="$base $base.bat $base.cmd" ;;
+    esac
+    for name in $try; do
         if command -v "$name" >/dev/null 2>&1; then command -v "$name"; return; fi
     done
     case "$base" in
@@ -55,14 +62,15 @@ resolve() {   # echo a runnable command for base tool $1 (vivado/xsct/xsdb), or 
         *)          root="" ;;
     esac
     if [ -n "$root" ]; then
-        for ext in "" ".bat"; do
-            [ -x "$root/bin/$base$ext" ] && { echo "$root/bin/$base$ext"; return; }
+        for ext in ".bat" ""; do
+            [ -e "$root/bin/$base$ext" ] && { echo "$root/bin/$base$ext"; return; }
         done
     fi
-    case "$base" in
-        vivado)     ls -d /c/Xilinx/Vivado/*/bin/vivado.bat 2>/dev/null | sort -Vr | head -n1 ;;
-        xsct|xsdb)  ls -d /c/Xilinx/Vitis/*/bin/"$base".bat 2>/dev/null | sort -Vr | head -n1 ;;
-    esac
+    # last resort: scan common Windows installs -- xsdb ships under Vivado too
+    for d in /c/Xilinx/Vivado /c/Xilinx/Vitis; do
+        cand=$(ls -d "$d"/*/bin/"$base".bat 2>/dev/null | sort -Vr | head -n1)
+        [ -n "$cand" ] && { echo "$cand"; return; }
+    done
 }
 
 run() {   # run resolved tool $1 with the wrapper if needed; rest = args

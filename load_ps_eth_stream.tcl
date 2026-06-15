@@ -6,12 +6,24 @@ if {![info exists argv]} {
 
 set elf_file [file join $script_dir sw ps_eth_workspace ps_eth_stream Debug ps_eth_stream.elf]
 set run_ps_init 0
+set explicit_elf 0
 
 foreach arg $argv {
     if {$arg eq "--init-ps"} {
         set run_ps_init 1
     } else {
         set elf_file [file normalize $arg]
+        set explicit_elf 1
+    }
+}
+
+if {![file exists $elf_file] && !$explicit_elf} {
+    # Vivado-only / fresh-clone PCs have no Vitis workspace; fall back to the
+    # tracked prebuilt A53 ELF (mirrors program_and_load.tcl's MB fallback).
+    set prebuilt_elf [file join $script_dir prebuilt ps_eth_stream.elf]
+    if {[file exists $prebuilt_elf]} {
+        puts "Workspace ELF not found; using prebuilt A53 ELF: $prebuilt_elf"
+        set elf_file $prebuilt_elf
     }
 }
 
