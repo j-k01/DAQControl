@@ -51,9 +51,11 @@ if command -v with_xilinx_2024_1 >/dev/null 2>&1; then
     WRAP="with_xilinx_2024_1"      # capitolpeak env wrapper: prefixes the tool
 fi
 
-list_versions() {   # version dir names present under Xilinx, newest first
-    { ls -d /c/Xilinx/Vivado/*/ /c/Xilinx/Vitis/*/ 2>/dev/null || true; } \
-        | sed 's:/*$::; s:.*/::' | sort -Vru || true
+list_versions() {   # version numbers present under Xilinx (both install layouts)
+    # New layout: C:\Xilinx\<ver>\Vivado ; old layout: C:\Xilinx\Vivado\<ver>.
+    { ls -d /c/Xilinx/*/Vivado /c/Xilinx/*/Vitis \
+            /c/Xilinx/Vivado/* /c/Xilinx/Vitis/* 2>/dev/null || true; } \
+        | grep -oE '[0-9]{4}\.[0-9]+' | sort -Vru || true
 }
 pick_version() {    # the chosen version: --vivado/XVER if set, else newest
     if [ -n "$XVER" ]; then echo "$XVER"; else list_versions | head -n1; fi
@@ -63,12 +65,12 @@ resolve() {   # echo a runnable command for base tool $1 (vivado/xsct/xsdb), or 
     base="$1"
     [ -n "$WRAP" ] && { echo "$base"; return; }          # wrapper puts it on PATH
     ver="$(pick_version)"
-    # version-pinned Windows install dirs first, so vivado + xsdb/xsct come from
-    # the SAME version (xsdb ships under Vivado; xsct under Vitis).
+    # version-pinned install dirs first (both layouts), so vivado + xsdb/xsct
+    # come from the SAME version. xsdb ships under Vivado; xsct under Vitis.
     case "$base" in
-        vivado) vdirs="/c/Xilinx/Vivado/$ver/bin" ;;
-        xsct)   vdirs="/c/Xilinx/Vitis/$ver/bin /c/Xilinx/Vivado/$ver/bin" ;;
-        xsdb)   vdirs="/c/Xilinx/Vivado/$ver/bin /c/Xilinx/Vitis/$ver/bin" ;;
+        vivado) vdirs="/c/Xilinx/$ver/Vivado/bin /c/Xilinx/Vivado/$ver/bin" ;;
+        xsct)   vdirs="/c/Xilinx/$ver/Vitis/bin /c/Xilinx/Vitis/$ver/bin /c/Xilinx/$ver/Vivado/bin /c/Xilinx/Vivado/$ver/bin" ;;
+        xsdb)   vdirs="/c/Xilinx/$ver/Vivado/bin /c/Xilinx/Vivado/$ver/bin /c/Xilinx/$ver/Vitis/bin /c/Xilinx/Vitis/$ver/bin" ;;
         *)      vdirs="" ;;
     esac
     if [ -n "$ver" ]; then
