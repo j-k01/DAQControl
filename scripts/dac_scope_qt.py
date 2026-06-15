@@ -9,12 +9,20 @@ on connect -- acquisition is opt-in:
     plot when you want it (off by default).
 
   - Connection: pick the UART COM port and connect/reconnect (no streaming).
-  - Per channel: source = DDS / BRAM / Neuron, plus a neuron-profile dropdown.
+  - Per channel (DAC0..3): pick source = DDS / BRAM / Neuron (+ a neuron-profile
+    dropdown), then hit "Program DACn" to commit it -- the radio/profile only
+    stage a choice; the button sends NSRC (+ NEUR for Neuron) and the per-DAC
+    status line confirms "OK — <source>" once the board is reconfigured.
   - Neuron params: a/b/c/d/I spinboxes (physical Izhikevich units). Set them
-    (or "load profile" to stage a built-in profile), pick target = all or a
-    single channel, then hit "Program neurons" to apply -- each NEUR write
-    resets + reloads the target, so it runs fresh with exactly these values.
-    Collect Ethernet (or Start Live Stream) to verify the dynamics.
+    (or "load profile" to stage a built-in profile), then hit the per-neuron
+    "Prog 0..3" button (or "Prog all") to apply to that target -- each NEUR
+    write resets + reloads the target, so it runs fresh with exactly these
+    values. A status line reports OK / ERR after each program. Collect Ethernet
+    (or Start Live Stream) to verify the dynamics.
+  - Captures are saved automatically whichever transport you use: each grab
+    writes cap_<timestamp>_<src>.npz (+ per-channel CSVs) into --capture-dir
+    (default <repo>/captures), where <src> = "uart" (UART Capture) or "eth"
+    (Collect Ethernet) so the two are easy to tell apart.
   - BRAM waveform builder: pick a shape (Sine/Triangle/Trapezoid/Square/Saw),
     period (ns), pulse width (ns), and a voltage range (clamped to the DAC's
     allowable range, default 0 V .. max), then program it to a channel.
@@ -31,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import socket
 import struct
 import threading
@@ -102,6 +111,35 @@ NEURON_PROFILE_VALUES = {
 def izh_to_q16(v):
     """Physical Izhikevich value -> signed Q16.16 as a 32-bit word."""
     return int(round(v * 65536.0)) & 0xFFFFFFFF
+
+
+def save_capture(capture_dir, kind, chans, fs_hz, **meta):
+    """Save one capture's 4 channels into the captures subdirectory.
+
+    Every capture is saved regardless of transport; the source is encoded as a
+    filename ending (kind = "uart" or "eth"):
+      <capture_dir>/cap_<YYYYmmdd_HHMMSS>_<kind>.npz       raw int16 ch0..ch3
+      <capture_dir>/cap_<YYYYmmdd_HHMMSS>_<kind>_ch*.csv   per-channel time,volts
+    Returns the .npz path (str), or None on failure.
+    """
+    try:
+        os.makedirs(capture_dir, exist_ok=True)
+        stem = f"cap_{time.strftime('%Y%m%d_%H%M%S')}_{kind}"
+        arrays = {f"ch{ch}": np.asarray(chans[ch], dtype=np.int16)
+                  for ch in range(4)}
+        npz_path = os.path.join(capture_dir, stem + ".npz")
+        np.savez_compressed(npz_path,
+                            fs_hz=np.float64(fs_hz), kind=kind, **arrays,
+                            **{k: np.asarray(v) for k, v in meta.items()})
+        for ch in range(4):
+            y = arrays[f"ch{ch}"].astype(np.float64) * VOLTS_PER_COUNT
+            t = np.arange(len(y)) / fs_hz
+            np.savetxt(os.path.join(capture_dir, f"{stem}_ch{ch}.csv"),
+                       np.column_stack((t, y)), delimiter=",",
+                       header="time_s,volts", comments="")
+        return npz_path
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # --------------------------------------------------------------- DAC content
@@ -398,6 +436,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
     captured = QtCore.pyqtSignal(object)      # emits {ch: int16[]} from worker
     collected = QtCore.pyqtSignal(object)     # emits {ch: int16[]} burst-over-eth
     stat_result = QtCore.pyqtSignal(bool, str)  # board-verify result from worker
+    neuron_done = QtCore.pyqtSignal(str, bool)  # (target, ok) program-neuron result
+    dac_done = QtCore.pyqtSignal(int, bool, str)  # (ch, ok, detail) program-DAC result
 
     def __init__(self, args):
         super().__init__()
@@ -430,14 +470,28 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.plots.append(p)
             self.curves.append(p.plot(pen=pg.mkPen(CH_COLORS[ch], width=1.3)))
 
-        # ---- control panel (scrollable) ----
+        # ---- control panel (scrollable, two columns so it fits one screen) ----
+        COL_W = 270    # max width per column; both must fit without a h-scrollbar
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setMaximumWidth(330)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setFixedWidth(2 * COL_W + 28)   # +gutter for the vertical scrollbar
         root.addWidget(scroll)
         panel = QtWidgets.QWidget()
         scroll.setWidget(panel)
-        col = QtWidgets.QVBoxLayout(panel)
+        outer = QtWidgets.QVBoxLayout(panel)
+        cols = QtWidgets.QHBoxLayout()
+        outer.addLayout(cols)
+        left_w = QtWidgets.QWidget()
+        right_w = QtWidgets.QWidget()
+        left = QtWidgets.QVBoxLayout(left_w)
+        right = QtWidgets.QVBoxLayout(right_w)
+        left.setContentsMargins(0, 0, 0, 0)
+        right.setContentsMargins(0, 0, 0, 0)
+        left_w.setMaximumWidth(COL_W)
+        right_w.setMaximumWidth(COL_W)
+        cols.addWidget(left_w)
+        cols.addWidget(right_w)
 
         # connection
         conn = QtWidgets.QGroupBox("Connection")
@@ -460,10 +514,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.conn_lbl.setStyleSheet("color:#E57373;")
         self.conn_lbl.setWordWrap(True)
         cg.addWidget(self.conn_lbl, 3, 0, 1, 3)
-        col.addWidget(conn)
+        left.addWidget(conn)
 
-        # per-channel source + neuron profile
+        # per-channel source + neuron profile. The radio/profile only STAGE a
+        # selection; nothing reaches the board until the per-DAC "Program"
+        # button commits it (NSRC + NEUR), then the status line confirms.
         self.src_groups, self.prof_cbs = [], []
+        self.dac_btns, self.dac_status = [], []
         for ch in range(4):
             box = QtWidgets.QGroupBox(f"DAC{ch}")
             g = QtWidgets.QGridLayout(box)
@@ -472,18 +529,25 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 rb = QtWidgets.QRadioButton(lab)
                 if lab == args.initial:
                     rb.setChecked(True)
-                rb.toggled.connect(self._make_src_cb(ch, lab))
                 g.addWidget(rb, 0, i)
                 grp.addButton(rb)
             self.src_groups.append(grp)
             prof = QtWidgets.QComboBox()
             prof.addItems(NEURON_PROFILES)
             prof.setCurrentIndex(ch % len(NEURON_PROFILES))
-            prof.currentTextChanged.connect(self._make_prof_cb(ch))
             g.addWidget(QtWidgets.QLabel("neuron"), 1, 0)
             g.addWidget(prof, 1, 1, 1, 2)
             self.prof_cbs.append(prof)
-            col.addWidget(box)
+            btn = QtWidgets.QPushButton(f"Program DAC{ch}")
+            btn.clicked.connect(self._make_program_dac_cb(ch))
+            g.addWidget(btn, 2, 0, 1, 3)
+            self.dac_btns.append(btn)
+            st = QtWidgets.QLabel("not programmed")
+            st.setStyleSheet("color:#9fb3c8; font-size:11px;")
+            st.setWordWrap(True)
+            g.addWidget(st, 3, 0, 1, 3)
+            self.dac_status.append(st)
+            left.addWidget(box)
 
         # neuron simulation speed (all neurons)
         nb = QtWidgets.QGroupBox("Neuron sim speed (all)")
@@ -494,7 +558,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.dt_cb.currentIndexChanged.connect(self._on_dt)
         ng.addWidget(QtWidgets.QLabel("dt"))
         ng.addWidget(self.dt_cb)
-        col.addWidget(nb)
+        right.addWidget(nb)
 
         # live Izhikevich parameters: tweak a/b/c/d/I and the neuron is
         # reprogrammed (config bank + reload pulse) immediately, so the loopback
@@ -504,14 +568,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         # so after Program the neuron runs fresh with exactly these values.
         pb = QtWidgets.QGroupBox("Neuron params")
         pg_ = QtWidgets.QGridLayout(pb)
-        pg_.addWidget(QtWidgets.QLabel("target"), 0, 0)
-        self.np_target = QtWidgets.QComboBox()
-        self.np_target.addItems(["all", "0", "1", "2", "3"])
-        pg_.addWidget(self.np_target, 0, 1)
+        pg_.addWidget(QtWidgets.QLabel("load"), 0, 0)
         self.np_loadprof = QtWidgets.QComboBox()
         self.np_loadprof.addItems(["load profile…"] + NEURON_PROFILES)
         self.np_loadprof.currentIndexChanged.connect(self._on_load_profile_values)
-        pg_.addWidget(self.np_loadprof, 0, 2)
+        pg_.addWidget(self.np_loadprof, 0, 1, 1, 2)
         self.np_spins = {}
         for row, (param, label, lo, hi, dflt, step, dec) in enumerate(
                 NEURON_PARAM_SPECS, start=1):
@@ -523,10 +584,26 @@ class ScopeWindow(QtWidgets.QMainWindow):
             pg_.addWidget(QtWidgets.QLabel(label), row, 0)
             pg_.addWidget(sp, row, 1, 1, 2)
             self.np_spins[param] = sp
-        self.np_prog_btn = QtWidgets.QPushButton("Program neurons")
-        self.np_prog_btn.clicked.connect(self._on_program_neurons)
-        pg_.addWidget(self.np_prog_btn, len(NEURON_PARAM_SPECS) + 1, 0, 1, 3)
-        col.addWidget(pb)
+        # one explicit Program button per neuron (+ all) so it's unambiguous
+        # which target gets the current spinbox values; each button reports
+        # OK/ERR back in its own status line.
+        brow = len(NEURON_PARAM_SPECS) + 1
+        btn_box = QtWidgets.QHBoxLayout()
+        btn_box.setSpacing(3)
+        self.np_btns = {}
+        for tgt in ["0", "1", "2", "3", "all"]:
+            b = QtWidgets.QPushButton(tgt)
+            b.setMaximumWidth(46)
+            b.setToolTip(f"Program neuron {tgt} with the params above")
+            b.clicked.connect(self._make_prog_neuron_cb(tgt))
+            btn_box.addWidget(b)
+            self.np_btns[tgt] = b
+        pg_.addWidget(QtWidgets.QLabel("program →"), brow, 0)
+        pg_.addLayout(btn_box, brow, 1, 1, 2)
+        self.np_status = QtWidgets.QLabel("—")
+        self.np_status.setStyleSheet("color:#9fb3c8; font-size:11px;")
+        pg_.addWidget(self.np_status, brow + 1, 0, 1, 3)
+        right.addWidget(pb)
 
         # BRAM waveform builder
         wf = QtWidgets.QGroupBox("BRAM waveform")
@@ -573,7 +650,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         rng = QtWidgets.QLabel(f"allowed: {DAC_VMIN:.2f} .. {DAC_VMAX:.2f} V")
         rng.setStyleSheet("color:#9fb3c8; font-size:10px;")
         wg.addWidget(rng, 7, 0, 1, 2)
-        col.addWidget(wf)
+        right.addWidget(wf)
 
         # display + capture options
         opt = QtWidgets.QGroupBox("Display / capture")
@@ -620,19 +697,22 @@ class ScopeWindow(QtWidgets.QMainWindow):
         og.addWidget(self.collect_mb_cb, 5, 0)
         og.addWidget(self.collect_btn, 5, 1)
         og.addWidget(self.stream_btn, 6, 0, 1, 2)
-        col.addWidget(opt)
+        left.addWidget(opt)
 
-        col.addStretch(1)
+        left.addStretch(1)
+        right.addStretch(1)
         self.status = QtWidgets.QLabel("Connect to a COM port to begin.")
         self.status.setWordWrap(True)
         self.status.setStyleSheet("color:#9fb3c8; font-size:11px;")
-        col.addWidget(self.status)
+        outer.addWidget(self.status)
 
         self._apply_view_ranges()
         self._set_controls_enabled(False)
         self.captured.connect(self._show_capture)
         self.collected.connect(self._on_collected)
         self.stat_result.connect(self._show_stat)
+        self.neuron_done.connect(self._on_neuron_done)
+        self.dac_done.connect(self._on_dac_done)
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._update)
         self.timer.start(int(1000.0 / args.fps))
@@ -683,6 +763,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return
         self.connect_btn.setText("Reconnect")
         self._set_controls_enabled(True)
+        # reflect the source each DAC was set to on connect
+        for ch in range(4):
+            self.dac_status[ch].setText(f"OK — {self.args.initial}")
+            self.dac_status[ch].setStyleSheet("color:#81C784; font-size:11px;")
         # The live stream is OPT-IN: nothing streams until the user presses
         # "Start Live Stream". Use "Collect Ethernet" for one-shot snapshots.
         self.tap = None
@@ -698,9 +782,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     def _set_controls_enabled(self, on):
         for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.collect_btn,
-                  self.collect_mb_cb, self.stream_btn, self.dt_cb, self.np_target,
-                  self.np_loadprof, self.np_prog_btn):
+                  self.collect_mb_cb, self.stream_btn, self.dt_cb,
+                  self.np_loadprof):
             w.setEnabled(on)
+        for b in self.np_btns.values():
+            b.setEnabled(on)
         for sp in self.np_spins.values():
             sp.setEnabled(on)
         for grp in self.src_groups:
@@ -708,6 +794,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 b.setEnabled(on)
         for cb in self.prof_cbs:
             cb.setEnabled(on)
+        for b in self.dac_btns:
+            b.setEnabled(on)
 
     def _show_stat(self, is_daq, health):
         port = self.dac.port if self.dac else self.port_cb.currentText()
@@ -723,17 +811,46 @@ class ScopeWindow(QtWidgets.QMainWindow):
     def _bg(self, fn):
         threading.Thread(target=fn, daemon=True).start()
 
-    def _make_src_cb(self, ch, label):
-        def cb(checked):
-            if checked and self.dac:
-                self._bg(lambda: self.dac.set_source(ch, label))
+    def _make_program_dac_cb(self, ch):
+        def cb():
+            self._program_dac(ch)
         return cb
 
-    def _make_prof_cb(self, ch):
-        def cb(profile):
-            if self.dac:
-                self._bg(lambda: self.dac.set_neuron(ch, profile))
-        return cb
+    def _program_dac(self, ch):
+        """Commit DACn's staged selection: set the source (NSRC) from the
+        checked radio and, if Neuron is selected, its profile (NEUR), then
+        report OK/ERR on the per-DAC status line."""
+        if not self.dac:
+            return
+        btn = self.src_groups[ch].checkedButton()
+        label = btn.text() if btn else SOURCE_LABELS[0]
+        profile = self.prof_cbs[ch].currentText()
+        self.dac_btns[ch].setEnabled(False)
+        self.dac_status[ch].setText(f"programming {label}…")
+        self.dac_status[ch].setStyleSheet("color:#FFB74D; font-size:11px;")
+
+        def work():
+            ok = True
+            r = self.dac.set_source(ch, label)
+            if not r or r.startswith("ERR"):
+                ok = False
+            detail = label
+            if label == "Neuron":
+                r2 = self.dac.set_neuron(ch, profile)
+                if not r2 or r2.startswith("ERR"):
+                    ok = False
+                detail = f"Neuron ({profile})"
+            self.dac_done.emit(ch, ok, detail)
+        self._bg(work)
+
+    def _on_dac_done(self, ch, ok, detail):
+        self.dac_btns[ch].setEnabled(True)
+        if ok:
+            self.dac_status[ch].setText(f"OK — {detail}")
+            self.dac_status[ch].setStyleSheet("color:#81C784; font-size:11px;")
+        else:
+            self.dac_status[ch].setText(f"ERR — {detail} not set")
+            self.dac_status[ch].setStyleSheet("color:#E57373; font-size:11px;")
 
     def _on_cic(self, on):
         if self.dac:
@@ -786,18 +903,42 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.np_loadprof.blockSignals(False)
         self.status.setText(f"staged profile '{name}' -- press Program neurons")
 
-    def _on_program_neurons(self):
+    def _make_prog_neuron_cb(self, target):
+        def cb():
+            self._program_neuron(target)
+        return cb
+
+    def _program_neuron(self, target):
         if not self.dac:
             return
-        target = self.np_target.currentText()
         vals = [(p, self.np_spins[p].value()) for p, *_ in NEURON_PARAM_SPECS]
         labels = ", ".join(f"{p}={v:g}" for p, v in vals)
+        btn = self.np_btns.get(target)
+        if btn:
+            btn.setEnabled(False)
+        self.np_status.setText(f"programming neuron {target}…")
+        self.np_status.setStyleSheet("color:#FFB74D; font-size:11px;")
         self.status.setText(f"programming neuron {target}: {labels}")
 
         def work():
+            ok = True
             for param, val in vals:
-                self.dac.set_neuron_param(target, param, izh_to_q16(val))
+                r = self.dac.set_neuron_param(target, param, izh_to_q16(val))
+                if not r or r.startswith("ERR"):
+                    ok = False
+            self.neuron_done.emit(target, ok)
         self._bg(work)
+
+    def _on_neuron_done(self, target, ok):
+        btn = self.np_btns.get(target)
+        if btn:
+            btn.setEnabled(True)
+        if ok:
+            self.np_status.setText(f"neuron {target}: OK — programmed")
+            self.np_status.setStyleSheet("color:#81C784; font-size:11px;")
+        else:
+            self.np_status.setText(f"neuron {target}: ERR (no/!OK response)")
+            self.np_status.setStyleSheet("color:#E57373; font-size:11px;")
 
     def _on_stat(self):
         if not self.dac:
@@ -847,7 +988,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         win.addLabel("UART CAPT snapshot  (x = ns @ 1 GS/s)", row=4, col=0)
         win.show()
         self._popup = win                  # keep a reference so it isn't GC'd
-        self.status.setText(f"UART capture: {len(chans[0])} samples/ch.")
+        sub = save_capture(self.args.capture_dir, "uart", chans, 1.0e9)
+        where = f"  -> {sub}" if sub else "  (save FAILED)"
+        self.status.setText(f"UART capture: {len(chans[0])} samples/ch.{where}")
 
     # ---- one-shot burst capture over Ethernet (BCAP + BRDO) ----
     def _on_collect_eth(self):
@@ -970,8 +1113,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
                      f"coverage {100 * cov:.1f}%)", row=4, col=0)
         win.show()
         self._popup = win
+        sub = save_capture(self.args.capture_dir, "eth", chans, 1.0e9,
+                           coverage=cov, bytes_per_chip=nbytes)
+        where = f"  -> {sub}" if sub else "  (save FAILED)"
         self.status.setText(f"Ethernet burst: {len(chans[0])} samples/ch, "
-                            f"coverage {100 * cov:.1f}%.")
+                            f"coverage {100 * cov:.1f}%.{where}")
 
     # ---- display ----
     def _apply_view_ranges(self):
@@ -1060,6 +1206,11 @@ def main():
     ap.add_argument("--initial", default="BRAM", choices=SOURCE_LABELS)
     ap.add_argument("--cic", action="store_true")
     ap.add_argument("--fps", type=float, default=60.0)
+    ap.add_argument("--capture-dir",
+                    default=os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "captures"),
+                    help="directory captures are saved under (one subdir each)")
     ap.add_argument("--autoconnect", action="store_true",
                     help="connect to --port immediately on launch")
     args = ap.parse_args()
