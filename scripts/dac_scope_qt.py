@@ -4,9 +4,10 @@
 ADC plot on the left; a control panel on the right. The board does NOT stream
 on connect -- acquisition is opt-in:
   - Collect Ethernet: one-shot full-rate burst snapshot (BCAP+BRDO) in a popup,
-    with a selectable size (MB/chip) -- the reliable way to grab data.
-  - Start/Stop Live Stream: toggles the cyclic continuous stream into the main
-    plot when you want it (off by default).
+    with a selectable size (MB/chip), saved to disk -- the reliable way to grab
+    data.
+  - Start/Stop Auto-Sample: takes a fresh small one-shot burst once per second
+    and draws it in the main plots (off by default). Auto-samples are NOT saved.
 
   - Connection: pick the UART COM port and connect/reconnect (no streaming).
   - Per channel (DAC0..3): pick source = DDS / BRAM / Neuron (+ a neuron-profile
@@ -18,7 +19,7 @@ on connect -- acquisition is opt-in:
     "Prog 0..3" button (or "Prog all") to apply to that target -- each NEUR
     write resets + reloads the target, so it runs fresh with exactly these
     values. A status line reports OK / ERR after each program. Collect Ethernet
-    (or Start Live Stream) to verify the dynamics.
+    (or Auto-Sample) to verify the dynamics.
   - Captures are saved automatically whichever transport you use: each grab
     writes cap_<timestamp>_<src>.npz (+ per-channel CSVs) into --capture-dir
     (default <repo>/captures), where <src> = "uart" (UART Capture) or "eth"
@@ -78,6 +79,10 @@ COLLECT_SIZE_OPTIONS = [
     (64 << 20,    "64 MB (16M/ch)"),
 ]
 COLLECT_SIZE_DEFAULT_IDX = 0   # 64 KB/chip
+# Auto-Sample: repeated one-shot bursts at a fixed cadence (not the cyclic UDP
+# stream). Small + fast so each grab comfortably finishes within the interval.
+AUTOSAMPLE_INTERVAL_MS = 1000   # one sample per second
+AUTOSAMPLE_BYTES = 64 * 1024    # bytes/chip per auto-sample (16k samples/ch)
 # Neuron integration timestep (Q16.16): larger dt -> faster simulation.
 NEURON_DT_OPTIONS = [
     ("0.25x slow", 0x2000),
@@ -438,6 +443,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
     stat_result = QtCore.pyqtSignal(bool, str)  # board-verify result from worker
     neuron_done = QtCore.pyqtSignal(str, bool)  # (target, ok) program-neuron result
     dac_done = QtCore.pyqtSignal(int, bool, str)  # (ch, ok, detail) program-DAC result
+    autosampled = QtCore.pyqtSignal(object)   # emits {ch: int16[], '_cov'} each auto-sample
 
     def __init__(self, args):
         super().__init__()
@@ -682,10 +688,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.collect_mb_cb.setCurrentIndex(COLLECT_SIZE_DEFAULT_IDX)
         self.collect_btn = QtWidgets.QPushButton("Collect Ethernet")
         self.collect_btn.clicked.connect(self._on_collect_eth)
-        # the cyclic continuous stream is OPT-IN -- off until you press this
-        self.stream_btn = QtWidgets.QPushButton("Start Live Stream")
+        # Auto-Sample: opt-in repeated one-shot bursts (1/s) shown in the main
+        # plots; NOT saved and NOT the cyclic UDP stream.
+        self.stream_btn = QtWidgets.QPushButton("Start Auto-Sample")
         self.stream_btn.setCheckable(True)
-        self.stream_btn.clicked.connect(self._on_stream_toggle)
+        self.stream_btn.clicked.connect(self._on_autosample_toggle)
         og.addWidget(self.cic_chk, 0, 0, 1, 2)
         og.addWidget(self.auto_chk, 1, 0)
         og.addWidget(self.trig_chk, 1, 1)
@@ -713,9 +720,15 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.stat_result.connect(self._show_stat)
         self.neuron_done.connect(self._on_neuron_done)
         self.dac_done.connect(self._on_dac_done)
+        self.autosampled.connect(self._on_autosampled)
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._update)
         self.timer.start(int(1000.0 / args.fps))
+        # Auto-Sample cadence timer (started by the button)
+        self._autosample_busy = False
+        self.autosample_timer = QtCore.QTimer(self)
+        self.autosample_timer.setInterval(AUTOSAMPLE_INTERVAL_MS)
+        self.autosample_timer.timeout.connect(self._on_autosample_tick)
 
     # ---- connection ----
     def refresh_ports(self):
@@ -767,18 +780,20 @@ class ScopeWindow(QtWidgets.QMainWindow):
         for ch in range(4):
             self.dac_status[ch].setText(f"OK — {self.args.initial}")
             self.dac_status[ch].setStyleSheet("color:#81C784; font-size:11px;")
-        # The live stream is OPT-IN: nothing streams until the user presses
-        # "Start Live Stream". Use "Collect Ethernet" for one-shot snapshots.
+        # Acquisition is OPT-IN: nothing samples until the user presses
+        # Auto-Sample. Use "Collect Ethernet" for a single saved snapshot.
         self.tap = None
+        self.autosample_timer.stop()
+        self._autosample_busy = False
         if self.stream_btn.isChecked():
             self.stream_btn.blockSignals(True)
             self.stream_btn.setChecked(False)
-            self.stream_btn.setText("Start Live Stream")
             self.stream_btn.blockSignals(False)
-        self.conn_lbl.setText(f"connected {port} (stream off)")
+        self.stream_btn.setText("Start Auto-Sample")
+        self.conn_lbl.setText(f"connected {port} (idle)")
         self.conn_lbl.setStyleSheet("color:#81C784;")
-        self.status.setText("Connected. Use Collect Ethernet for a snapshot, "
-                            "or Start Live Stream for continuous.")
+        self.status.setText("Connected. Use Collect Ethernet for a saved "
+                            "snapshot, or Auto-Sample for 1/s live view.")
 
     def _set_controls_enabled(self, on):
         for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.collect_btn,
@@ -997,6 +1012,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if not self.dac:
             return
         self.collect_btn.setEnabled(False)
+        # auto-sample and a manual collect both drive the DMA + UDP port, so
+        # pause auto-sampling for the duration and resume it afterwards.
+        self._resume_autosample = self.autosample_timer.isActive()
+        if self._resume_autosample:
+            self.autosample_timer.stop()
         # free the UDP socket the live stream holds so the burst readout can use it
         self._resume_after_collect = self.tap is not None
         if self.tap:
@@ -1051,6 +1071,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     def _on_collected(self, chans):
         self.collect_btn.setEnabled(True)
+        # resume auto-sampling if it was running before the manual collect
+        if getattr(self, "_resume_autosample", False) and self.dac \
+                and self.stream_btn.isChecked():
+            self._autosample_busy = False
+            self.autosample_timer.start()
+        self._resume_autosample = False
         # resume the live stream only if it was running before the collect
         if getattr(self, "_resume_after_collect", False) and self.dac:
             self.dac.start_stream(self.args.decim, self.args.cic)
@@ -1066,32 +1092,71 @@ class ScopeWindow(QtWidgets.QMainWindow):
         cov = chans.pop("_cov", 1.0)
         self._show_burst(chans, cov)
 
-    def _on_stream_toggle(self, checked):
+    # ---- auto-sample: a fresh one-shot burst every second, into the main
+    #      plots, NOT saved (and NOT the cyclic UDP stream) ----
+    def _on_autosample_toggle(self, checked):
         if not self.dac:
             self.stream_btn.setChecked(False)
             return
         if checked:
-            self.stream_btn.setText("Stop Live Stream")
-            self.status.setText("starting live stream...")
-            self.dac.start_stream(self.args.decim, self.args.cic)
-            try:
-                self.tap = StreamTap(self.args.board_ip, self.args.cmd_port,
-                                     self.args.local_ip, self.args.local_port,
-                                     self.args.window, self.args.rcvbuf)
-                self.status.setText("live stream ON")
-            except OSError as e:  # noqa: BLE001
-                self.tap = None
-                self.dac.stop_stream()
-                self.stream_btn.setChecked(False)
-                self.stream_btn.setText("Start Live Stream")
-                self.status.setText(f"stream socket failed: {e}")
+            self.stream_btn.setText("Stop Auto-Sample")
+            self.status.setText("auto-sampling (1/s)...")
+            self._autosample_busy = False
+            self.autosample_timer.start()
+            self._on_autosample_tick()        # take the first sample now
         else:
-            if self.tap:
-                self.tap.close()
-                self.tap = None
-            self.dac.stop_stream()
-            self.stream_btn.setText("Start Live Stream")
-            self.status.setText("live stream stopped")
+            self.autosample_timer.stop()
+            self.stream_btn.setText("Start Auto-Sample")
+            self.status.setText("auto-sample stopped")
+
+    def _on_autosample_tick(self):
+        # skip if the board's gone or the previous grab hasn't returned yet
+        if not self.dac or self._autosample_busy:
+            return
+        self._autosample_busy = True
+        self._bg(lambda: self.autosampled.emit(
+            self._burst_collect(AUTOSAMPLE_BYTES)))
+
+    def _on_autosampled(self, chans):
+        self._autosample_busy = False
+        if not self.stream_btn.isChecked():
+            return                            # stopped while a grab was in flight
+        if chans is None:
+            self.status.setText("auto-sample: capture/drain timeout (retrying)")
+            return
+        cov = chans.pop("_cov", 1.0)
+        # show a 4x-wider window than the default scope span (the burst holds
+        # plenty of samples; this just displays more of them)
+        self._render_main(chans, 1.0e9, span=4 * self.args.time_span)
+        self.status.setText(
+            f"auto-sample 1/s: {len(chans[0])} samples/ch @ 1 GS/s  "
+            f"coverage {100 * cov:.0f}%  (not saved)")
+
+    def _render_main(self, chans, fs, span=None):
+        """Draw a captured {ch: int16[]} set into the 4 main plots, honoring
+        the Time/FFT and Autoscale toggles (full rate, no decimation)."""
+        if span is None:
+            span = self.args.time_span
+        for ch in range(4):
+            full = chans[ch].astype(np.float64)
+            if self.fft_view:
+                v = full[-span:] * VOLTS_PER_COUNT
+                v = v - v.mean()
+                w = np.hanning(len(v))
+                Y = np.abs(np.fft.rfft(v * w)) / (np.sum(w) / 2.0)
+                f = np.fft.rfftfreq(len(v), 1.0 / fs)
+                db = 20.0 * np.log10(np.maximum(Y, 1e-9))
+                self.curves[ch].setData(f, db)
+                if self.autoscale:
+                    self.plots[ch].setYRange(db.max() - 100, db.max() + 5)
+            else:
+                y = self._trig_slice(full, span) if self.trigger else full[-span:]
+                t = np.arange(len(y)) / fs
+                v = y * VOLTS_PER_COUNT
+                self.curves[ch].setData(t, v)
+                if self.autoscale:
+                    m = max(0.02, np.abs(v).max() * 1.2)
+                    self.plots[ch].setYRange(-m, m)
 
     def _show_burst(self, chans, cov):
         nbytes = getattr(self, "_last_collect_bytes", 1 << 20)
@@ -1184,6 +1249,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, ev):
         self.timer.stop()
+        self.autosample_timer.stop()
         if self.tap:
             self.tap.close()
         if self.dac:
