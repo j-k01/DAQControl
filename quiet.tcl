@@ -30,8 +30,15 @@ set argc [llength $argv]
 # build ever lacks it, the option error surfaces before the target runs, so we
 # can safely retry without it; a genuine error from the target is re-raised.
 if {[catch {source -notrace $_target} _err _opts]} {
-    if {[string match -nocase {*notrace*} $_err] ||
-        [string match -nocase {*bad option*} $_err]} {
+    # -notrace is a Vivado extension; XSCT/xsdb's `source` rejects it with
+    #   wrong # args: should be "source ?-encoding name? filename"
+    # (other Tcls may say `bad option`). Any of these means the `source` command
+    # itself refused the option, so the target never ran -- safe to re-source it
+    # plainly. A genuine error from the target is re-raised unchanged.
+    if {[string match {*should be "source*} $_err] ||
+        [string match -nocase {*bad option*} $_err] ||
+        [string match -nocase {*invalid option*} $_err] ||
+        [string match -nocase {*-notrace*} $_err]} {
         source $_target
     } else {
         return -options $_opts $_err

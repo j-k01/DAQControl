@@ -175,7 +175,9 @@ proc load_firmware {script_dir elf_file} {
             set saved_argv $::argv
         }
         set ::argv [list $elf_file]
-        if {[catch {uplevel #0 [list source -notrace [file join $script_dir load_mb_firmware.tcl]]} result options]} {
+        # NOTE: plain source (no -notrace) -- this branch runs inside XSCT/xsdb,
+        # whose source rejects -notrace. XSCT doesn't echo commands anyway.
+        if {[catch {uplevel #0 [list source [file join $script_dir load_mb_firmware.tcl]]} result options]} {
             if {$had_argv} {
                 set ::argv $saved_argv
             } else {

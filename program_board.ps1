@@ -91,9 +91,11 @@ if (-not $NoEth) {
         Write-Error "xsdb/xsct not found for $ver. Re-run with -NoEth, or pass -Vivado <ver>."
         exit 1
     }
-    $ethArgs = @("quiet.tcl", "load_ps_eth_stream.tcl")
+    # run xsdb/xsct directly (NOT via quiet.tcl): their `source` rejects
+    # -notrace, and they don't echo commands the way Vivado does anyway.
+    $ethArgs = @("load_ps_eth_stream.tcl")
     if (-not $NoInit) { $ethArgs += "--init-ps" }
-    Write-Host "==> A53 PS-Ethernet app $($ethArgs[2])   ($xsctExe)" -ForegroundColor Green
+    Write-Host "==> A53 PS-Ethernet app $($ethArgs[1])   ($xsctExe)" -ForegroundColor Green
     & $xsctExe @ethArgs
 }
 

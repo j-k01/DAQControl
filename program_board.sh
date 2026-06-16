@@ -133,8 +133,10 @@ if [ "$DO_ETH" -eq 1 ]; then
         echo "ERROR: xsdb/xsct not found. Set XSCT=/full/path, or pass --no-eth." >&2
         exit 1
     fi
+    # run xsdb/xsct directly (NOT via quiet.tcl): their `source` rejects
+    # -notrace, and they don't echo commands the way Vivado does anyway.
     echo "==> A53 PS-Ethernet app ${INIT_PS:-(no psu_init)}   ($XSCT)"
-    run "$XSCT" quiet.tcl load_ps_eth_stream.tcl $INIT_PS
+    run "$XSCT" load_ps_eth_stream.tcl $INIT_PS
 fi
 
 echo "==> Done. Launch the GUI: python scripts/dac_scope_qt.py --port COM10"
