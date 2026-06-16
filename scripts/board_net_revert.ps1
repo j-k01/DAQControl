@@ -37,6 +37,10 @@ Write-Host "Reverting '$InterfaceAlias' to normal (DHCP) settings..."
 Get-NetIPAddress -InterfaceAlias $InterfaceAlias -AddressFamily IPv4 -IPAddress $IPAddress -ErrorAction SilentlyContinue |
     Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
 
+# also remove the board's firewall rule added by board_net_connect.ps1
+Get-NetFirewallRule -DisplayName "DAQ board (UDP in)" -ErrorAction SilentlyContinue |
+    Remove-NetFirewallRule -ErrorAction SilentlyContinue
+
 # 2. make sure IP + DNS are back on automatic (DHCP)
 Set-NetIPInterface -InterfaceAlias $InterfaceAlias -Dhcp Enabled
 Set-DnsClientServerAddress -InterfaceAlias $InterfaceAlias -ResetServerAddresses

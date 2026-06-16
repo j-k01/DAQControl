@@ -16,8 +16,10 @@
 param(
     [string]$InterfaceAlias = "Ethernet",
     [string]$IPAddress      = "192.168.2.1",
-    [int]   $PrefixLength   = 24
+    [int]   $PrefixLength   = 24,
+    [string]$BoardIP        = "192.168.2.10"
 )
+$FwName = "DAQ board (UDP in)"
 
 $principal = New-Object Security.Principal.WindowsPrincipal(
     [Security.Principal.WindowsIdentity]::GetCurrent())
@@ -41,6 +43,18 @@ if ($existing) {
         -PrefixLength $PrefixLength -ErrorAction Stop | Out-Null
     Write-Host "Added $IPAddress/$PrefixLength to '$InterfaceAlias' as a second IP." -ForegroundColor Green
     Write-Host "DHCP / internet are unchanged."
+}
+
+# Allow the board's UDP replies through Windows Firewall. The board answers from
+# a different source port than 5006, so Windows' stateful firewall treats the
+# reply (PONG / data) as unsolicited inbound and drops it. Allow inbound UDP
+# from the board's IP so PONG, the burst readout, and the live stream get in.
+if (-not (Get-NetFirewallRule -DisplayName $FwName -ErrorAction SilentlyContinue)) {
+    New-NetFirewallRule -DisplayName $FwName -Direction Inbound -Protocol UDP `
+        -RemoteAddress $BoardIP -Action Allow -Profile Any | Out-Null
+    Write-Host "Added firewall rule '$FwName' (allow inbound UDP from $BoardIP)." -ForegroundColor Green
+} else {
+    Write-Host "Firewall rule '$FwName' already present." -ForegroundColor Yellow
 }
 
 Write-Host ""
