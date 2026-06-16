@@ -160,10 +160,24 @@ def pack_pair(s0, s1):
     return ((s1 & 0xFFFF) << 16) | (s0 & 0xFFFF)
 
 
+BRAM_FRAME_SAMPLES = 4   # 1 BRAM "frame" = 4 samples (RW3[31:8] = loop frames)
+
+
 def gen_waveform(kind, period_ns, width_ns, vlo, vhi):
-    """Build a seamless BRAM loop (<=16384 samples, multiple of 4) of `kind`
-    with the given period/width (ns, 1 sample = 1 ns) mapped into [vlo, vhi]."""
+    """Build a SEAMLESS BRAM loop and its frame count.
+
+    1 sample = 1 ns @ 1 GS/s, so `period_ns` is the period in samples. We tile an
+    EXACT integer number of periods so the loop joins end-to-end with no
+    discontinuity, and size the loop to a whole number of BRAM frames (4 samples
+    each). The BRAM then loops only those frames (RW3[31:8]), so the played tone
+    is exactly 1e9/period Hz with zero wrap glitch -- regardless of whether the
+    period divides 16384.
+
+    Returns (words, loop_frames): the packed 32-bit words to PROG, and the
+    RW3[31:8] loop frame count to play them back seamlessly.
+    """
     period = max(2, int(period_ns))
+    period = min(period, PROGRAM_SAMPLES)
     width = max(1, min(int(width_ns), period))
     i = np.arange(period)
     if kind == "Sine":
@@ -187,16 +201,24 @@ def gen_waveform(kind, period_ns, width_ns, vlo, vhi):
         shape = np.zeros(period)
     lo = volts_to_counts(vlo)
     hi = volts_to_counts(vhi)
-    one = np.clip(np.round(lo + shape * (hi - lo)), -DAC_FULLSCALE, DAC_FULLSCALE)
-    # Fill EXACTLY the full 16384-sample BRAM (8192 words) by tiling the period.
-    # A full loop keeps the BRAM frame_count at 4096 (RW3 high = 0x1000), which
-    # is the only value that avoids colliding with the IZH config bits in the
-    # overloaded RW3. Periods that divide 16384 are seamless; others wrap once
-    # per 16 us loop (negligible for viewing).
-    full = np.resize(one.astype(int), PROGRAM_SAMPLES)
-    words = [pack_pair(full[2 * k], full[2 * k + 1])
-             for k in range(PROGRAM_SAMPLES // 2)]
-    return words
+    one = np.clip(np.round(lo + shape * (hi - lo)),
+                  -DAC_FULLSCALE, DAC_FULLSCALE).astype(int)
+
+    # Tile the largest integer number of whole periods that fits the BRAM and
+    # lands on a 4-sample frame boundary -> seamless loop, exact frequency.
+    reps = max(1, PROGRAM_SAMPLES // period)
+    loop = reps * period
+    while reps > 1 and (loop % BRAM_FRAME_SAMPLES) != 0:
+        reps -= 1
+        loop = reps * period
+    loop -= loop % BRAM_FRAME_SAMPLES          # final guard (>=4, multiple of 4)
+    if loop < BRAM_FRAME_SAMPLES:
+        loop = BRAM_FRAME_SAMPLES
+    samples = np.resize(one, loop)
+    words = [pack_pair(int(samples[2 * k]), int(samples[2 * k + 1]))
+             for k in range(loop // 2)]
+    loop_frames = loop // BRAM_FRAME_SAMPLES
+    return words, loop_frames
 
 
 # --------------------------------------------------------------- UART control
@@ -222,7 +244,7 @@ class DacControl:
             self.s.flush()
             return self._readuntil(ok)
 
-    def prog(self, ch, words):
+    def prog(self, ch, words, loop_frames=4096):
         with self.lock:
             self.s.reset_input_buffer()
             self.s.write(f"PROG {ch} {len(words)}\n".encode("ascii"))
@@ -231,10 +253,13 @@ class DacControl:
             self.s.write(struct.pack(f"<{len(words)}I", *words))
             self.s.flush()
             self._readuntil((f"OK PROG ch={ch}",))
-        # Full-loop frame_count=4096 + program_enable -- the proven value from
-        # quad_sine_loopback_check_uart.py (0x1000 high byte avoids the IZH
-        # config bits that an arbitrary frame count would corrupt).
-        self.cmd("WRTE 3 0x00100060")
+        # RW3[31:8] = BRAM loop frame count (1 frame = 4 samples), [6] = program
+        # enable. Setting the loop to exactly the programmed integer-period span
+        # plays the waveform seamlessly. (loop_frames=4096 -> 0x00100060, the old
+        # full-BRAM value.) The IZH config no longer shares RW3, so an arbitrary
+        # frame count is safe now.
+        rw3 = ((loop_frames & 0xFFFFFF) << 8) | 0x60
+        self.cmd(f"WRTE 3 0x{rw3:08X}")
 
     def set_source(self, ch, label):
         return self.cmd(f"NSRC {ch} {LABEL_TO_NSRC[label]}", ok=("DAC source", "ERR"))
@@ -888,12 +913,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
         vlo, vhi = self.wf_vlo.value(), self.wf_vhi.value()
         target = self.wf_ch.currentText()
         chans = range(4) if target == "all" else [int(target[-1])]
-        words = gen_waveform(kind, period, width, vlo, vhi)
-        self.status.setText(f"programming {kind} {period}ns to {target}...")
+        words, loop_frames = gen_waveform(kind, period, width, vlo, vhi)
+        loop_samples = loop_frames * BRAM_FRAME_SAMPLES
+        freq_hz = 1.0e9 / period
+        self.status.setText(
+            f"programming {kind} {freq_hz/1e3:.3f} kHz ({period} ns) to {target}: "
+            f"seamless {loop_samples} smp / {loop_samples // period} periods")
 
         def work():
             for ch in chans:
-                self.dac.prog(ch, words)
+                self.dac.prog(ch, words, loop_frames)
         self._bg(work)
 
     def _on_dt(self, idx):
