@@ -137,4 +137,4 @@ if [ "$DO_ETH" -eq 1 ]; then
     run "$XSCT" quiet.tcl load_ps_eth_stream.tcl $INIT_PS
 fi
 
-echo "==> Done. Verify with: python scripts/uart_cmds.py --port COM10 STAT"
+echo "==> Done. Launch the GUI: python scripts/dac_scope_qt.py --port COM10"

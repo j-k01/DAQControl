@@ -97,4 +97,4 @@ if (-not $NoEth) {
     & $xsctExe @ethArgs
 }
 
-Write-Host "==> Done. Verify with: python scripts\uart_cmds.py --port COM10 STAT" -ForegroundColor Cyan
+Write-Host "==> Done. Launch the GUI: python scripts\dac_scope_qt.py --port COM10" -ForegroundColor Cyan
