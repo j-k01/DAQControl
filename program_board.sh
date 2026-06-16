@@ -126,7 +126,7 @@ if [ -z "$VIVADO" ]; then
 fi
 
 echo "==> FPGA bitstream + MicroBlaze firmware   ($VIVADO)"
-run "$VIVADO" -mode batch -source program_and_load.tcl
+run "$VIVADO" -mode batch -source quiet.tcl -tclargs program_and_load.tcl
 
 if [ "$DO_ETH" -eq 1 ]; then
     if [ -z "$XSCT" ]; then
@@ -134,7 +134,7 @@ if [ "$DO_ETH" -eq 1 ]; then
         exit 1
     fi
     echo "==> A53 PS-Ethernet app ${INIT_PS:-(no psu_init)}   ($XSCT)"
-    run "$XSCT" load_ps_eth_stream.tcl $INIT_PS
+    run "$XSCT" quiet.tcl load_ps_eth_stream.tcl $INIT_PS
 fi
 
 echo "==> Done. Verify with: python scripts/uart_cmds.py --port COM10 STAT"

@@ -146,7 +146,7 @@ proc program_bitstream {script_dir bit_file probes_file} {
             set saved_argv $::argv
         }
         set ::argv [list $bit_file $probes_file]
-        if {[catch {uplevel #0 [list source [file join $script_dir program.tcl]]} result options]} {
+        if {[catch {uplevel #0 [list source -notrace [file join $script_dir program.tcl]]} result options]} {
             if {$had_argv} {
                 set ::argv $saved_argv
             } else {
@@ -175,7 +175,7 @@ proc load_firmware {script_dir elf_file} {
             set saved_argv $::argv
         }
         set ::argv [list $elf_file]
-        if {[catch {uplevel #0 [list source [file join $script_dir load_mb_firmware.tcl]]} result options]} {
+        if {[catch {uplevel #0 [list source -notrace [file join $script_dir load_mb_firmware.tcl]]} result options]} {
             if {$had_argv} {
                 set ::argv $saved_argv
             } else {
