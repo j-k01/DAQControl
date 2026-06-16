@@ -15,7 +15,7 @@
 [CmdletBinding()]
 param(
     [string]$InterfaceAlias = "Ethernet",
-    [string]$IPAddress      = "192.168.2.1",
+    [string]$IPAddress      = "192.168.2.50",   # NOT .1 (that's usually the gateway) or .10 (the board)
     [int]   $PrefixLength   = 24,
     [string]$BoardIP        = "192.168.2.10"
 )
@@ -35,14 +35,26 @@ if (-not (Get-NetAdapter -Name $InterfaceAlias -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-$existing = Get-NetIPAddress -IPAddress $IPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue
-if ($existing) {
-    Write-Host "$IPAddress is already configured -- nothing to do." -ForegroundColor Yellow
+# Reach 192.168.2.0/24 without disturbing internet:
+#  - if this adapter already has a 192.168.2.x address (router is on that subnet,
+#    or DHCP gave us one), the board is reachable directly -- add nothing.
+#  - never use the default gateway's IP (that's what broke internet before).
+$already = Get-NetIPAddress -InterfaceAlias $InterfaceAlias -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+           Where-Object { $_.IPAddress -like '192.168.2.*' } | Select-Object -First 1
+$gw = (Get-NetIPConfiguration -InterfaceAlias $InterfaceAlias -ErrorAction SilentlyContinue).IPv4DefaultGateway.NextHop
+
+if ($already) {
+    $LocalIP = $already.IPAddress
+    Write-Host "'$InterfaceAlias' already has $LocalIP on 192.168.2.0/24 -- board reachable directly." -ForegroundColor Green
+    Write-Host "Not adding an IP (and not touching the gateway)."
+} elseif ($IPAddress -eq $gw) {
+    Write-Error "$IPAddress is this network's gateway -- using it would break internet. Re-run with -IPAddress 192.168.2.51"
+    exit 1
 } else {
     New-NetIPAddress -InterfaceAlias $InterfaceAlias -IPAddress $IPAddress `
         -PrefixLength $PrefixLength -ErrorAction Stop | Out-Null
-    Write-Host "Added $IPAddress/$PrefixLength to '$InterfaceAlias' as a second IP." -ForegroundColor Green
-    Write-Host "DHCP / internet are unchanged."
+    $LocalIP = $IPAddress
+    Write-Host "Added $IPAddress/$PrefixLength to '$InterfaceAlias' as a second IP (DHCP/internet unchanged)." -ForegroundColor Green
 }
 
 # Allow the board's UDP replies through Windows Firewall. The board answers from
@@ -62,4 +74,5 @@ Write-Host "IPv4 addresses on '$InterfaceAlias':"
 Get-NetIPAddress -InterfaceAlias $InterfaceAlias -AddressFamily IPv4 |
     Select-Object IPAddress, PrefixLength, PrefixOrigin | Format-Table -AutoSize
 Write-Host "Find the board:  python scripts\find_daq_eth.py --target 192.168.2.10" -ForegroundColor Cyan
+Write-Host "Use the GUI:     python scripts\dac_scope_qt.py --port COMx --board-ip 192.168.2.10 --local-ip $LocalIP" -ForegroundColor Cyan
 Write-Host "Undo this:       .\scripts\board_net_revert.ps1"

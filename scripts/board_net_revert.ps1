@@ -33,8 +33,10 @@ if (-not (Get-NetAdapter -Name $InterfaceAlias -ErrorAction SilentlyContinue)) {
 
 Write-Host "Reverting '$InterfaceAlias' to normal (DHCP) settings..."
 
-# 1. remove the board IP we added (no error if it isn't there)
-Get-NetIPAddress -InterfaceAlias $InterfaceAlias -AddressFamily IPv4 -IPAddress $IPAddress -ErrorAction SilentlyContinue |
+# 1. remove any manually-added 192.168.2.x we put on this adapter (leaves any
+#    DHCP-assigned address on that subnet intact -- only Manual ones are removed)
+Get-NetIPAddress -InterfaceAlias $InterfaceAlias -AddressFamily IPv4 -PrefixOrigin Manual -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -like '192.168.2.*' } |
     Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
 
 # also remove the board's firewall rule added by board_net_connect.ps1
