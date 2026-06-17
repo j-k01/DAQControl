@@ -10,10 +10,12 @@ on connect -- acquisition is opt-in:
     and draws it in the main plots (off by default). Auto-samples are NOT saved.
 
   - Connection: pick the UART COM port and connect/reconnect (no streaming).
-  - Per channel (DAC0..3): pick source = DDS / BRAM / Neuron (+ a neuron-profile
-    dropdown), then hit "Program DACn" to commit it -- the radio/profile only
-    stage a choice; the button sends NSRC (+ NEUR for Neuron) and the per-DAC
-    status line confirms "OK — <source>" once the board is reconfigured.
+  - Per channel (DAC0..3): pick any crossbar source -- Off / DDS / BRAM 0-3 /
+    Spike 0-3 / Monitor 0-3 (per-neuron current) / Tag -- from the source
+    dropdown (+ a neuron-profile dropdown), then hit "Program DACn" to commit:
+    the dropdowns only stage a choice; the button sends NSRC (+ NEUR when the
+    source is a Spike/Monitor of a neuron) and the per-DAC status line confirms
+    "OK — <source>" once the board is reconfigured.
   - Neuron params: a/b/c/d/I spinboxes (physical Izhikevich units). Set them
     (or "load profile" to stage a built-in profile), then hit the per-neuron
     "Prog 0..3" button (or "Prog all") to apply to that target -- each NEUR
@@ -61,8 +63,22 @@ DAC_VMIN = -DAC_VMAX
 PROGRAM_SAMPLES = 16384
 CAPT_SYNC = b"\xFE\x10\xCA\xFE"
 NEURON_PROFILES = ["regular", "bursting", "chattering", "fast"]
-SOURCE_LABELS = ["DDS", "BRAM", "Neuron"]
-LABEL_TO_NSRC = {"DDS": "dds", "BRAM": "bram", "Neuron": "izh"}
+# 16:4 DAC crossbar sources -- one per-DAC pick, matching firmware NSRC tokens
+# (reg17 codes: 0 off, 1 DDS, 2-5 BRAM, 6-9 spike, 10-13 monitor, 14 tag).
+SOURCE_LABELS = [
+    "Off", "DDS",
+    "BRAM 0", "BRAM 1", "BRAM 2", "BRAM 3",
+    "Spike 0", "Spike 1", "Spike 2", "Spike 3",
+    "Monitor 0", "Monitor 1", "Monitor 2", "Monitor 3",
+    "Tag",
+]
+LABEL_TO_NSRC = {
+    "Off": "off", "DDS": "dds",
+    "BRAM 0": "bram0", "BRAM 1": "bram1", "BRAM 2": "bram2", "BRAM 3": "bram3",
+    "Spike 0": "spike0", "Spike 1": "spike1", "Spike 2": "spike2", "Spike 3": "spike3",
+    "Monitor 0": "mon0", "Monitor 1": "mon1", "Monitor 2": "mon2", "Monitor 3": "mon3",
+    "Tag": "tag",
+}
 WAVEFORMS = ["Sine", "Triangle", "Trapezoid", "Square", "Sawtooth"]
 CH_COLORS = ["#4FC3F7", "#81C784", "#FFB74D", "#E57373"]
 CAPT_FRAME_OPTIONS = [128, 256, 512, 1024, 2048, 4096]   # 4096 = firmware max
@@ -237,7 +253,7 @@ class DacControl:
                 return line
         return ""
 
-    def cmd(self, c, ok=("OK", "DAC source", "STRM")):
+    def cmd(self, c, ok=("OK", "DAC xbar", "STRM")):
         with self.lock:
             self.s.reset_input_buffer()
             self.s.write((c + "\n").encode("ascii"))
@@ -262,7 +278,7 @@ class DacControl:
         self.cmd(f"WRTE 3 0x{rw3:08X}")
 
     def set_source(self, ch, label):
-        return self.cmd(f"NSRC {ch} {LABEL_TO_NSRC[label]}", ok=("DAC source", "ERR"))
+        return self.cmd(f"NSRC {ch} {LABEL_TO_NSRC[label]}", ok=("DAC xbar", "ERR"))
 
     def set_neuron(self, ch, profile):
         return self.cmd(f"NEUR {ch} {profile}", ok=("OK", "NEUR", "ERR"))
@@ -550,19 +566,18 @@ class ScopeWindow(QtWidgets.QMainWindow):
         # per-channel source + neuron profile. The radio/profile only STAGE a
         # selection; nothing reaches the board until the per-DAC "Program"
         # button commits it (NSRC + NEUR), then the status line confirms.
-        self.src_groups, self.prof_cbs = [], []
+        self.src_cbs, self.prof_cbs = [], []
         self.dac_btns, self.dac_status = [], []
+        initial = args.initial if args.initial in SOURCE_LABELS else "DDS"
         for ch in range(4):
             box = QtWidgets.QGroupBox(f"DAC{ch}")
             g = QtWidgets.QGridLayout(box)
-            grp = QtWidgets.QButtonGroup(box)
-            for i, lab in enumerate(SOURCE_LABELS):
-                rb = QtWidgets.QRadioButton(lab)
-                if lab == args.initial:
-                    rb.setChecked(True)
-                g.addWidget(rb, 0, i)
-                grp.addButton(rb)
-            self.src_groups.append(grp)
+            src = QtWidgets.QComboBox()
+            src.addItems(SOURCE_LABELS)
+            src.setCurrentText(initial)
+            g.addWidget(QtWidgets.QLabel("source"), 0, 0)
+            g.addWidget(src, 0, 1, 1, 2)
+            self.src_cbs.append(src)
             prof = QtWidgets.QComboBox()
             prof.addItems(NEURON_PROFILES)
             prof.setCurrentIndex(ch % len(NEURON_PROFILES))
@@ -829,9 +844,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             b.setEnabled(on)
         for sp in self.np_spins.values():
             sp.setEnabled(on)
-        for grp in self.src_groups:
-            for b in grp.buttons():
-                b.setEnabled(on)
+        for cb in self.src_cbs:
+            cb.setEnabled(on)
         for cb in self.prof_cbs:
             cb.setEnabled(on)
         for b in self.dac_btns:
@@ -857,14 +871,17 @@ class ScopeWindow(QtWidgets.QMainWindow):
         return cb
 
     def _program_dac(self, ch):
-        """Commit DACn's staged selection: set the source (NSRC) from the
-        checked radio and, if Neuron is selected, its profile (NEUR), then
-        report OK/ERR on the per-DAC status line."""
+        """Commit DACn's staged selection: route the picked source (NSRC) and,
+        when that source is a spike/current-monitor of a neuron, also program
+        that neuron's profile (NEUR); report OK/ERR on the per-DAC status line."""
         if not self.dac:
             return
-        btn = self.src_groups[ch].checkedButton()
-        label = btn.text() if btn else SOURCE_LABELS[0]
+        label = self.src_cbs[ch].currentText()
         profile = self.prof_cbs[ch].currentText()
+        # Spike/Monitor sources name a neuron index -> (re)program that neuron.
+        neuron_idx = None
+        if label.startswith("Spike ") or label.startswith("Monitor "):
+            neuron_idx = int(label.split()[-1])
         self.dac_btns[ch].setEnabled(False)
         self.dac_status[ch].setText(f"programming {label}…")
         self.dac_status[ch].setStyleSheet("color:#FFB74D; font-size:11px;")
@@ -875,11 +892,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
             if not r or r.startswith("ERR"):
                 ok = False
             detail = label
-            if label == "Neuron":
-                r2 = self.dac.set_neuron(ch, profile)
+            if neuron_idx is not None:
+                r2 = self.dac.set_neuron(neuron_idx, profile)
                 if not r2 or r2.startswith("ERR"):
                     ok = False
-                detail = f"Neuron ({profile})"
+                detail = f"{label} (neuron {neuron_idx}: {profile})"
             self.dac_done.emit(ch, ok, detail)
         self._bg(work)
 
@@ -1298,7 +1315,7 @@ def main():
     ap.add_argument("--window", type=int, default=8192)
     ap.add_argument("--time-span", type=int, default=1024)
     ap.add_argument("--rcvbuf", type=lambda x: int(x, 0), default=1 << 20)
-    ap.add_argument("--initial", default="BRAM", choices=SOURCE_LABELS)
+    ap.add_argument("--initial", default="DDS", choices=SOURCE_LABELS)
     ap.add_argument("--cic", action="store_true")
     ap.add_argument("--fps", type=float, default=60.0)
     ap.add_argument("--capture-dir",
