@@ -4,55 +4,19 @@
 	module AXI4_register_file_v1_0 #
 	(
 		parameter integer C_S00_AXI_DATA_WIDTH	= 32,
-		parameter integer C_S00_AXI_ADDR_WIDTH	= 7
+		parameter integer C_S00_AXI_ADDR_WIDTH	= 7,
+		parameter integer NUM_REG               = 32
 	)
 	(
-		// RW registers — MicroBlaze reads/writes, fabric reads. Byte offsets:
-		// RW0-7 @ 0x00-0x1c, RO0-7 @ 0x20-0x3c (unchanged), RW8-15 @ 0x40-0x5c (new).
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG0,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG1,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG2,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG3,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG4,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG5,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG6,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG7,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG8,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG9,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG10,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG11,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG12,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG13,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG14,
-		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG15,
-
-		// RO registers — fabric writes (with WE), MicroBlaze reads
-		input wire [C_S00_AXI_DATA_WIDTH-1:0] RO_REG0_IN,
-		input wire                             RO_REG0_WE,
-		input wire [C_S00_AXI_DATA_WIDTH-1:0] RO_REG1_IN,
-		input wire                             RO_REG1_WE,
-		input wire [C_S00_AXI_DATA_WIDTH-1:0] RO_REG2_IN,
-		input wire                             RO_REG2_WE,
-		input wire [C_S00_AXI_DATA_WIDTH-1:0] RO_REG3_IN,
-		input wire                             RO_REG3_WE,
-		input wire [C_S00_AXI_DATA_WIDTH-1:0] RO_REG4_IN,
-		input wire                             RO_REG4_WE,
-		input wire [C_S00_AXI_DATA_WIDTH-1:0] RO_REG5_IN,
-		input wire                             RO_REG5_WE,
-		input wire [C_S00_AXI_DATA_WIDTH-1:0] RO_REG6_IN,
-		input wire                             RO_REG6_WE,
-		input wire [C_S00_AXI_DATA_WIDTH-1:0] RO_REG7_IN,
-		input wire                             RO_REG7_WE,
-
-		// Read strobes: one-cycle pulse when MicroBlaze reads an RO reg
-		output wire                            RO_REG0_RDINT,
-		output wire                            RO_REG1_RDINT,
-		output wire                            RO_REG2_RDINT,
-		output wire                            RO_REG3_RDINT,
-		output wire                            RO_REG4_RDINT,
-		output wire                            RO_REG5_RDINT,
-		output wire                            RO_REG6_RDINT,
-		output wire                            RO_REG7_RDINT,
+		// Unified register bank (see S00_AXI).  Register i is at byte offset i*4.
+		//   REG        : value of each register (fabric + CPU read)
+		//   REG_IN/_WE : fabric write port (REG_WE[i]=1 -> fabric owns reg i,
+		//                reads as RO; REG_WE[i]=0 -> normal RW register)
+		//   REG_RDINT  : one-cycle pulse when the CPU reads register i
+		output wire [NUM_REG*C_S00_AXI_DATA_WIDTH-1:0] REG,
+		input  wire [NUM_REG*C_S00_AXI_DATA_WIDTH-1:0] REG_IN,
+		input  wire [NUM_REG-1:0]                      REG_WE,
+		output wire [NUM_REG-1:0]                      REG_RDINT,
 
 		// AXI Slave Bus Interface S00_AXI
 		input wire  s00_axi_aclk,
@@ -80,48 +44,13 @@
 
 	AXI4_register_file_v1_0_S00_AXI # (
 		.C_S_AXI_DATA_WIDTH(C_S00_AXI_DATA_WIDTH),
-		.C_S_AXI_ADDR_WIDTH(C_S00_AXI_ADDR_WIDTH)
+		.C_S_AXI_ADDR_WIDTH(C_S00_AXI_ADDR_WIDTH),
+		.NUM_REG(NUM_REG)
 	) AXI4_register_file_v1_0_S00_AXI_inst (
-		.RW_REG0(RW_REG0),
-		.RW_REG1(RW_REG1),
-		.RW_REG2(RW_REG2),
-		.RW_REG3(RW_REG3),
-		.RW_REG4(RW_REG4),
-		.RW_REG5(RW_REG5),
-		.RW_REG6(RW_REG6),
-		.RW_REG7(RW_REG7),
-		.RW_REG8(RW_REG8),
-		.RW_REG9(RW_REG9),
-		.RW_REG10(RW_REG10),
-		.RW_REG11(RW_REG11),
-		.RW_REG12(RW_REG12),
-		.RW_REG13(RW_REG13),
-		.RW_REG14(RW_REG14),
-		.RW_REG15(RW_REG15),
-		.RO_REG0_IN(RO_REG0_IN),
-		.RO_REG0_WE(RO_REG0_WE),
-		.RO_REG1_IN(RO_REG1_IN),
-		.RO_REG1_WE(RO_REG1_WE),
-		.RO_REG2_IN(RO_REG2_IN),
-		.RO_REG2_WE(RO_REG2_WE),
-		.RO_REG3_IN(RO_REG3_IN),
-		.RO_REG3_WE(RO_REG3_WE),
-		.RO_REG4_IN(RO_REG4_IN),
-		.RO_REG4_WE(RO_REG4_WE),
-		.RO_REG5_IN(RO_REG5_IN),
-		.RO_REG5_WE(RO_REG5_WE),
-		.RO_REG6_IN(RO_REG6_IN),
-		.RO_REG6_WE(RO_REG6_WE),
-		.RO_REG7_IN(RO_REG7_IN),
-		.RO_REG7_WE(RO_REG7_WE),
-		.RO_REG0_RDINT(RO_REG0_RDINT),
-		.RO_REG1_RDINT(RO_REG1_RDINT),
-		.RO_REG2_RDINT(RO_REG2_RDINT),
-		.RO_REG3_RDINT(RO_REG3_RDINT),
-		.RO_REG4_RDINT(RO_REG4_RDINT),
-		.RO_REG5_RDINT(RO_REG5_RDINT),
-		.RO_REG6_RDINT(RO_REG6_RDINT),
-		.RO_REG7_RDINT(RO_REG7_RDINT),
+		.REG(REG),
+		.REG_IN(REG_IN),
+		.REG_WE(REG_WE),
+		.REG_RDINT(REG_RDINT),
 		.S_AXI_ACLK(s00_axi_aclk),
 		.S_AXI_ARESETN(s00_axi_aresetn),
 		.S_AXI_AWADDR(s00_axi_awaddr),

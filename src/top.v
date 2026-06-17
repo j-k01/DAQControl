@@ -90,14 +90,17 @@ module top #(
     wire [31:0] rw_reg5;
     wire [31:0] rw_reg6;
     wire [31:0] rw_reg7;
-    wire [31:0] rw_reg8;
-    wire [31:0] rw_reg9;
-    wire [31:0] rw_reg10;
-    wire [31:0] rw_reg11;
-    wire [31:0] rw_reg12;
-    wire [31:0] rw_reg13;
-    wire [31:0] rw_reg14;
-    wire [31:0] rw_reg15;
+
+    // Unified register-file bank: 32 contiguous regs x 32b, flattened buses.
+    // rw_reg0-7 are CPU-owned RW (fabric write port tied off); regf_in/regf_we
+    // drive the fabric-sourced ("read-only") registers; regf_rdint pulses for
+    // one cycle on a CPU read. Add new control/status regs by slicing regf_value
+    // / driving regf_in[idx] -- all contiguous at byte offset idx*4.
+    localparam integer REGF_NUM = 32;
+    wire [REGF_NUM*32-1:0] regf_value;
+    wire [REGF_NUM*32-1:0] regf_in;
+    wire [REGF_NUM-1:0]    regf_we;
+    wire [REGF_NUM-1:0]    regf_rdint;
 
     wire ro_reg0_rdint;
     wire ro_reg1_rdint;
@@ -251,46 +254,10 @@ module top #(
         .reset                (microblaze_reset),
         .rs232_uart_txd       (UART_TXD),
         .rs232_uart_rxd       (UART_RXD),
-        .RW_REG0_0            (rw_reg0),
-        .RW_REG1_0            (rw_reg1),
-        .RW_REG2_0            (rw_reg2),
-        .RW_REG3_0            (rw_reg3),
-        .RW_REG4_0            (rw_reg4),
-        .RW_REG5_0            (rw_reg5),
-        .RW_REG6_0            (rw_reg6),
-        .RW_REG7_0            (rw_reg7),
-        .RW_REG8_0            (rw_reg8),
-        .RW_REG9_0            (rw_reg9),
-        .RW_REG10_0           (rw_reg10),
-        .RW_REG11_0           (rw_reg11),
-        .RW_REG12_0           (rw_reg12),
-        .RW_REG13_0           (rw_reg13),
-        .RW_REG14_0           (rw_reg14),
-        .RW_REG15_0           (rw_reg15),
-        .RO_REG0_IN_0         (status_reg),
-        .RO_REG0_WE_0         (1'b1),
-        .RO_REG1_IN_0         (clk_fmc_count),
-        .RO_REG1_WE_0         (1'b1),
-        .RO_REG2_IN_0         (sysref_count),
-        .RO_REG2_WE_0         (1'b1),
-        .RO_REG3_IN_0         (selected_count),
-        .RO_REG3_WE_0         (1'b1),
-        .RO_REG4_IN_0         (adc_frontend_status_reg),
-        .RO_REG4_WE_0         (1'b1),
-        .RO_REG5_IN_0         (adc0_selected_debug_reg),
-        .RO_REG5_WE_0         (1'b1),
-        .RO_REG6_IN_0         (adc1_selected_debug_reg),
-        .RO_REG6_WE_0         (1'b1),
-        .RO_REG7_IN_0         (adc_channel_selected_reg),
-        .RO_REG7_WE_0         (1'b1),
-        .RO_REG0_RDINT_0      (ro_reg0_rdint),
-        .RO_REG1_RDINT_0      (ro_reg1_rdint),
-        .RO_REG2_RDINT_0      (ro_reg2_rdint),
-        .RO_REG3_RDINT_0      (ro_reg3_rdint),
-        .RO_REG4_RDINT_0      (ro_reg4_rdint),
-        .RO_REG5_RDINT_0      (ro_reg5_rdint),
-        .RO_REG6_RDINT_0      (ro_reg6_rdint),
-        .RO_REG7_RDINT_0      (ro_reg7_rdint)
+        .REG_0                (regf_value),
+        .REG_IN_0             (regf_in),
+        .REG_WE_0             (regf_we),
+        .REG_RDINT_0          (regf_rdint)
 `ifdef DAQ_WITH_PS_DDR_DMA
         ,
         // DMA S2MM/SG + both HP ports run on clk_300 (drain headroom over the
@@ -361,6 +328,41 @@ module top #(
         .NEURON_CFG_AXI_BRAM_PORTA_we   (neuron_cfg_axi_bram_we)
 `endif
     );
+
+    // ---- register-file bank wiring -----------------------------------------
+    // rw_reg0-7: CPU-owned RW (their fabric write enable stays 0 below).
+    assign rw_reg0 = regf_value[ 0*32 +: 32];
+    assign rw_reg1 = regf_value[ 1*32 +: 32];
+    assign rw_reg2 = regf_value[ 2*32 +: 32];
+    assign rw_reg3 = regf_value[ 3*32 +: 32];
+    assign rw_reg4 = regf_value[ 4*32 +: 32];
+    assign rw_reg5 = regf_value[ 5*32 +: 32];
+    assign rw_reg6 = regf_value[ 6*32 +: 32];
+    assign rw_reg7 = regf_value[ 7*32 +: 32];
+    // Fabric-sourced ("read-only") status registers at index 8-15 (byte
+    // 0x20-0x3c): the fabric drives the value every cycle (WE=1), so the CPU
+    // reads them as read-only. Concatenation is MSB-first = {idx31..idx0}.
+    assign regf_we = 32'h0000_FF00;        // indices 8..15 fabric-owned
+    assign regf_in = {
+        {16{32'd0}},                       // idx 31..16 (CPU-owned RW: no fabric input)
+        adc_channel_selected_reg,          // idx 15
+        adc1_selected_debug_reg,           // idx 14
+        adc0_selected_debug_reg,           // idx 13
+        adc_frontend_status_reg,           // idx 12
+        selected_count,                    // idx 11
+        sysref_count,                      // idx 10
+        clk_fmc_count,                     // idx 9
+        status_reg,                        // idx 8
+        {8{32'd0}}                         // idx 7..0  (CPU-owned RW)
+    };
+    assign ro_reg0_rdint = regf_rdint[8];
+    assign ro_reg1_rdint = regf_rdint[9];
+    assign ro_reg2_rdint = regf_rdint[10];
+    assign ro_reg3_rdint = regf_rdint[11];
+    assign ro_reg4_rdint = regf_rdint[12];
+    assign ro_reg5_rdint = regf_rdint[13];
+    assign ro_reg6_rdint = regf_rdint[14];
+    assign ro_reg7_rdint = regf_rdint[15];
 
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     dataplane_bram_ip u_dataplane_bram_ip (
