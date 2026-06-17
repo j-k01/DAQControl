@@ -24,9 +24,20 @@ module dac_source_crossbar (
     output wire [63:0]      dac2_word,
     output wire [63:0]      dac3_word
 );
-    assign dac0_word = sources[sel[ 3:0]  * 64 +: 64];
-    assign dac1_word = sources[sel[ 7:4]  * 64 +: 64];
-    assign dac2_word = sources[sel[11:8]  * 64 +: 64];
-    assign dac3_word = sources[sel[15:12] * 64 +: 64];
+    // Unpack the flat bus into a 16-entry array, then index it per DAC.  This is
+    // the same 16:1 mux as a `sources[sel*64 +: 64]` part-select but uses plain
+    // array indexing -- equally synthesizable and portable across simulators.
+    wire [63:0] src [0:15];
+    genvar gi;
+    generate
+        for (gi = 0; gi < 16; gi = gi + 1) begin : g_unpack
+            assign src[gi] = sources[gi*64 +: 64];
+        end
+    endgenerate
+
+    assign dac0_word = src[sel[ 3:0]];
+    assign dac1_word = src[sel[ 7:4]];
+    assign dac2_word = src[sel[11:8]];
+    assign dac3_word = src[sel[15:12]];
 
 endmodule
