@@ -143,11 +143,21 @@
 /* IZH neuron config: profiles live in a dual-clock "config bank" BRAM that the
  * MicroBlaze fills over AXI; rw_reg4[0] is toggled to fire one prog_start pulse
  * to the neuron-domain reader, which (re)loads every neuron whose mask bit is
- * set in control word 0.  Per-DAC source select is independent and lives in
- * rw_reg4[15:8] (2 bits per DAC, synced straight into the GT clock domain). */
+ * set in control word 0. */
 #define RW4_NEURON_PROG_TOGGLE (1u << 0)
-#define RW4_DAC_SOURCE_SHIFT   8
-#define RW4_DAC_SOURCE_MASK    (0xFFu << RW4_DAC_SOURCE_SHIFT)
+
+/* DAC source crossbar: register 17 holds one 4-bit select per DAC (nibble ch),
+ * routing any of 16 sources to each DAC independently.  Synced straight into
+ * the GT clock domain; independent of the neuron config bank.  The select reset
+ * value is 0 (all DACs off), so NSRC must run to route anything. */
+#define DAC_XBAR_SEL_REG   (REG_BASE + 0x44)   /* reg17 */
+#define XSRC_OFF     0u
+#define XSRC_DDS     1u    /* broadcast sine (single entry, any DAC) */
+#define XSRC_BRAM0   2u    /* +ch : BRAM channel 0..3   */
+#define XSRC_SPIKE0  6u    /* +ch : neuron spike pulse 0..3 */
+#define XSRC_MON0    10u   /* +ch : neuron current monitor 0..3 */
+#define XSRC_TAG     14u   /* debug tag word */
+#define XSRC_NIBBLE(ch)  (((u32)(ch) & 3u) * 4u)
 
 #if HAS_BRAM_DATAPLANE
 #define NEURON_CFG_BRAM_BASE   XPAR_NEURON_CFG_BRAM_CTRL_S_AXI_BASEADDR
@@ -883,9 +893,40 @@ static int parse_adc_test_mode(char **cursor, u32 *mode)
     return *mode <= 5u;
 }
 
-static int parse_dac_source_mode(char **cursor, u32 *mode)
+/* Match `word` as a whole token, optionally followed by a single 0-3 digit
+ * (e.g. "bram" or "bram2").  On match sets *digit (0 if none) and *had_digit. */
+static int token_pref_digit(const char *token, const char *word,
+                            u32 *digit, int *had_digit)
+{
+    const char *t = token;
+
+    while (*word != '\0') {
+        if (ascii_upper(*t) != ascii_upper(*word))
+            return 0;
+        t++;
+        word++;
+    }
+
+    if (*t >= '0' && *t <= '3') {
+        *digit = (u32)(*t - '0');
+        *had_digit = 1;
+        t++;
+    } else {
+        *digit = 0;
+        *had_digit = 0;
+    }
+
+    return *t == '\0' || *t == ' ' || *t == '\t';
+}
+
+/* Resolve a DAC crossbar source token into a 4-bit code (0..15) for `channel`.
+ * Channel-relative names (bram/spike/mon with no digit) map to that DAC's own
+ * index; an explicit digit (bram2, mon0, ...) or a raw 0..15 picks absolutely. */
+static int parse_dac_source(char **cursor, u32 channel, u32 *code)
 {
     char *p = *cursor;
+    u32 d;
+    int hd;
 
     while (*p == ' ' || *p == '\t')
         p++;
@@ -893,90 +934,126 @@ static int parse_dac_source_mode(char **cursor, u32 *mode)
     if (*p == '\0')
         return 0;
 
-    if (token_eq_ci(p, "auto")) {
-        *mode = 0u;
+    if (token_eq_ci(p, "off") || token_eq_ci(p, "none") || token_eq_ci(p, "zero")) {
+        *code = XSRC_OFF;
     } else if (token_eq_ci(p, "dds") || token_eq_ci(p, "sine")) {
-        *mode = 1u;
-    } else if (token_eq_ci(p, "bram") || token_eq_ci(p, "program")) {
-        *mode = 2u;
-    } else if (token_eq_ci(p, "izh") || token_eq_ci(p, "neuron")) {
-        *mode = 3u;
-    } else if (!parse_u32_arg(&p, mode)) {
+        *code = XSRC_DDS;
+    } else if (token_pref_digit(p, "bram", &d, &hd) ||
+               token_pref_digit(p, "program", &d, &hd)) {
+        *code = XSRC_BRAM0 + (hd ? d : (channel & 3u));
+    } else if (token_pref_digit(p, "spike", &d, &hd) ||
+               token_pref_digit(p, "izh", &d, &hd) ||
+               token_pref_digit(p, "neuron", &d, &hd)) {
+        *code = XSRC_SPIKE0 + (hd ? d : (channel & 3u));
+    } else if (token_pref_digit(p, "mon", &d, &hd) ||
+               token_pref_digit(p, "monitor", &d, &hd) ||
+               token_pref_digit(p, "imon", &d, &hd)) {
+        *code = XSRC_MON0 + (hd ? d : (channel & 3u));
+    } else if (token_eq_ci(p, "tag")) {
+        *code = XSRC_TAG;
+    } else if (parse_u32_arg(&p, code)) {
+        if (*code > 15u)
+            return 0;
+        *cursor = p;                 /* parse_u32_arg already advanced p */
+        return 1;
+    } else {
         return 0;
     }
 
+    while (*p != '\0' && *p != ' ' && *p != '\t')    /* step past named token */
+        p++;
     *cursor = p;
     return 1;
 }
 
-/* DAC source select is purely a GT-domain mux now: rw_reg4[15:8] holds two bits
- * per DAC (0=auto, 1=dds, 2=bram, 3=neuron pulse).  It is independent of the
- * neuron config bank.  program_enable (rw_reg3[6]) still gates the BRAM read
- * pipeline so 'auto'/'bram' have a live BRAM image. */
+/* Per-DAC source select is the 16:4 crossbar in the GT clock domain (reg17, one
+ * 4-bit nibble per DAC).  Any of 16 sources -- off / DDS / BRAM 0-3 / spike 0-3
+ * / current monitor 0-3 / tag -- routes to any DAC, independent of the neuron
+ * config bank.  program_enable (rw_reg3[6]) gates the BRAM read pipeline, so we
+ * keep it on whenever any DAC routes a BRAM source. */
 static void cmd_nsrc(void)
 {
     char *p = &cmd[4];
-    char *save_p;
+    char *src_tok;
     u32 channel = 0;
     u32 all_channels = 1;
     u32 first;
-    u32 mode;
+    u32 code;
+    u32 ch;
+    u32 sel;
 
     while (*p == ' ' || *p == '\t')
         p++;
 
     if (token_eq_ci(p, "all")) {
-        while (*p != '\0' && *p != ' ' && *p != '\t')
-            p++;
+        advance_token(&p);
     } else {
-        save_p = p;
+        char *save_p = p;
         if (parse_u32_arg(&p, &first) && first < 4u) {
             channel = first;
             all_channels = 0;
+            while (*p == ' ' || *p == '\t')
+                p++;
         } else {
             p = save_p;
         }
     }
 
-    if (!parse_dac_source_mode(&p, &mode) || mode > 3u) {
-        send_str("ERR NSRC expects [all|0..3] auto, dds, bram, izh, or 0..3\r\n");
-        return;
+    /* Validate the source token (resolved for the first/target channel). */
+    src_tok = p;
+    {
+        char *vp = src_tok;
+        if (!parse_dac_source(&vp, all_channels ? 0u : channel, &code)) {
+            send_str("ERR NSRC [all|0..3] "
+                     "off|dds|bram[0-3]|spike[0-3]|mon[0-3]|tag|0..15\r\n");
+            return;
+        }
     }
 
-    {
-        u32 r4 = Xil_In32(RW_REG4);
-        if (all_channels) {
-            u32 packed = (mode & 3u);
-            packed |= packed << 2;
-            packed |= packed << 4;      /* same 2-bit mode in all four slots */
-            r4 = (r4 & ~RW4_DAC_SOURCE_MASK) |
-                 ((packed & 0xFFu) << RW4_DAC_SOURCE_SHIFT);
-        } else {
-            u32 sh = RW4_DAC_SOURCE_SHIFT + channel * 2u;
-            r4 = (r4 & ~(3u << sh)) | ((mode & 3u) << sh);
+    sel = Xil_In32(DAC_XBAR_SEL_REG);
+    if (all_channels) {
+        for (ch = 0; ch < 4u; ch++) {
+            char *vp = src_tok;               /* re-resolve per DAC (relative names) */
+            parse_dac_source(&vp, ch, &code);
+            sel = (sel & ~(0xFu << XSRC_NIBBLE(ch))) |
+                  ((code & 0xFu) << XSRC_NIBBLE(ch));
         }
-        Xil_Out32(RW_REG4, r4);
+    } else {
+        sel = (sel & ~(0xFu << XSRC_NIBBLE(channel))) |
+              ((code & 0xFu) << XSRC_NIBBLE(channel));
     }
+    Xil_Out32(DAC_XBAR_SEL_REG, sel);
 
 #if HAS_BRAM_DATAPLANE
     {
         u32 rw3 = Xil_In32(RW_REG3);
-        if (mode == 2u || mode == 0u) {
-            rw3 |= RW3_DAC_PROGRAM_EN;          /* bram / auto need the BRAM path */
-        } else if (all_channels) {
-            rw3 &= ~RW3_DAC_PROGRAM_EN;         /* all-dds / all-izh: free it */
+        u32 any_bram = 0;
+        for (ch = 0; ch < 4u; ch++) {
+            u32 c = (sel >> XSRC_NIBBLE(ch)) & 0xFu;
+            if (c >= XSRC_BRAM0 && c <= XSRC_BRAM0 + 3u)
+                any_bram = 1;
         }
+        if (any_bram)
+            rw3 |= RW3_DAC_PROGRAM_EN;
+        else
+            rw3 &= ~RW3_DAC_PROGRAM_EN;
         Xil_Out32(RW_REG3, rw3);
     }
 #endif
 
-    send_str("DAC source ");
-    send_str(all_channels ? "all" : "ch");
-    if (!all_channels) {
+    send_str("DAC xbar ");
+    if (all_channels) {
+        send_str("all =");
+        for (ch = 0; ch < 4u; ch++) {
+            send_str(" ");
+            send_uint((sel >> XSRC_NIBBLE(ch)) & 0xFu);
+        }
+    } else {
+        send_str("ch");
         send_uint(channel);
+        send_str(" = ");
+        send_uint((sel >> XSRC_NIBBLE(channel)) & 0xFu);
     }
-    send_str(" = ");
-    send_uint(mode);
     send_str("\r\n");
 }
 
@@ -2158,7 +2235,7 @@ static void cmd_help(void)
     send_str("  ADCS [chip sel]  ADC frontend status; ADCS CH n [hi|lo] reads adc_chN\r\n");
     send_str("  ADCT [all|adc0|adc1] mode  ADS54J60 test mode: off,d21,k28,ila,rpat,transport\r\n");
     send_str("  COUP [all|1..4] [ac|dc] ADC input coupling; default/safe state is AC\r\n");
-    send_str("  NSRC [ch|all] mode DAC source: auto,dds,bram,izh (GT-domain mux, rw_reg4[15:8])\r\n");
+    send_str("  NSRC [ch|all] src  DAC crossbar (reg17): off,dds,bram[0-3],spike[0-3],mon[0-3],tag,0..15\r\n");
     send_str("  NEUR ch param value  set IZH Q16.16 param on ch=0..3 or all (writes config-bank BRAM)\r\n");
     send_str("                 params: a,b,c,d,i/current,iconst/bias (per-neuron); dt,period (global); reset,default\r\n");
     send_str("  NEUR [ch|all] profile name  profiles: regular/rs, bursting/ib, chattering/ch, fast/fs, lts, tc, resonator/rz, rebound/rb\r\n");
@@ -2225,8 +2302,8 @@ static void cmd_help(void)
 #endif
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
     send_str("    [5:4] RO3 DAC debug select (3=neuron debug word); [6] DAC program/BRAM enable\r\n");
-    send_str("RW4 neuron+source: [0] config-bank prog toggle (NEUR pulses it)\r\n");
-    send_str("    [15:8] per-DAC source, 2 bits each: 0=auto,1=DDS,2=BRAM,3=IZH (set by NSRC)\r\n");
+    send_str("RW4 neuron: [0] config-bank prog toggle (NEUR pulses it)\r\n");
+    send_str("REG17 DAC crossbar: 4 bits/DAC: 0=off,1=DDS,2-5=BRAM0-3,6-9=spike0-3,10-13=mon0-3,14=tag (NSRC)\r\n");
     send_str("    IZH debug via RW1=7: conv_sel 5=ch0 dt, 6=ch0 last spike interval, 7=ch0 update period\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("    [3] ADC BRAM capture/DAC program restart pulse\r\n");
@@ -2282,8 +2359,8 @@ static void cmd_status(void)
     send_uint((rw2 & RW2_DAC_CONV_MASK) >> RW2_DAC_CONV_SHIFT);
     send_str(" txpol=");
     send_hex((rw2 & RW2_DAC_TX_POL_MASK) >> RW2_DAC_TX_POL_SHIFT);
-    send_str(" dac_src[3:0]=");
-    send_hex((Xil_In32(RW_REG4) & RW4_DAC_SOURCE_MASK) >> RW4_DAC_SOURCE_SHIFT);
+    send_str(" dac_xbar=");
+    send_hex(Xil_In32(DAC_XBAR_SEL_REG) & 0xFFFFu);
     send_str("\r\n");
     send_str("adc_diag: rw5=");
     send_hex(Xil_In32(RW_REG5));
