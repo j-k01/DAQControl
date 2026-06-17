@@ -1180,15 +1180,48 @@ static void spike_shape_write(const s16 *samples, u32 count)
     Xil_Out32(SPIKE_NBEATS_REG, nb);
 }
 
-/* Power-on default: negative trapezoid 0 -> -32768 plateau -> 0 (7 samples). */
+/* Power-on default: the original 7 ns trapezoid (1/4,1/2,1,1,1,1/2,1/4 of
+ * 0x6000), matching the old fixed izh_spike_trapezoid. */
 static void spike_shape_init_default(void)
 {
-    static const s16 neg_trap[7] = {
-        (s16)0xE000, (s16)0xC000, (s16)0x8000, (s16)0x8000,
-        (s16)0x8000, (s16)0xC000, (s16)0xE000
+    static const s16 orig_trap[7] = {
+        (s16)0x1800, (s16)0x3000, (s16)0x6000, (s16)0x6000,
+        (s16)0x6000, (s16)0x3000, (s16)0x1800
     };
-    spike_shape_write(neg_trap, 7u);
+    spike_shape_write(orig_trap, 7u);
 }
+
+#if HAS_BRAM_DATAPLANE
+/* Power-on default for the DAC program BRAMs: one period of a 10 MHz sine.  At
+ * 1 GS/s that's exactly 100 samples = 25 frames, so RW3[31:8]=25 loops it
+ * seamlessly.  Same sine on all four DAC BRAMs (amplitude 0x6000).  Built from a
+ * quarter-wave table (sin(2*pi*k/100)*0x6000, k=0..25) + symmetry -- no libm. */
+static void dac_bram_init_default(void)
+{
+    static const s16 qt[26] = {
+            0,  1543,  3080,  4605,  6112,  7594,  9047, 10464, 11839, 13169,
+        14446, 15666, 16824, 17916, 18937, 19882, 20750, 21536, 22237, 22850,
+        23373, 23804, 24141, 24382, 24528, 24576
+    };
+    s16 s[100];
+    u32 ch, w, rw3;
+    int k;
+
+    for (k = 0; k < 100; k++) {
+        if      (k <= 25) s[k] =  qt[k];
+        else if (k <= 50) s[k] =  qt[50 - k];
+        else if (k <= 75) s[k] = -qt[k - 50];
+        else              s[k] = -qt[100 - k];
+    }
+    for (ch = 0; ch < DAC_PROGRAM_CHANNELS; ch++)
+        for (w = 0; w < 50u; w++)
+            Xil_Out32(dac_program_bram_base[ch] + w * 4u,
+                      ((u32)(u16)s[2u*w + 1u] << 16) | (u32)(u16)s[2u*w]);
+
+    rw3 = (Xil_In32(RW_REG3) & 0x000000FFu) | (25u << 8);   /* loop = 25 frames */
+    Xil_Out32(RW_REG3, rw3);
+}
+#endif
 
 /* PULS default              -> reload the negative-trapezoid default shape
  * PULS <s0> <s1> ... <sN>    -> set the spike pulse to N (<=32) signed samples
@@ -2549,6 +2582,8 @@ static void launch_defaults(void)
     u32 ctrl = CTRL_DAC_CS_N | CTRL_HMC_CS_N;
 
     Xil_Out32(RW_REG0, ctrl);
+    /* Default crossbar: DDS (broadcast sine, code 1) on all four DACs. */
+    Xil_Out32(DAC_XBAR_SEL_REG, 0x00001111u);
     restart_dac_tx_path();
 }
 
@@ -2724,8 +2759,9 @@ int main(void)
      * (regular-spiking) so the first partial NEUR update writes a coherent
      * full image into the config bank. */
     neuron_image_init();
+    dac_bram_init_default();      /* boot default DAC BRAMs = 10 MHz sine */
 #endif
-    spike_shape_init_default();   /* boot default spike-pulse shape = negative trapezoid */
+    spike_shape_init_default();   /* boot default spike-pulse shape = original 7 ns trapezoid */
     firmware_marker(2);
 
     XUartNs550_Initialize(&uart, XPAR_AXI_UART16550_0_DEVICE_ID);
