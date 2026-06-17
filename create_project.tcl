@@ -374,10 +374,12 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
 
     create_bd_intf_port -mode Master -vlnv xilinx.com:interface:uart_rtl:1.0 rs232_uart
 
-    # Unified register bank: flattened buses (NUM_REG = 32 registers x 32 bits).
+    # Unified register bank: flattened buses (NUM_REG = 48 registers x 32 bits).
     # REG = each register's value (out); REG_IN/REG_WE = per-register fabric write
     # port (in); REG_RDINT = per-register CPU-read strobe (out).
-    set reg_file_num_reg 32
+    # Regs 0-17 control/status, 18 = spike-pulse nbeats, 32-47 = spike-pulse shape
+    # (8 beat-words = 32 samples).  IP defaults (NUM_REG=48, addr width 8) match.
+    set reg_file_num_reg 48
     create_bd_port -dir O -from [expr {$reg_file_num_reg*32 - 1}] -to 0 REG_0
     create_bd_port -dir I -from [expr {$reg_file_num_reg*32 - 1}] -to 0 REG_IN_0
     create_bd_port -dir I -from [expr {$reg_file_num_reg - 1}] -to 0 REG_WE_0

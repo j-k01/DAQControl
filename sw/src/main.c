@@ -172,6 +172,16 @@
 #define CUR_WAVE_BRAM_BASE     0xC0050000u       /* 1024 x Q16.16, AXI port A */
 #define CUR_WAVE_DEPTH         1024u
 
+/* Programmable spike-pulse shape: register-file regs 32-47 hold 8 beat-words
+ * (= 32 signed s16 DAC samples, 2/reg), reg 18 holds the pulse length in beats
+ * (1..8).  Each neuron's spike shaper plays shape[0..nbeats*4-1] at the DAC rate.
+ * Loaded by PULS; boot-initialized to a negative trapezoid. */
+#define SPIKE_NBEATS_REG       (REG_BASE + 18u*4u)   /* reg 18: pulse length in beats */
+#define SPIKE_SHAPE_BASE       (REG_BASE + 32u*4u)   /* regs 32-47: 8 beat-words */
+#define SPIKE_SHAPE_REGS       16u                   /* 16 regs = 8 beat-words */
+#define SPIKE_MAX_SAMPLES      32u
+#define SPIKE_MAX_BEATS        8u
+
 #if HAS_BRAM_DATAPLANE
 #define NEURON_CFG_BRAM_BASE   XPAR_NEURON_CFG_BRAM_CTRL_S_AXI_BASEADDR
 /* word offsets within the config bank */
@@ -1126,6 +1136,90 @@ static void cmd_curp(void)
     send_str("\r\n");
 }
 #endif
+
+/* Parse an optionally-signed integer (decimal or 0x hex), for pulse samples. */
+static int parse_s32_arg(char **cursor, s32 *value)
+{
+    char *p = *cursor;
+    int neg = 0;
+    u32 mag;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (*p == '-') { neg = 1; p++; }
+    else if (*p == '+') { p++; }
+    if (!parse_u32_arg(&p, &mag))
+        return 0;
+    *value = neg ? -(s32)mag : (s32)mag;
+    *cursor = p;
+    return 1;
+}
+
+/* Write `count` (<=32) signed s16 samples as the spike-pulse shape: 2 samples
+ * per register (regs 32-47), zero-padded, and set nbeats = ceil(count/4). */
+static void spike_shape_write(const s16 *samples, u32 count)
+{
+    u32 buf[SPIKE_SHAPE_REGS];
+    u32 i, nb;
+
+    if (count > SPIKE_MAX_SAMPLES)
+        count = SPIKE_MAX_SAMPLES;
+    for (i = 0; i < SPIKE_SHAPE_REGS; i++)
+        buf[i] = 0u;
+    for (i = 0; i < count; i++) {
+        u32 v = (u32)(u16)samples[i];
+        if (i & 1u) buf[i >> 1] |= (v << 16);
+        else        buf[i >> 1] |= v;
+    }
+    for (i = 0; i < SPIKE_SHAPE_REGS; i++)
+        Xil_Out32(SPIKE_SHAPE_BASE + i * 4u, buf[i]);
+
+    nb = (count + 3u) >> 2;                 /* ceil(count/4) beats */
+    if (nb == 0u) nb = 1u;
+    if (nb > SPIKE_MAX_BEATS) nb = SPIKE_MAX_BEATS;
+    Xil_Out32(SPIKE_NBEATS_REG, nb);
+}
+
+/* Power-on default: negative trapezoid 0 -> -32768 plateau -> 0 (7 samples). */
+static void spike_shape_init_default(void)
+{
+    static const s16 neg_trap[7] = {
+        (s16)0xE000, (s16)0xC000, (s16)0x8000, (s16)0x8000,
+        (s16)0x8000, (s16)0xC000, (s16)0xE000
+    };
+    spike_shape_write(neg_trap, 7u);
+}
+
+/* PULS default              -> reload the negative-trapezoid default shape
+ * PULS <s0> <s1> ... <sN>    -> set the spike pulse to N (<=32) signed samples
+ *   (decimal counts or 0x hex), full-range s16; nbeats auto = ceil(N/4). */
+static void cmd_puls(void)
+{
+    char *p = &cmd[4];
+    s16 samples[SPIKE_MAX_SAMPLES];
+    u32 count = 0u;
+    s32 v;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (token_eq_ci(p, "default")) {
+        spike_shape_init_default();
+        send_str("PULS default (negative trapezoid, 7 samples)\r\n");
+        return;
+    }
+    while (count < SPIKE_MAX_SAMPLES && parse_s32_arg(&p, &v))
+        samples[count++] = (s16)v;
+    if (count == 0u) {
+        send_str("ERR PULS [default | s0 s1 ... up to 32 signed samples]\r\n");
+        return;
+    }
+    spike_shape_write(samples, count);
+    send_str("PULS loaded ");
+    send_uint(count);
+    send_str(" samples, nbeats=");
+    send_uint((count + 3u) >> 2);
+    send_str("\r\n");
+}
 
 static int parse_neuron_param(char **cursor, u32 *param, int *needs_value)
 {
@@ -2308,6 +2402,7 @@ static void cmd_help(void)
     send_str("  NSRC [ch|all] src  DAC crossbar (reg17): off,dds,bram[0-3],spike[0-3],mon[0-3],tag,0..15\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("  CURP off | <cps> <last> <amp_q16>  current player: triangle into i_external; f=50MHz/(cps*(last+1))\r\n");
+    send_str("  PULS default | <s0..sN>  spike pulse shape: up to 32 signed samples (full s16); default=neg trapezoid\r\n");
 #endif
     send_str("  NEUR ch param value  set IZH Q16.16 param on ch=0..3 or all (writes config-bank BRAM)\r\n");
     send_str("                 params: a,b,c,d,i/current,iconst/bias (per-neuron); dt,period (global); reset,default\r\n");
@@ -2482,6 +2577,8 @@ static void process_cmd(void)
     } else if (strncmp(cmd, "CURP", 4) == 0) {
         cmd_curp();
 #endif
+    } else if (strncmp(cmd, "PULS", 4) == 0) {
+        cmd_puls();
     } else if (strncmp(cmd, "NEUR", 4) == 0) {
         cmd_neur();
     } else if (strncmp(cmd, "RDRO", 4) == 0) {
@@ -2628,6 +2725,7 @@ int main(void)
      * full image into the config bank. */
     neuron_image_init();
 #endif
+    spike_shape_init_default();   /* boot default spike-pulse shape = negative trapezoid */
     firmware_marker(2);
 
     XUartNs550_Initialize(&uart, XPAR_AXI_UART16550_0_DEVICE_ID);

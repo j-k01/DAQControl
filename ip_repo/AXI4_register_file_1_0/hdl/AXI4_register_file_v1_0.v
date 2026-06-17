@@ -4,8 +4,8 @@
 	module AXI4_register_file_v1_0 #
 	(
 		parameter integer C_S00_AXI_DATA_WIDTH	= 32,
-		parameter integer C_S00_AXI_ADDR_WIDTH	= 7,
-		parameter integer NUM_REG               = 32
+		parameter integer C_S00_AXI_ADDR_WIDTH	= 8,
+		parameter integer NUM_REG               = 48
 	)
 	(
 		// Unified register bank (see S00_AXI).  Register i is at byte offset i*4.
