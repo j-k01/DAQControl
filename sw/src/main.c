@@ -1237,7 +1237,7 @@ static void cmd_puls(void)
         p++;
     if (token_eq_ci(p, "default")) {
         spike_shape_init_default();
-        send_str("PULS default (negative trapezoid, 7 samples)\r\n");
+        send_str("PULS default (original 7 ns trapezoid, 7 samples)\r\n");
         return;
     }
     while (count < SPIKE_MAX_SAMPLES && parse_s32_arg(&p, &v))
