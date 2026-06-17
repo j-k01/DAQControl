@@ -88,6 +88,18 @@ class Reassembler:
     def complete(self):
         return self.cov[0].all() and self.cov[1].all()
 
+    def clear(self):
+        """Drop everything received so far (coverage + byte counts). Call right
+        before triggering the real BRDO so a phantom drain of the stale DDR
+        region (the A53 fires one on the first registration after a reload, since
+        its burst_req_last starts at 0 vs the MB's monotonic readout_req) does
+        not get mistaken for fresh data."""
+        with self.lock:
+            self.cov = [np.zeros(self.nslot, dtype=bool),
+                        np.zeros(self.nslot, dtype=bool)]
+            self.got = [0, 0]
+            self.last_t = time.time()
+
     def close(self):
         self.running = False
         self.sock.close()

@@ -145,8 +145,13 @@ CUR_MAX_MA = 30.0              # full-scale current-source amplitude (mA)
 MA_TO_Q16 = 65536.0            # 1 mA -> Q16.16 LSBs (1 mA == 1.0 I-unit)
 CUR_PLAYER_CLK_HZ = 50.0e6     # the player advances in the 50 MHz neuron clock
 CUR_WAVE_MAX = 1024            # cur_wave BRAM depth (firmware CUR_WAVE_DEPTH)
-CUR_SINE_SAMPLES = 256         # samples per sine/step loop (smooth, fits BRAM)
+CUR_SINE_SAMPLES = 256         # max samples per loop (low freq); fewer at high freq
+CUR_SINE_SAMPLES_MIN = 16      # min samples (keeps a high-freq sine recognizable)
 CUR_SOURCE_PRESETS = ["Sine", "Zero current", "Step (0 → amp)"]
+# Measured DAC->ADC loopback is AC-coupled with a high-pass corner ~200 kHz, so a
+# current MONITOR routed to a DAC only shows on the (AC) scope ABOVE this; below
+# it the signal is attenuated/blocked (DC-couple, or raise frequency, to view).
+CUR_LOOPBACK_AC_CORNER_HZ = 200e3
 
 # --- programmable spike pulse shape (izh_spike_shaper, firmware PULS) ----------
 PULSE_MAX_SAMPLES = 32         # firmware SPIKE_MAX_SAMPLES
@@ -161,26 +166,36 @@ def ma_to_q16_u32(ma):
     return int(round(ma * MA_TO_Q16)) & 0xFFFFFFFF
 
 
-def gen_current_wave(kind, amp_ma, freq_hz, n=CUR_SINE_SAMPLES):
+def gen_current_wave(kind, amp_ma, freq_hz, n_max=CUR_SINE_SAMPLES,
+                     n_min=CUR_SINE_SAMPLES_MIN):
     """Build a non-negative current waveform for the cur_wave player.
 
-    Returns (samples_ma, cps, actual_hz): the per-sample amplitudes in mA (all
-    >= 0), the player's cycles-per-sample divisor, and the resulting loop
-    frequency. The player loops n samples advancing every cps clk_50 cycles, so
-    f = 50 MHz / (cps * n)."""
+    Returns (samples_ma, cps, actual_hz): per-sample amplitudes in mA (all >= 0),
+    the player's cycles-per-sample divisor, and the resulting loop frequency. The
+    player loops len(ys) samples advancing every cps clk_50 cycles, so
+    f = 50 MHz / (cps * len). To reach the loopback's AC passband (>~200 kHz) we
+    SHRINK the sample count at high frequency (cps pinned at 1) instead of being
+    capped at 50MHz/256 = 195 kHz; low frequency keeps the full table and slows
+    the player via cps."""
     amp_ma = max(0.0, min(CUR_MAX_MA, float(amp_ma)))
+    freq_hz = max(1.0, float(freq_hz))
     if kind.startswith("Zero"):
-        ys = np.zeros(2)
-    elif kind.startswith("Step"):
+        return np.zeros(2), 1, 0.0
+    n_cps1 = CUR_PLAYER_CLK_HZ / freq_hz            # samples needed if cps == 1
+    if n_cps1 <= n_max:
+        n = int(max(n_min, min(n_max, round(n_cps1))))
+        cps = 1
+    else:
+        n = n_max
+        cps = int(min(65535, round(CUR_PLAYER_CLK_HZ / (freq_hz * n))))
+    cps = max(1, cps)
+    if kind.startswith("Step"):
         ys = np.zeros(n)
-        ys[n // 2:] = amp_ma                       # 0 for the first half, amp after
+        ys[n // 2:] = amp_ma                         # 0 for the first half, amp after
     else:  # Sine, raised so the trough sits exactly at 0 (unipolar)
         i = np.arange(n)
         ys = 0.5 * amp_ma * (1.0 - np.cos(2.0 * np.pi * i / n))
-    count = len(ys)
-    cps = int(round(CUR_PLAYER_CLK_HZ / (max(1.0, float(freq_hz)) * count)))
-    cps = max(1, min(65535, cps))
-    actual = CUR_PLAYER_CLK_HZ / (cps * count)
+    actual = CUR_PLAYER_CLK_HZ / (cps * len(ys))
     return ys, cps, actual
 
 
@@ -775,7 +790,7 @@ class CurrentSourceWindow(QtWidgets.QWidget):
         self.freq_spin.setRange(1.0, 1.0e6)
         self.freq_spin.setDecimals(1)
         self.freq_spin.setSingleStep(100.0)
-        self.freq_spin.setValue(5000.0)                    # 5 kHz default
+        self.freq_spin.setValue(500000.0)                  # 500 kHz: well above the ~200kHz loopback AC corner (clean on the scope)
         self.freq_spin.setSuffix(" Hz")
         self.freq_spin.valueChanged.connect(self._refresh)
         grid.addWidget(self.freq_spin, 2, 1)
@@ -815,10 +830,19 @@ class CurrentSourceWindow(QtWidgets.QWidget):
         self.curve.setData(t, np.tile(ys, reps) * 1e-3)
         self.plot.setYRange(-0.05 * CUR_MAX_MA * 1e-3,
                             max(0.5, amp * 1.15) * 1e-3)
+        # The loopback is AC-coupled (~200 kHz corner): a current below that
+        # drives the neuron fine but is attenuated/invisible via a Monitor on the
+        # AC scope. Warn so a "blank scope" isn't mistaken for a broken source.
+        if not kind.startswith("Zero") and actual < CUR_LOOPBACK_AC_CORNER_HZ:
+            tail = (f"  ⚠ {actual/1e3:.1f} kHz is below the ~"
+                    f"{CUR_LOOPBACK_AC_CORNER_HZ/1e3:.0f} kHz loopback AC corner — "
+                    f"drives the neuron, but won't show via a Monitor on the AC "
+                    f"scope (raise frequency or DC-couple to view).")
+        else:
+            tail = "  Route a Monitor source on a DAC to view the live current."
         self.info.setText(
-            f"{kind}: {n} samples, cps={cps} → loop {actual:.1f} Hz, "
-            f"peak {ys.max():.3f} mA (1 mA = 1.0 I-unit, unipolar 0+).  "
-            f"Route a Monitor source on a DAC to view the live current.")
+            f"{kind}: {n} samples, cps={cps} → loop {actual/1e3:.2f} kHz, "
+            f"peak {ys.max():.3f} mA (1 mA = 1.0 I-unit, unipolar 0+).{tail}")
 
     def _on_prog(self):
         dac = self.scope.dac
@@ -1507,6 +1531,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
             if not self.dac.cmd(f"BCAP {kb}k",
                                 ok=("OK BCAP", "ERR")).startswith("OK BCAP"):
                 return None
+            # Discard any phantom drain (the A53 fires one of the STALE region on
+            # the first BRST registration after a reload, since its burst_req_last
+            # starts at 0 vs the MB's monotonic readout_req) so only the fresh
+            # post-BRDO drain counts. Without this, the first Collect returns
+            # stale/garbled data (~200% coverage) -- the "press twice" bug.
+            asm.clear()
             self.dac.cmd("BRDO", ok=("OK BRDO", "ERR"))
             deadline = time.time() + 8.0
             while time.time() < deadline:
