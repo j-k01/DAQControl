@@ -29,6 +29,7 @@ module izh_dac_bank #(
     input  wire [31:0]            cfg_data,   // config BRAM port-B read data (1-cycle latency)
 
     output wire [3:0]             spike_flags,    // per-neuron spike (-> GT pulse shaper)
+    output wire [127:0]           i_mon,          // per-neuron current I+I_constant (Q16.16, 4x32)
     output wire [31:0]            debug_word
 );
     // ---- defaults (regular-spiking; a=0.02 b=0.20 c=-65 d=8 Ic=10 I=0) -------
@@ -176,5 +177,15 @@ module izh_dac_bank #(
     wire busy = (st != S_IDLE);
     assign spike_flags = spike;
     assign debug_word  = {8'h1A, mask, busy, global_set, v_out[0][17:0]};
+
+    // Per-neuron current monitor = exactly what each neuron integrates
+    // (I + I_constant = i_param + i_external + i_const).  Tapped here so a DAC
+    // can mirror it through the GT-domain sample-and-hold CDC.
+    genvar mn;
+    generate
+        for (mn = 0; mn < 4; mn = mn + 1) begin : g_imon
+            assign i_mon[mn*32 +: 32] = i_param[mn] + i_external + i_const[mn];
+        end
+    endgenerate
 
 endmodule

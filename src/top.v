@@ -580,7 +580,8 @@ module top #(
     wire [63:0] dac_program_word3_reg;
     wire [3:0]  izh_spike_flags_neuron;
     wire [3:0]  izh_spike_flags_tx;
-    wire [7:0]  dac_source_modes_tx;
+    wire [15:0]  dac_src_sel_tx;     // 4 bits/DAC crossbar select (reg17[15:0]) in GT domain
+    wire [255:0] mon_words_tx;       // 4 x 64-bit current-monitor DAC words in GT domain
     wire [31:0] dac_neuron_debug_async;
     wire [31:0] dac_neuron_debug_reg;
     wire [31:0] dac_program_status_async;
@@ -1022,6 +1023,8 @@ module top #(
     wire cur_restart_50 = cur_restart_sync[2] ^ cur_restart_sync[1];
 
     wire signed [31:0] cur_i_current;
+    wire               cur_sample_tick;   // pulses (clk_50) when the player updates i_current
+    wire [127:0]       izh_i_mon;         // per-neuron current I+I_constant (clk_50, 4x Q16.16)
     izh_current_player #(
         .ADDR_W (10),
         .DATA_W (32)
@@ -1036,7 +1039,7 @@ module top #(
         .bram_en           (),
         .bram_data         (cur_wave_fabric_dout),
         .i_current         (cur_i_current),
-        .sample_tick       (),
+        .sample_tick       (cur_sample_tick),
         .running           ()
     );
 
@@ -1052,6 +1055,7 @@ module top #(
         .cfg_addr    (neuron_cfg_fabric_addr),
         .cfg_data    (neuron_cfg_fabric_dout),
         .spike_flags (izh_spike_flags_neuron),
+        .i_mon       (izh_i_mon),
         .debug_word  (dac_neuron_debug_async)
     );
 
@@ -1140,17 +1144,44 @@ module top #(
     wire [3:0] dac_physical_map_mode_tx = 4'd0;
     wire       dac_tag_source_enable_tx = 1'b0;
 
-    // Source select lives wholly in the GT (DAC) clock domain: a simple
-    // per-DAC mux choosing among the viable outputs (DDS / BRAM / neuron pulse
-    // shaper).  Firmware sets rw_reg4[15:8] (2 bits per DAC) and we sync it
-    // across; it is independent of the neuron bank and its reprogramming.
+    // Source select for the 16:4 crossbar lives wholly in the GT (DAC) clock
+    // domain: each DAC independently routes any of 16 sources (off / DDS /
+    // BRAM 0-3 / spike pulse 0-3 / current monitor 0-3 / tag) via its own 4-bit
+    // field.  Firmware sets reg17[15:0] (4 bits per DAC: [3:0]=DAC0 ..
+    // [15:12]=DAC3) and we sync it across; independent of the neuron bank.
     cdc_vector_sync #(
-        .WIDTH (8)
-    ) u_dac_source_modes_sync (
+        .WIDTH (16)
+    ) u_dac_src_sel_sync (
         .dest_clk (gth_tx_usrclk2),
         .dest_rst (litejesd_reset),
-        .src      (rw_reg4[15:8]),
-        .dest     (dac_source_modes_tx)
+        .src      (regf_value[17*32 +: 16]),
+        .dest     (dac_src_sel_tx)
+    );
+
+    // Current monitors: bring each neuron's integrated input current (I+Ic) from
+    // the slow neuron domain into the DAC domain as ready-to-play 64-bit words,
+    // so any DAC can mirror exactly what a neuron is being fed.  Capture on each
+    // player update (sample_tick) for an immediate response to a new current
+    // value, plus a slow clk_50 heartbeat so static changes (a neuron reprogram
+    // while the player is stopped) also refresh.  Both rates sit far below the
+    // CDC's safe limit, and dst_clk >> src_clk keeps the held data stable.
+    reg [7:0] cur_mon_hb = 8'd0;
+    always @(posedge clk_50) begin
+        if (neuron_rst) cur_mon_hb <= 8'd0;
+        else            cur_mon_hb <= cur_mon_hb + 8'd1;
+    end
+    wire cur_mon_capture = cur_sample_tick | (cur_mon_hb == 8'd0);
+
+    cur_monitor_cdc #(
+        .N     (4),
+        .SHIFT (8)
+    ) u_cur_monitor_cdc (
+        .src_clk   (clk_50),
+        .src_rst   (neuron_rst),
+        .i_mon     (izh_i_mon),
+        .capture   (cur_mon_capture),
+        .dst_clk   (gth_tx_usrclk2),
+        .mon_words (mon_words_tx)
     );
 
     // The neurons live in the slow clk_50 neuron domain.  Only their one-bit
@@ -1302,7 +1333,8 @@ module top #(
         .physical_map_mode(dac_physical_map_mode_tx),
         .triangle_step    (16'd256),
         .sine_phase_inc   (dac_dds_phase_inc_tx),
-        .source_modes     (dac_source_modes_tx),
+        .dac_src_sel      (dac_src_sel_tx),
+        .mon_words        (mon_words_tx),
         .tag_source_enable(dac_tag_source_enable_tx),
         .program_enable   (dac_program_enable),
         .program_word0    (dac_program_word0_async),
@@ -1427,7 +1459,7 @@ module top #(
         litejesd_sysref_pipe[2],
         litejesd_ready_async,
         litejesd_active_async,
-        dac_source_modes_tx,
+        dac_src_sel_tx[7:0],
         dac_physical_map_mode_tx,
         dac_active_converter_tx,
         dac_tx_lane_mode_tx,
@@ -1465,7 +1497,8 @@ module top #(
     assign dac_program_word1_async = 64'd0;
     assign dac_program_word2_async = 64'd0;
     assign dac_program_word3_async = 64'd0;
-    assign dac_source_modes_tx = 8'd0;
+    assign dac_src_sel_tx = 16'd0;
+    assign mon_words_tx = 256'd0;
     assign dac_program_status_async = 32'd0;
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     assign dac0_bram_addr = 32'd0;

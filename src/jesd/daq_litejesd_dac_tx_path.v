@@ -20,7 +20,8 @@ module daq_litejesd_dac_tx_path #(
     input  wire [3:0]    physical_map_mode,
     input  wire [15:0]   triangle_step,
     input  wire [23:0]   sine_phase_inc,
-    input  wire [7:0]    source_modes,
+    input  wire [15:0]   dac_src_sel,        // 4-bit crossbar source select per DAC
+    input  wire [255:0]  mon_words,          // 4 x 64-bit per-neuron current monitor (GT domain)
     input  wire          tag_source_enable,
     input  wire          program_enable,
     input  wire [63:0]   program_word0,
@@ -276,55 +277,40 @@ module daq_litejesd_dac_tx_path #(
     // same contract: [15:0] is the first sample, [63:48] is the fourth sample.
     // No byte, lane, physical-output, or connector rearrangement is allowed
     // before this boundary.
-    wire [63:0] dds_word0 = sine_quad_word;
-    wire [63:0] dds_word1 = sine_quad_word;
-    wire [63:0] dds_word2 = sine_quad_word;
-    wire [63:0] dds_word3 = sine_quad_word;
-
-    wire [1:0] source_mode0 = source_modes[1:0];
-    wire [1:0] source_mode1 = source_modes[3:2];
-    wire [1:0] source_mode2 = source_modes[5:4];
-    wire [1:0] source_mode3 = source_modes[7:6];
+    // 16:4 source crossbar.  Build the 16-entry source bus; DDS is a SINGLE
+    // broadcast entry (idx 1) any DAC can route.  Index map in
+    // dac_source_crossbar.v.  program_enable is no longer a mux input -- it still
+    // gates the upstream BRAM read pipeline in top.v.
+    wire [16*64-1:0] xbar_src;
+    assign xbar_src[ 0*64 +: 64] = 64'd0;                  // 0  off
+    assign xbar_src[ 1*64 +: 64] = sine_quad_word;         // 1  DDS (broadcast)
+    assign xbar_src[ 2*64 +: 64] = program_word0;          // 2  BRAM ch0
+    assign xbar_src[ 3*64 +: 64] = program_word1;          // 3  BRAM ch1
+    assign xbar_src[ 4*64 +: 64] = program_word2;          // 4  BRAM ch2
+    assign xbar_src[ 5*64 +: 64] = program_word3;          // 5  BRAM ch3
+    assign xbar_src[ 6*64 +: 64] = neuron_word0;           // 6  spike pulse 0
+    assign xbar_src[ 7*64 +: 64] = neuron_word1;           // 7  spike pulse 1
+    assign xbar_src[ 8*64 +: 64] = neuron_word2;           // 8  spike pulse 2
+    assign xbar_src[ 9*64 +: 64] = neuron_word3;           // 9  spike pulse 3
+    assign xbar_src[10*64 +: 64] = mon_words[0*64 +: 64];  // 10 current monitor 0
+    assign xbar_src[11*64 +: 64] = mon_words[1*64 +: 64];  // 11 current monitor 1
+    assign xbar_src[12*64 +: 64] = mon_words[2*64 +: 64];  // 12 current monitor 2
+    assign xbar_src[13*64 +: 64] = mon_words[3*64 +: 64];  // 13 current monitor 3
+    assign xbar_src[14*64 +: 64] = dac_tag_word0;          // 14 debug tag
+    assign xbar_src[15*64 +: 64] = 64'd0;                  // 15 off
 
     wire [63:0] selected_src_converter0;
     wire [63:0] selected_src_converter1;
     wire [63:0] selected_src_converter2;
     wire [63:0] selected_src_converter3;
 
-    dac_channel_source_mux u_dac0_source_mux (
-        .source_mode    (source_mode0),
-        .program_enable (program_enable),
-        .dds_word       (dds_word0),
-        .bram_word      (program_word0),
-        .pulse_word     (neuron_word0),
-        .dac_word       (selected_src_converter0)
-    );
-
-    dac_channel_source_mux u_dac1_source_mux (
-        .source_mode    (source_mode1),
-        .program_enable (program_enable),
-        .dds_word       (dds_word1),
-        .bram_word      (program_word1),
-        .pulse_word     (neuron_word1),
-        .dac_word       (selected_src_converter1)
-    );
-
-    dac_channel_source_mux u_dac2_source_mux (
-        .source_mode    (source_mode2),
-        .program_enable (program_enable),
-        .dds_word       (dds_word2),
-        .bram_word      (program_word2),
-        .pulse_word     (neuron_word2),
-        .dac_word       (selected_src_converter2)
-    );
-
-    dac_channel_source_mux u_dac3_source_mux (
-        .source_mode    (source_mode3),
-        .program_enable (program_enable),
-        .dds_word       (dds_word3),
-        .bram_word      (program_word3),
-        .pulse_word     (neuron_word3),
-        .dac_word       (selected_src_converter3)
+    dac_source_crossbar u_dac_source_crossbar (
+        .sources   (xbar_src),
+        .sel       (dac_src_sel),
+        .dac0_word (selected_src_converter0),
+        .dac1_word (selected_src_converter1),
+        .dac2_word (selected_src_converter2),
+        .dac3_word (selected_src_converter3)
     );
 
     wire [63:0] src_converter0_next = tag_source_enable ? dac_tag_word0 : selected_src_converter0;
@@ -557,8 +543,8 @@ module daq_litejesd_dac_tx_path #(
     };
 
     assign status = {
-        4'd0,
-        source_mode0,
+        2'd0,
+        dac_src_sel[3:0],
         sample_map_mode,
         active_converter,
         stpl_enable,
