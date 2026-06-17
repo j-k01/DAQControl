@@ -159,6 +159,19 @@
 #define XSRC_TAG     14u   /* debug tag word */
 #define XSRC_NIBBLE(ch)  (((u32)(ch) & 3u) * 4u)
 
+/* Programmable current player: control register (reg16) + waveform BRAM.  The
+ * player advances the cur_wave read pointer every cycles_per_sample clk_50
+ * cycles, loops 0..last_index, and feeds the held Q16.16 sample as i_external
+ * into every neuron (and into the per-neuron current monitors).  Effective
+ * current frequency = 50 MHz / (cycles_per_sample * (last_index + 1)). */
+#define CUR_PLAYER_CTRL_REG  (REG_BASE + 0x40)   /* reg16 */
+#define CUR_PLAYER_CPS_SHIFT   0u                /* [15:0]  cycles_per_sample */
+#define CUR_PLAYER_LAST_SHIFT  16u               /* [25:16] last_index        */
+#define CUR_PLAYER_RUN         (1u << 30)
+#define CUR_PLAYER_RESTART     (1u << 31)        /* toggle to reset to sample 0 */
+#define CUR_WAVE_BRAM_BASE     0xC0050000u       /* 1024 x Q16.16, AXI port A */
+#define CUR_WAVE_DEPTH         1024u
+
 #if HAS_BRAM_DATAPLANE
 #define NEURON_CFG_BRAM_BASE   XPAR_NEURON_CFG_BRAM_CTRL_S_AXI_BASEADDR
 /* word offsets within the config bank */
@@ -1056,6 +1069,63 @@ static void cmd_nsrc(void)
     }
     send_str("\r\n");
 }
+
+#if HAS_BRAM_DATAPLANE
+/* CURP off                       -> stop the current player (run=0)
+ * CURP <cps> <last_index> <amp>  -> fill cur_wave[0..last_index] with a
+ *   zero-mean Q16.16 triangle of amplitude +/-amp, then run the player at that
+ *   rate.  The held sample becomes i_external on every neuron, so routing a
+ *   current monitor (NSRC <ch> mon<n>) mirrors it out a DAC. */
+static u32 cur_player_restart_tog = 0u;
+static void cmd_curp(void)
+{
+    char *p = &cmd[4];
+    u32 cps, last, amp, n, half, i;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (token_eq_ci(p, "off") || token_eq_ci(p, "stop")) {
+        Xil_Out32(CUR_PLAYER_CTRL_REG, 0u);
+        send_str("CURP off\r\n");
+        return;
+    }
+
+    if (!parse_u32_arg(&p, &cps) || !parse_u32_arg(&p, &last) ||
+        !parse_u32_arg(&p, &amp)) {
+        send_str("ERR CURP [off | <cycles_per_sample> <last_index> <amp_q16>]\r\n");
+        return;
+    }
+    if (last >= CUR_WAVE_DEPTH)
+        last = CUR_WAVE_DEPTH - 1u;
+
+    n = last + 1u;
+    half = (n >> 1) ? (n >> 1) : 1u;
+    for (i = 0u; i < n; i++) {
+        s64 v;
+        if (i < half)
+            v = -(s64)amp + (2 * (s64)amp * (s64)i) / (s64)half;
+        else
+            v = (s64)amp - (2 * (s64)amp * (s64)(i - half)) / (s64)half;
+        Xil_Out32(CUR_WAVE_BRAM_BASE + i * 4u, (u32)(s32)v);
+    }
+
+    cur_player_restart_tog ^= 1u;
+    Xil_Out32(CUR_PLAYER_CTRL_REG,
+              ((cps  & 0xFFFFu) << CUR_PLAYER_CPS_SHIFT) |
+              ((last & 0x3FFu)  << CUR_PLAYER_LAST_SHIFT) |
+              CUR_PLAYER_RUN |
+              (cur_player_restart_tog ? CUR_PLAYER_RESTART : 0u));
+
+    send_str("CURP run cps=");
+    send_uint(cps);
+    send_str(" last=");
+    send_uint(last);
+    send_str(" amp=0x");
+    send_hex(amp);
+    send_str("\r\n");
+}
+#endif
 
 static int parse_neuron_param(char **cursor, u32 *param, int *needs_value)
 {
@@ -2236,6 +2306,9 @@ static void cmd_help(void)
     send_str("  ADCT [all|adc0|adc1] mode  ADS54J60 test mode: off,d21,k28,ila,rpat,transport\r\n");
     send_str("  COUP [all|1..4] [ac|dc] ADC input coupling; default/safe state is AC\r\n");
     send_str("  NSRC [ch|all] src  DAC crossbar (reg17): off,dds,bram[0-3],spike[0-3],mon[0-3],tag,0..15\r\n");
+#if HAS_BRAM_DATAPLANE
+    send_str("  CURP off | <cps> <last> <amp_q16>  current player: triangle into i_external; f=50MHz/(cps*(last+1))\r\n");
+#endif
     send_str("  NEUR ch param value  set IZH Q16.16 param on ch=0..3 or all (writes config-bank BRAM)\r\n");
     send_str("                 params: a,b,c,d,i/current,iconst/bias (per-neuron); dt,period (global); reset,default\r\n");
     send_str("  NEUR [ch|all] profile name  profiles: regular/rs, bursting/ib, chattering/ch, fast/fs, lts, tc, resonator/rz, rebound/rb\r\n");
@@ -2405,6 +2478,10 @@ static void process_cmd(void)
         cmd_coup();
     } else if (strncmp(cmd, "NSRC", 4) == 0) {
         cmd_nsrc();
+#if HAS_BRAM_DATAPLANE
+    } else if (strncmp(cmd, "CURP", 4) == 0) {
+        cmd_curp();
+#endif
     } else if (strncmp(cmd, "NEUR", 4) == 0) {
         cmd_neur();
     } else if (strncmp(cmd, "RDRO", 4) == 0) {
