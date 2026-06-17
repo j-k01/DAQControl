@@ -48,6 +48,8 @@ class Reassembler:
         self.lock = threading.Lock()
         self.request_id = None
         self.observed_request_id = None
+        self.ready = threading.Event()
+        self.status_lines = []
         self.running = True
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
@@ -56,8 +58,34 @@ class Reassembler:
         self.board = (board_ip, cmd_port)
         threading.Thread(target=self._rx, daemon=True).start()
 
-    def register(self):
-        self.sock.sendto(b"BRST", self.board)
+    def register(self, timeout=2.0, retry_interval=0.1):
+        """Register this UDP socket as the burst destination and wait for ACK.
+
+        Waiting matters: if BRDO increments the mailbox before the A53 has
+        processed BRST, a late BRST can latch the new request as already seen and
+        the board will not drain the fresh capture. The BRST_READY status packet
+        closes that race.
+        """
+        self.ready.clear()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            self.sock.sendto(b"BRST", self.board)
+            if self.ready.wait(min(retry_interval, max(0.0, deadline - time.time()))):
+                return True
+        return False
+
+    def _handle_status(self, data):
+        try:
+            text = data.decode("ascii", errors="ignore").strip()
+        except Exception:  # noqa: BLE001
+            return False
+        if not text:
+            return False
+        with self.lock:
+            self.status_lines.append(text)
+        if text.startswith("BRST_READY"):
+            self.ready.set()
+        return True
 
     def _clear_locked(self):
         self.buf = [bytearray(self.bytes_per_chip), bytearray(self.bytes_per_chip)]
@@ -82,9 +110,11 @@ class Reassembler:
             except OSError:
                 break
             if len(data) < HDR.size:
+                self._handle_status(data)
                 continue
             magic, _v, hdr, _seq, chip, off, nbytes, tag, _dec = HDR.unpack_from(data)
             if magic != MAGIC or chip > 1:
+                self._handle_status(data)
                 continue
             payload = data[hdr:hdr + nbytes]
             if off + len(payload) > bpc:
@@ -168,8 +198,10 @@ def main():
 
     asm = Reassembler(args.board_ip, args.cmd_port, args.local_ip,
                       args.local_port, bytes_per_chip)
-    asm.register()
-    time.sleep(0.3)
+    if not asm.register(timeout=2.0):
+        print("WARN: BRST registration did not return BRST_READY; continuing with legacy delay",
+              file=sys.stderr)
+        time.sleep(0.3)
 
     print(f"BCAP {args.mb} MB/chip ...")
     t0 = time.time()

@@ -50,20 +50,32 @@ module adc_burst_capture #(
     reg         done = 1'b0;
     reg [31:0]  in_rem = 32'd0;
     reg         overflow = 1'b0;
+    reg         axis_enable = 1'b0;
+    reg         fifo_clear = 1'b0;
+    reg [3:0]   fifo_clear_count = 4'd0;
+    reg         start_pending = 1'b0;
+    reg [31:0]  pending_beats = 32'd0;
 
     wire        last_beat = (in_rem == 32'd1);
     wire        have_beat = running & data_valid & (in_rem != 32'd0);
 
     wire        fifo_full;
     wire        fifo_empty;
+    wire        fifo_wr_rst_busy_raw;
+    wire        fifo_rd_rst_busy_raw;
     wire [128:0] fifo_dout;
     wire        fifo_wr_en = have_beat & ~fifo_full;
     wire [128:0] fifo_din  = {last_beat, frame_data};
-    wire        fifo_rd_en = m_axis_tvalid & m_axis_tready;
+    wire        fifo_rd_en = axis_enable & m_axis_tvalid & m_axis_tready;
+
+    wire        fifo_rst = rst | fifo_clear;
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] fifo_wr_busy_sync = 2'b11;
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] fifo_rd_busy_sync = 2'b11;
+    wire        fifo_ready_after_clear = ~fifo_wr_busy_sync[1] & ~fifo_rd_busy_sync[1];
 
     // First-word-fall-through: dout is valid whenever non-empty, straight onto
     // AXIS in the rd_clk domain.
-    assign m_axis_tvalid = ~fifo_empty;
+    assign m_axis_tvalid = axis_enable & ~fifo_empty;
     assign m_axis_tdata  = fifo_dout[127:0];
     assign m_axis_tlast  = fifo_dout[128];
 
@@ -86,15 +98,15 @@ module adc_burst_capture #(
         .wr_clk        (clk),
         .rd_en         (fifo_rd_en),
         .rd_clk        (rd_clk),
-        .rst           (rst),
+        .rst           (fifo_rst),
         .injectdbiterr (1'b0),
         .injectsbiterr (1'b0),
         .sleep         (1'b0),
         // unused outputs
         .almost_empty  (), .almost_full (), .data_valid (), .dbiterr (),
         .overflow      (), .prog_empty  (), .prog_full  (), .rd_data_count (),
-        .rd_rst_busy   (), .sbiterr     (), .underflow  (), .wr_ack (),
-        .wr_data_count (), .wr_rst_busy ()
+        .rd_rst_busy   (fifo_rd_rst_busy_raw), .sbiterr     (), .underflow  (),
+        .wr_ack        (), .wr_data_count (), .wr_rst_busy (fifo_wr_rst_busy_raw)
     );
 
     // Read-side status bits synced into the clk domain for a coherent status
@@ -104,6 +116,8 @@ module adc_burst_capture #(
     always @(posedge clk) begin
         empty_sync  <= {empty_sync[0],  fifo_empty};
         tready_sync <= {tready_sync[0], m_axis_tready};
+        fifo_wr_busy_sync <= {fifo_wr_busy_sync[0], fifo_wr_rst_busy_raw};
+        fifo_rd_busy_sync <= {fifo_rd_busy_sync[0], fifo_rd_rst_busy_raw};
     end
 
     always @(posedge clk) begin
@@ -113,13 +127,41 @@ module adc_burst_capture #(
             done <= 1'b0;
             in_rem <= 32'd0;
             overflow <= 1'b0;
+            axis_enable <= 1'b0;
+            fifo_clear <= 1'b0;
+            fifo_clear_count <= 4'd0;
+            start_pending <= 1'b0;
+            pending_beats <= 32'd0;
         end else if (start) begin
-            running <= 1'b1;
-            armed <= 1'b1;
+            // A DMA reset/re-arm does NOT reset this PL-side async FIFO. If any
+            // previous capture beats remain, a newly armed S2MM channel will
+            // drain stale data into DDR before the new ADC window starts. Gate
+            // AXIS off, clear the FIFO, then begin the capture once reset has
+            // propagated through both FIFO clock domains.
+            running <= 1'b0;
+            armed <= 1'b0;
             done <= 1'b0;
-            in_rem <= capture_beats;
+            in_rem <= 32'd0;
             overflow <= 1'b0;
+            axis_enable <= 1'b0;
+            fifo_clear <= 1'b1;
+            fifo_clear_count <= 4'd8;
+            start_pending <= 1'b1;
+            pending_beats <= capture_beats;
         end else begin
+            if (fifo_clear) begin
+                if (fifo_clear_count != 4'd0)
+                    fifo_clear_count <= fifo_clear_count - 1'b1;
+                else
+                    fifo_clear <= 1'b0;
+            end else if (start_pending && fifo_ready_after_clear) begin
+                running <= 1'b1;
+                armed <= 1'b1;
+                in_rem <= pending_beats;
+                axis_enable <= 1'b1;
+                start_pending <= 1'b0;
+            end
+
             if (have_beat & ~fifo_full) begin
                 in_rem <= in_rem - 32'd1;
                 if (last_beat) begin
@@ -134,6 +176,7 @@ module adc_burst_capture #(
             if (armed & ~running & (in_rem == 32'd0) & empty_sync[1]) begin
                 done <= 1'b1;
                 armed <= 1'b0;
+                axis_enable <= 1'b0;
             end
         end
     end
@@ -144,7 +187,9 @@ module adc_burst_capture #(
         running,
         overflow,
         tready_sync[1],
-        in_rem[19:0]
+        fifo_clear | start_pending,
+        axis_enable,
+        in_rem[17:0]
     };
 
 endmodule

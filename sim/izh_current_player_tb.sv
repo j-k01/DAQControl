@@ -4,13 +4,14 @@
 // BRAM in order and loops over 0..last_index; emits one sample_tick per new
 // sample at the cycles_per_sample rate; freezes (holds output, no ticks) when
 // run=0; re-primes to sample 0 on restart; treats last_index=0 as a literal
-// one-sample/DC waveform; and can play the full table when last_index=depth-1.
-// A behavioral 1-cycle-latency BRAM models the real port-B read.
+// one-sample/DC waveform; can play the full table when last_index=depth-1; and
+// supports one-shot hold-last playback for step/constant-current commands.  A
+// behavioral 1-cycle-latency BRAM models the real port-B read.
 
 module izh_current_player_tb;
     localparam integer ADDR_W = 4, DATA_W = 32;
 
-    reg                  clk = 0, reset = 1, run = 0, restart = 0;
+    reg                  clk = 0, reset = 1, run = 0, restart = 0, hold_last = 0;
     reg  [15:0]          cycles_per_sample = 2;
     reg  [ADDR_W-1:0]    last_index = 3;
     wire [ADDR_W-1:0]    bram_addr;
@@ -29,6 +30,7 @@ module izh_current_player_tb;
         .reset             (reset),
         .run               (run),
         .restart           (restart),
+        .hold_last         (hold_last),
         .cycles_per_sample (cycles_per_sample),
         .last_index        (last_index),
         .bram_addr         (bram_addr),
@@ -118,6 +120,35 @@ module izh_current_player_tb;
                 errors = errors + 1;
                 $display("FAIL: full-depth seq[%0d]=%h exp=%h", k, seq[k], mem[k % (1 << ADDR_W)]);
             end
+
+        // 6) one-shot hold-last: play 0,1 once, then hold mem[1] with no wrap.
+        @(negedge clk); cycles_per_sample = 1; last_index = 1; hold_last = 1; restart = 1; run = 1;
+        @(negedge clk); restart = 0; nseq = 0;
+        wait (nseq >= 2);
+        if (seq[0] !== mem[0] || seq[1] !== mem[1]) begin
+            errors = errors + 1;
+            $display("FAIL: hold-last sequence seq0=%h seq1=%h exp0=%h exp1=%h",
+                     seq[0], seq[1], mem[0], mem[1]);
+        end
+        begin : hold_last_check
+            integer nbefore;
+            nbefore = nseq;
+            repeat (20) @(posedge clk);
+            if (nseq !== nbefore) begin
+                errors = errors + 1;
+                $display("FAIL: hold-last wrapped or kept ticking (%0d -> %0d)",
+                         nbefore, nseq);
+            end
+            if (i_current !== mem[1]) begin
+                errors = errors + 1;
+                $display("FAIL: hold-last i_current=%h exp=%h", i_current, mem[1]);
+            end
+            if (bram_addr !== 1) begin
+                errors = errors + 1;
+                $display("FAIL: hold-last bram_addr=%0d exp=1", bram_addr);
+            end
+        end
+        @(negedge clk); hold_last = 0;
 
         if (errors == 0)
             $display("TB_RESULT: PASS izh_current_player (all checks)");

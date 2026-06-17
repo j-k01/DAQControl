@@ -31,9 +31,10 @@ on connect -- acquisition is opt-in:
     allowable range, default 0 V .. max), then program it to a channel.
   - Source editors (two pop-up windows):
       * Current source: shows the waveform programmed into the cur_wave current
-        RAM. Presets Sine (5 kHz default) / Zero current / Step (0 -> amp); the
-        amplitude is in mA and can NEVER go negative. "Program" loads it via
-        CURW; route Current source on a DAC to mirror the injected current out.
+        RAM. Presets Sine (5 kHz default) / Constant current / Step (0 -> amp);
+        the amplitude is in mA and can NEVER go negative. "Program" loads it
+        via CURW; route Current source on a DAC to mirror the injected current
+        out.
       * Pulse shape: shows the spike pulse (<=32 signed DAC samples) and lets you
         drag individual points up/down; "Program pulse" sends it via PULS. The
         shaped pulse is one crossbar input -- route a Spike source to emit it.
@@ -151,7 +152,7 @@ CUR_SOURCE_MIN_HZ = 2.0e3      # experiment-facing current-source range
 CUR_SOURCE_MAX_HZ = 100.0e3
 CUR_SINE_SAMPLES = CUR_WAVE_MAX  # use the whole current BRAM when it helps
 CUR_SINE_SAMPLES_MIN = 16      # min samples (keeps a high-freq sine recognizable)
-CUR_SOURCE_PRESETS = ["Sine", "Zero current", "Step (0 → amp)"]
+CUR_SOURCE_PRESETS = ["Sine", "Constant current", "Step 0 -> constant"]
 # Some DAC->ADC loopback setups are AC-coupled with a high-pass corner near this
 # value. The injected current still drives the neurons below it; use a DC-coupled
 # readout path if the analog loopback attenuates the 2 kHz..100 kHz band.
@@ -202,15 +203,17 @@ def gen_current_wave(kind, amp_ma, freq_hz, n_max=CUR_SINE_SAMPLES,
     player loops len(ys) samples advancing every cps clk_50 cycles, so
     f = 50 MHz / (cps * len)."""
     amp_ma = max(0.0, min(CUR_MAX_MA, float(amp_ma)))
-    if kind.startswith("Zero"):
-        return np.zeros(2), 1, 0.0
-    n, cps, actual = choose_current_timing(freq_hz, n_max=n_max, n_min=n_min)
+    if kind.startswith("Constant"):
+        return np.asarray([amp_ma]), 1, 0.0
     if kind.startswith("Step"):
-        ys = np.zeros(n)
-        ys[n // 2:] = amp_ma                         # 0 for the first half, amp after
-    else:  # Sine, raised so the trough sits exactly at 0 (unipolar)
-        i = np.arange(n)
-        ys = 0.5 * amp_ma * (1.0 - np.cos(2.0 * np.pi * i / n))
+        # Programmed with CURW hold mode: play the 0-to-amp edge once, then hold
+        # the final constant-current sample instead of wrapping into a square.
+        ys = np.zeros(64)
+        ys[16:] = amp_ma
+        return ys, 1, 0.0
+    n, cps, actual = choose_current_timing(freq_hz, n_max=n_max, n_min=n_min)
+    i = np.arange(n)
+    ys = 0.5 * amp_ma * (1.0 - np.cos(2.0 * np.pi * i / n))
     return ys, cps, actual
 
 
@@ -417,16 +420,18 @@ class DacControl:
         return self.cmd(f"NEUR {target} {param} 0x{q16 & 0xFFFFFFFF:08X}",
                         ok=("OK", "NEUR", "ERR"))
 
-    def program_current(self, samples_ma, cps):
+    def program_current(self, samples_ma, cps, hold_last=False):
         """Load an arbitrary current waveform into cur_wave and run the player
         (firmware CURW). samples_ma is an iterable of non-negative mA; cps sets
-        the per-sample dwell (loop f = 50 MHz / (cps * len)). Returns the
-        board's reply line ('OK CURW ...' on success)."""
+        the per-sample dwell. hold_last=True plays the samples once and then
+        holds the final sample instead of looping. Returns the board's reply
+        line ('OK CURW ...' on success)."""
         words = [ma_to_q16_u32(v) for v in samples_ma]
         n = len(words)
+        mode = " hold" if hold_last else ""
         with self.lock:
             self.s.reset_input_buffer()
-            self.s.write(f"CURW {cps} {n}\n".encode("ascii"))
+            self.s.write(f"CURW {cps} {n}{mode}\n".encode("ascii"))
             self.s.flush()
             ack = self._readuntil(("CWRD", "ERR"))
             if not ack.startswith("CWRD"):
@@ -763,9 +768,9 @@ class PulseShapeWindow(QtWidgets.QWidget):
 
 class CurrentSourceWindow(QtWidgets.QWidget):
     """Window showing the current-source waveform programmed into cur_wave RAM.
-    Presets: Sine (5 kHz default), Zero current, Step (0 -> amp). Amplitude is in
-    mA and can NEVER go negative. Programs the player via CURW; route Current
-    source on a DAC to mirror the injected current out for the scope."""
+    Presets: Sine (5 kHz default), Constant current, Step 0 -> constant.
+    Amplitude is in mA and can NEVER go negative. Programs the player via CURW;
+    route Current source on a DAC to mirror the injected current out for the scope."""
     done = QtCore.pyqtSignal(bool, str)
 
     def __init__(self, parent_scope):
@@ -833,32 +838,44 @@ class CurrentSourceWindow(QtWidgets.QWidget):
         kind = self.kind_cb.currentText()
         amp = self.amp_spin.value()
         freq = self.freq_spin.value()
-        # frequency is meaningless for a flat zero -- disable it for clarity
-        self.freq_spin.setEnabled(not kind.startswith("Zero"))
+        # Frequency is meaningful only for periodic sine playback.
+        self.freq_spin.setEnabled(kind.startswith("Sine"))
         ys, cps, actual = gen_current_wave(kind, amp, freq)
         self._ys, self._cps = ys, cps
+        self._kind = kind
+        self._actual = actual
         n = len(ys)
         dt = cps / CUR_PLAYER_CLK_HZ
-        reps = 3                                   # show a few loops for context
-        t = np.arange(n * reps) * dt
+        if kind.startswith("Step"):
+            plot_ys = np.concatenate((ys, np.repeat(ys[-1], max(16, n))))
+            t = np.arange(plot_ys.size) * dt
+        else:
+            reps = 3                               # show a few loops for context
+            plot_ys = np.tile(ys, reps)
+            t = np.arange(plot_ys.size) * dt
         # plot in Amps (mA * 1e-3) so the axis SI-prefixes to mA cleanly
-        self.curve.setData(t, np.tile(ys, reps) * 1e-3)
+        self.curve.setData(t, plot_ys * 1e-3)
         self.plot.setYRange(-0.05 * CUR_MAX_MA * 1e-3,
                             max(0.5, amp * 1.15) * 1e-3)
-        # The injected-current source is intentionally 2 kHz..100 kHz. If the
-        # physical DAC->ADC loopback is AC-coupled, it may attenuate this band
-        # even though the neuron input and DAC source are correct.
-        if not kind.startswith("Zero") and actual < CUR_LOOPBACK_AC_CORNER_HZ:
+        # The injected-current source sine mode is intentionally 2 kHz..100 kHz.
+        # If the physical DAC->ADC loopback is AC-coupled, it may attenuate this
+        # band even though the neuron input and DAC source are correct.
+        if kind.startswith("Sine") and actual < CUR_LOOPBACK_AC_CORNER_HZ:
             tail = (f"  ⚠ {actual/1e3:.1f} kHz is below the ~"
                     f"{CUR_LOOPBACK_AC_CORNER_HZ/1e3:.0f} kHz loopback AC corner; "
                     f"use the Current source DAC route or a DC-coupled readout "
                     f"to inspect it cleanly.")
+        elif kind.startswith("Step"):
+            tail = "  Programs once, then holds the final constant-current sample."
+        elif kind.startswith("Constant"):
+            tail = "  Programs a one-sample loop, so the injected current is DC."
         else:
             tail = "  Route Current source on a DAC to view the injected waveform."
+        rate_text = "DC/one-shot" if actual <= 0 else f"loop {actual/1e3:.2f} kHz"
         self.info.setText(
-            f"{kind}: {n} samples, cps={cps} → loop {actual/1e3:.2f} kHz, "
+            f"{kind}: {n} samples, cps={cps} -> {rate_text}, "
             f"peak {ys.max():.3f} mA (1 mA = 1.0 I-unit, unipolar 0+).{tail}")
-
+        self.scope._set_current_preview(kind, ys, cps, actual, programmed=False)
     def _on_prog(self):
         dac = self.scope.dac
         if not dac:
@@ -868,7 +885,7 @@ class CurrentSourceWindow(QtWidgets.QWidget):
         self.prog_btn.setEnabled(False)
 
         def work():
-            r = dac.program_current(ys, cps)
+            r = dac.program_current(ys, cps, hold_last=self._kind.startswith("Step"))
             self.done.emit(bool(r and r.startswith("OK")), r or "(no reply)")
         threading.Thread(target=work, daemon=True).start()
 
@@ -886,6 +903,13 @@ class CurrentSourceWindow(QtWidgets.QWidget):
     def _on_done(self, ok, reply):
         self.prog_btn.setEnabled(True)
         self.info.setText(("OK — " if ok else "ERR — ") + (reply or "").strip())
+
+
+        if ok:
+            self.scope._set_current_preview(
+                getattr(self, "_kind", self.kind_cb.currentText()),
+                self._ys, self._cps, getattr(self, "_actual", 0.0),
+                programmed=True)
 
 
 # --------------------------------------------------------------- GUI
@@ -930,28 +954,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.plots.append(p)
             self.curves.append(p.plot(pen=pg.mkPen(CH_COLORS[ch], width=1.3)))
 
-        # ---- control panel (scrollable, two columns so it fits one screen) ----
-        COL_W = 270    # max width per column; both must fit without a h-scrollbar
+        # ---- control panel ----------------------------------------------------
+        PANEL_W = 430
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        scroll.setFixedWidth(2 * COL_W + 28)   # +gutter for the vertical scrollbar
+        scroll.setFixedWidth(PANEL_W)
         root.addWidget(scroll)
         panel = QtWidgets.QWidget()
         scroll.setWidget(panel)
         outer = QtWidgets.QVBoxLayout(panel)
-        cols = QtWidgets.QHBoxLayout()
-        outer.addLayout(cols)
-        left_w = QtWidgets.QWidget()
-        right_w = QtWidgets.QWidget()
-        left = QtWidgets.QVBoxLayout(left_w)
-        right = QtWidgets.QVBoxLayout(right_w)
-        left.setContentsMargins(0, 0, 0, 0)
-        right.setContentsMargins(0, 0, 0, 0)
-        left_w.setMaximumWidth(COL_W)
-        right_w.setMaximumWidth(COL_W)
-        cols.addWidget(left_w)
-        cols.addWidget(right_w)
 
         # connection
         conn = QtWidgets.QGroupBox("Connection")
@@ -974,7 +986,49 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.conn_lbl.setStyleSheet("color:#E57373;")
         self.conn_lbl.setWordWrap(True)
         cg.addWidget(self.conn_lbl, 3, 0, 1, 3)
-        left.addWidget(conn)
+        outer.addWidget(conn)
+
+        self.tabs = QtWidgets.QTabWidget()
+        outer.addWidget(self.tabs, stretch=1)
+
+        neuron_tab = QtWidgets.QWidget()
+        neuron_lay = QtWidgets.QVBoxLayout(neuron_tab)
+        xbar_tab = QtWidgets.QWidget()
+        xbar_lay = QtWidgets.QVBoxLayout(xbar_tab)
+        capture_tab = QtWidgets.QWidget()
+        capture_lay = QtWidgets.QVBoxLayout(capture_tab)
+        wave_tab = QtWidgets.QWidget()
+        wave_lay = QtWidgets.QVBoxLayout(wave_tab)
+        self.tabs.addTab(neuron_tab, "Neuron")
+        self.tabs.addTab(xbar_tab, "XBAR")
+        self.tabs.addTab(capture_tab, "Capture")
+        self.tabs.addTab(wave_tab, "Waveforms")
+
+        left = xbar_lay
+        right = neuron_lay
+
+        cur_box = QtWidgets.QGroupBox("Current source")
+        cur_lay = QtWidgets.QVBoxLayout(cur_box)
+        self.cur_preview = pg.PlotWidget()
+        self.cur_preview.setFixedHeight(120)
+        self.cur_preview.setBackground("#101418")
+        self.cur_preview.showGrid(x=True, y=True, alpha=0.18)
+        self.cur_preview.setLabel("left", "mA")
+        self.cur_preview.setLabel("bottom", "s")
+        self.cur_preview_curve = self.cur_preview.plot(
+            pen=pg.mkPen("#81C784", width=1.3),
+            fillLevel=0.0, brush=(129, 199, 132, 45))
+        cur_lay.addWidget(self.cur_preview)
+        self.cur_preview_info = QtWidgets.QLabel("no current source staged")
+        self.cur_preview_info.setStyleSheet("color:#9fb3c8; font-size:11px;")
+        self.cur_preview_info.setWordWrap(True)
+        cur_lay.addWidget(self.cur_preview_info)
+        self.cur_preview_btn = QtWidgets.QPushButton("Open current editor")
+        self.cur_preview_btn.setToolTip("Program the cur_wave current source "
+                                        "(sine / zero / step; mA, never negative)")
+        self.cur_preview_btn.clicked.connect(self._open_current_window)
+        cur_lay.addWidget(self.cur_preview_btn)
+        right.addWidget(cur_box)
 
         # per-channel source + neuron profile. The radio/profile only STAGE a
         # selection; nothing reaches the board until the per-DAC "Program"
@@ -989,17 +1043,20 @@ class ScopeWindow(QtWidgets.QMainWindow):
             src.addItems(SOURCE_LABELS)
             src.setCurrentText(initial)
             src.setToolTip("16:4 DAC crossbar (reg17): route any source to this "
-                           "DAC. Commit with Program DAC.")
-            g.addWidget(QtWidgets.QLabel("XBAR src"), 0, 0)
+                           "DAC. One combo means one legal source per output.")
+            src.currentIndexChanged.connect(self._refresh_xbar_preview)
+            src.currentIndexChanged.connect(self._refresh_xbar_profile_enable)
+            g.addWidget(QtWidgets.QLabel("source"), 0, 0)
             g.addWidget(src, 0, 1, 1, 2)
             self.src_cbs.append(src)
             prof = QtWidgets.QComboBox()
             prof.addItems(NEURON_PROFILES)
             prof.setCurrentIndex(ch % len(NEURON_PROFILES))
-            g.addWidget(QtWidgets.QLabel("neuron"), 1, 0)
+            prof.currentIndexChanged.connect(self._refresh_xbar_preview)
+            g.addWidget(QtWidgets.QLabel("profile"), 1, 0)
             g.addWidget(prof, 1, 1, 1, 2)
             self.prof_cbs.append(prof)
-            btn = QtWidgets.QPushButton(f"Program DAC{ch}")
+            btn = QtWidgets.QPushButton("Confirm route")
             btn.clicked.connect(self._make_program_dac_cb(ch))
             g.addWidget(btn, 2, 0, 1, 3)
             self.dac_btns.append(btn)
@@ -1009,6 +1066,27 @@ class ScopeWindow(QtWidgets.QMainWindow):
             g.addWidget(st, 3, 0, 1, 3)
             self.dac_status.append(st)
             left.addWidget(box)
+
+        xprev = QtWidgets.QGroupBox("All DAC outputs")
+        xprev_lay = QtWidgets.QGridLayout(xprev)
+        self.xbar_preview = []
+        for ch in range(4):
+            src_lbl = QtWidgets.QLabel(initial)
+            src_lbl.setAlignment(QtCore.Qt.AlignCenter)
+            src_lbl.setStyleSheet("background:#1b242d; color:#d7e3ef; "
+                                  "border:1px solid #334657; padding:6px;")
+            arrow = QtWidgets.QLabel("=>")
+            arrow.setAlignment(QtCore.Qt.AlignCenter)
+            dac_lbl = QtWidgets.QLabel(f"DAC{ch}")
+            dac_lbl.setAlignment(QtCore.Qt.AlignCenter)
+            dac_lbl.setStyleSheet(f"background:{CH_COLORS[ch]}; color:#101418; "
+                                  "font-weight:bold; padding:6px;")
+            xprev_lay.addWidget(src_lbl, ch, 0)
+            xprev_lay.addWidget(arrow, ch, 1)
+            xprev_lay.addWidget(dac_lbl, ch, 2)
+            self.xbar_preview.append(src_lbl)
+        left.addWidget(xprev)
+        left.addStretch(1)
 
         # neuron simulation speed (all neurons)
         nb = QtWidgets.QGroupBox("Neuron sim speed (all)")
@@ -1020,6 +1098,29 @@ class ScopeWindow(QtWidgets.QMainWindow):
         ng.addWidget(QtWidgets.QLabel("dt"))
         ng.addWidget(self.dt_cb)
         right.addWidget(nb)
+
+        prof_box = QtWidgets.QGroupBox("Per-neuron profiles")
+        prof_grid = QtWidgets.QGridLayout(prof_box)
+        self.neuron_profile_cbs = {}
+        self.neuron_profile_btns = {}
+        self.neuron_status = {}
+        for n in range(4):
+            key = str(n)
+            prof_grid.addWidget(QtWidgets.QLabel(f"neuron {n}"), n, 0)
+            cb = QtWidgets.QComboBox()
+            cb.addItems(NEURON_PROFILES)
+            cb.setCurrentIndex(n % len(NEURON_PROFILES))
+            prof_grid.addWidget(cb, n, 1)
+            btn = QtWidgets.QPushButton("Program")
+            btn.clicked.connect(self._make_prog_profile_cb(key))
+            prof_grid.addWidget(btn, n, 2)
+            st = QtWidgets.QLabel("-")
+            st.setStyleSheet("color:#9fb3c8; font-size:10px;")
+            prof_grid.addWidget(st, n, 3)
+            self.neuron_profile_cbs[key] = cb
+            self.neuron_profile_btns[key] = btn
+            self.neuron_status[key] = st
+        right.addWidget(prof_box)
 
         # live Izhikevich parameters: tweak a/b/c/d/I and the neuron is
         # reprogrammed (config bank + reload pulse) immediately, so the loopback
@@ -1066,22 +1167,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
         pg_.addWidget(self.np_status, brow + 1, 0, 1, 3)
         right.addWidget(pb)
 
-        # programmable-source editor windows: the current-source waveform
-        # (cur_wave RAM, shown + presets, unipolar mA) and the spike pulse shape
-        # (draggable points). Both program the board over the existing UART.
+        # Spike pulse source editor; the current-source editor lives beside the
+        # neuron controls because it directly drives i_external.
         ed = QtWidgets.QGroupBox("Source editors")
         eg = QtWidgets.QVBoxLayout(ed)
-        self.cur_win_btn = QtWidgets.QPushButton("Current source…")
-        self.cur_win_btn.setToolTip("Show/program the cur_wave current source "
-                                    "(sine / zero / step; mA, never negative)")
-        self.cur_win_btn.clicked.connect(self._open_current_window)
         self.pulse_win_btn = QtWidgets.QPushButton("Pulse shape…")
         self.pulse_win_btn.setToolTip("Show/edit the spike pulse shape by "
                                       "dragging points (<=32 signed samples)")
         self.pulse_win_btn.clicked.connect(self._open_pulse_window)
-        eg.addWidget(self.cur_win_btn)
         eg.addWidget(self.pulse_win_btn)
-        right.addWidget(ed)
+        wave_lay.addWidget(ed)
 
         # BRAM waveform builder
         wf = QtWidgets.QGroupBox("BRAM waveform")
@@ -1128,7 +1223,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         rng = QtWidgets.QLabel(f"allowed: {DAC_VMIN:.2f} .. {DAC_VMAX:.2f} V")
         rng.setStyleSheet("color:#9fb3c8; font-size:10px;")
         wg.addWidget(rng, 7, 0, 1, 2)
-        right.addWidget(wf)
+        wave_lay.addWidget(wf)
 
         # display + capture options
         opt = QtWidgets.QGroupBox("Display / capture")
@@ -1176,15 +1271,21 @@ class ScopeWindow(QtWidgets.QMainWindow):
         og.addWidget(self.collect_mb_cb, 5, 0)
         og.addWidget(self.collect_btn, 5, 1)
         og.addWidget(self.stream_btn, 6, 0, 1, 2)
-        left.addWidget(opt)
+        capture_lay.addWidget(opt)
 
         left.addStretch(1)
         right.addStretch(1)
+        capture_lay.addStretch(1)
+        wave_lay.addStretch(1)
         self.status = QtWidgets.QLabel("Connect to a COM port to begin.")
         self.status.setWordWrap(True)
         self.status.setStyleSheet("color:#9fb3c8; font-size:11px;")
         outer.addWidget(self.status)
 
+        self._refresh_xbar_profile_enable()
+        self._refresh_xbar_preview()
+        ys, cps, actual = gen_current_wave("Sine", 10.0, 5000.0)
+        self._set_current_preview("Sine", ys, cps, actual, programmed=False)
         self._apply_view_ranges()
         self._set_controls_enabled(False)
         self.captured.connect(self._show_capture)
@@ -1201,6 +1302,49 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.autosample_timer = QtCore.QTimer(self)
         self.autosample_timer.setInterval(AUTOSAMPLE_INTERVAL_MS)
         self.autosample_timer.timeout.connect(self._on_autosample_tick)
+
+    def _set_current_preview(self, kind, ys, cps, actual, programmed=False):
+        if not hasattr(self, "cur_preview_curve"):
+            return
+        ys = np.asarray(ys, dtype=np.float64)
+        if ys.size == 0:
+            ys = np.zeros(1)
+        dt = max(1, int(cps)) / CUR_PLAYER_CLK_HZ
+        if kind.startswith("Step"):
+            plot_ys = np.concatenate((ys, np.repeat(ys[-1], max(16, ys.size))))
+        else:
+            reps = 3 if ys.size > 1 else 16
+            plot_ys = np.tile(ys, reps)
+        t = np.arange(plot_ys.size) * dt
+        self.cur_preview_curve.setData(t, plot_ys)
+        ymax = max(1.0, float(ys.max()) * 1.15)
+        self.cur_preview.setYRange(-0.05 * ymax, ymax)
+        state = "programmed" if programmed else "staged"
+        freq = "one-shot hold" if kind.startswith("Step") else (
+            "DC" if actual <= 0 else f"{actual/1e3:.2f} kHz")
+        self.cur_preview_info.setText(
+            f"{state}: {kind}, {ys.size} samples, cps={int(cps)}, "
+            f"{freq}, peak {float(ys.max()):.3f} mA")
+
+    def _refresh_xbar_profile_enable(self, *_):
+        if not hasattr(self, "src_cbs"):
+            return
+        controls_on = getattr(self, "_controls_enabled", True)
+        for ch, cb in enumerate(self.prof_cbs):
+            label = self.src_cbs[ch].currentText()
+            cb.setEnabled(controls_on and
+                          (label.startswith("Spike ") or
+                           label.startswith("Monitor ")))
+
+    def _refresh_xbar_preview(self, *_):
+        if not hasattr(self, "xbar_preview"):
+            return
+        for ch, lbl in enumerate(self.xbar_preview):
+            src = self.src_cbs[ch].currentText()
+            prof = self.prof_cbs[ch].currentText()
+            if src.startswith("Spike ") or src.startswith("Monitor "):
+                src = f"{src}\n{prof}"
+            lbl.setText(src)
 
     # ---- connection ----
     def refresh_ports(self):
@@ -1268,12 +1412,17 @@ class ScopeWindow(QtWidgets.QMainWindow):
                             "snapshot, or Auto-Sample for 1/s live view.")
 
     def _set_controls_enabled(self, on):
+        self._controls_enabled = on
         for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.collect_btn,
                   self.collect_mb_cb, self.stream_btn, self.dt_cb,
-                  self.np_loadprof):
+                  self.np_loadprof, self.cur_preview_btn):
             w.setEnabled(on)
         for b in self.np_btns.values():
             b.setEnabled(on)
+        for b in self.neuron_profile_btns.values():
+            b.setEnabled(on)
+        for cb in self.neuron_profile_cbs.values():
+            cb.setEnabled(on)
         for sp in self.np_spins.values():
             sp.setEnabled(on)
         for cb in self.src_cbs:
@@ -1282,6 +1431,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             cb.setEnabled(on)
         for b in self.dac_btns:
             b.setEnabled(on)
+        self._refresh_xbar_profile_enable()
 
     def _show_stat(self, is_daq, health):
         port = self.dac.port if self.dac else self.port_cb.currentText()
@@ -1416,6 +1566,30 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self._program_neuron(target)
         return cb
 
+    def _make_prog_profile_cb(self, target):
+        def cb():
+            self._program_neuron_profile(target)
+        return cb
+
+    def _program_neuron_profile(self, target):
+        if not self.dac:
+            return
+        profile = self.neuron_profile_cbs[target].currentText()
+        btn = self.neuron_profile_btns.get(target)
+        if btn:
+            btn.setEnabled(False)
+        st = self.neuron_status.get(target)
+        if st:
+            st.setText("...")
+            st.setStyleSheet("color:#FFB74D; font-size:10px;")
+        self.status.setText(f"programming neuron {target} profile {profile}")
+
+        def work():
+            r = self.dac.set_neuron(target, profile)
+            ok = bool(r and not r.startswith("ERR"))
+            self.neuron_done.emit(target, ok)
+        self._bg(work)
+
     def _program_neuron(self, target):
         if not self.dac:
             return
@@ -1441,6 +1615,20 @@ class ScopeWindow(QtWidgets.QMainWindow):
         btn = self.np_btns.get(target)
         if btn:
             btn.setEnabled(True)
+        pbtn = self.neuron_profile_btns.get(target)
+        if pbtn:
+            pbtn.setEnabled(True)
+        if target == "all":
+            for label in self.neuron_status.values():
+                label.setText("OK" if ok else "ERR")
+                label.setStyleSheet(("color:#81C784;" if ok else "color:#E57373;") +
+                                    " font-size:10px;")
+        else:
+            pst = self.neuron_status.get(target)
+            if pst:
+                pst.setText("OK" if ok else "ERR")
+                pst.setStyleSheet(("color:#81C784;" if ok else "color:#E57373;") +
+                                  " font-size:10px;")
         if ok:
             self.np_status.setText(f"neuron {target}: OK — programmed")
             self.np_status.setStyleSheet("color:#81C784; font-size:11px;")
@@ -1521,35 +1709,37 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._bg(lambda: self.collected.emit(self._burst_collect(nbytes)))
 
     def _burst_collect(self, nbytes):
-        """One-shot BCAP+BRDO -> {ch: int16[], '_cov': fraction} or None.
+        """One-shot BCAP+BRDO -> {ch: int16[], '_cov': fraction} or {'_err': str}.
         Fires a fresh full-rate capture of `nbytes` bytes/chip (sent as
         BCAP <KB>k) and drains it over UDP on the same local port the live
         stream uses (now released). Reuses burst_capture.Reassembler for
         offset-bitmap (dedup'd) coverage."""
         try:
             from burst_capture import Reassembler, decode_chip, parse_brdo_request
-        except Exception:  # noqa: BLE001
-            return None
+        except Exception as exc:  # noqa: BLE001
+            return {"_err": f"burst_capture import failed: {exc}"}
         bpc = nbytes
         kb = nbytes // 1024
+        asm = None
         try:
             asm = Reassembler(self.args.board_ip, self.args.cmd_port,
                               self.args.local_ip, self.args.local_port, bpc)
-        except OSError:
-            return None
+        except OSError as exc:
+            return {"_err": (f"UDP bind failed on {self.args.local_ip}:"
+                             f"{self.args.local_port}: {exc}")}
         try:
             # ensure the DMA is free: a cyclic stream and a one-shot burst
             # can't share the DMA, so stop streaming before BCAP (no-op if off).
             self.dac.stop_stream()
-            asm.register()
-            time.sleep(0.3)
-            if not self.dac.cmd(f"BCAP {kb}k",
-                                ok=("OK BCAP", "ERR")).startswith("OK BCAP"):
-                return None
+            if not asm.register(timeout=2.0):
+                return {"_err": "BRST registration timed out (no BRST_READY from A53)"}
+            bcap = self.dac.cmd(f"BCAP {kb}k", ok=("OK BCAP", "ERR"))
+            if not bcap.startswith("OK BCAP"):
+                return {"_err": f"BCAP failed: {bcap or '(no UART reply)'}"}
             brdo = self.dac.cmd("BRDO", ok=("OK BRDO", "ERR"))
             req = parse_brdo_request(brdo)
             if not brdo.startswith("OK BRDO") or req is None:
-                return None
+                return {"_err": f"BRDO failed: {brdo or '(no UART reply)'}"}
             asm.set_request_id(req)
             deadline = time.time() + max(8.0, (2.0 * bpc / 70.0e6) + 2.0)
             while time.time() < deadline:
@@ -1557,13 +1747,20 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     break
                 time.sleep(0.05)
             if not asm.complete():
-                return None
+                return {
+                    "_err": (f"UDP drain timed out for request {req}: "
+                             f"chip0 {100 * asm.coverage(0):.1f}%, "
+                             f"chip1 {100 * asm.coverage(1):.1f}% coverage")
+                }
             chans = {}
             chans.update(decode_chip(asm.buf[0], 0))
             chans.update(decode_chip(asm.buf[1], 2))
             chans["_cov"] = min(asm.coverage(0), asm.coverage(1))
+        except Exception as exc:  # noqa: BLE001
+            return {"_err": f"Ethernet collect exception: {exc}"}
         finally:
-            asm.close()
+            if asm is not None:
+                asm.close()
         return chans
 
     def _on_collected(self, chans):
@@ -1584,7 +1781,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
             except OSError:
                 self.tap = None
         if chans is None:
-            self.status.setText("Collect Ethernet failed (capture/drain timeout).")
+            self.status.setText("Collect Ethernet failed (no result).")
+            return
+        if isinstance(chans, dict) and "_err" in chans:
+            self.status.setText(f"Collect Ethernet failed: {chans['_err']}")
             return
         cov = chans.pop("_cov", 1.0)
         self._show_burst(chans, cov)
@@ -1619,7 +1819,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if not self.stream_btn.isChecked():
             return                            # stopped while a grab was in flight
         if chans is None:
-            self.status.setText("auto-sample: capture/drain timeout (retrying)")
+            self.status.setText("auto-sample: no result (retrying)")
+            return
+        if isinstance(chans, dict) and "_err" in chans:
+            self.status.setText(f"auto-sample: {chans['_err']} (retrying)")
             return
         cov = chans.pop("_cov", 1.0)
         # show a 4x-wider window than the default scope span (the burst holds

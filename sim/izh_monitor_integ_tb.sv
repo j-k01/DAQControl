@@ -37,6 +37,7 @@ module izh_monitor_integ_tb;
 
     izh_current_player #(.ADDR_W(10), .DATA_W(32)) u_player (
         .clk(clk_50), .reset(neuron_rst), .run(run), .restart(restart),
+        .hold_last(1'b0),
         .cycles_per_sample(cps), .last_index(last_index),
         .bram_addr(bram_addr), .bram_en(bram_en), .bram_data(bram_data),
         .i_current(i_current), .sample_tick(sample_tick), .running(running)

@@ -1008,6 +1008,7 @@ module top #(
     // 16 (byte offset 0x40):
     //   [15:0]  cycles_per_sample   (advance every N clk_50 cycles; 0 -> 1)
     //   [25:16] last_index          (loop length-1; 0 -> one sample)
+    //   [26]    hold_last           (1 = play once, hold last sample)
     //   [30]    run                 (1 = play, 0 = hold/stop)
     //   [31]    restart             (TOGGLE this bit to reset to sample 0)
     wire [31:0] cur_ctrl = regf_value[16*32 +: 32];
@@ -1018,6 +1019,7 @@ module top #(
         .dest_clk (clk_50), .dest_rst (neuron_rst),
         .src (cur_ctrl[30:0]), .dest (cur_cfg_50));
     wire cur_run_50 = cur_cfg_50[30];
+    wire cur_hold_last_50 = cur_cfg_50[26];
     (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [2:0] cur_restart_sync = 3'b000;
     always @(posedge clk_50) begin
         if (neuron_rst) cur_restart_sync <= 3'b000;
@@ -1036,6 +1038,7 @@ module top #(
         .reset             (neuron_rst),
         .run               (cur_run_50),
         .restart           (cur_restart_50),
+        .hold_last         (cur_hold_last_50),
         .cycles_per_sample (cur_cfg_50[15:0]),
         .last_index        (cur_cfg_50[25:16]),
         .bram_addr         (cur_wave_fabric_addr),

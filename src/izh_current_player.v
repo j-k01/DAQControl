@@ -12,6 +12,7 @@
 // Playback is register-controlled for deterministic experiments:
 //   run      = 1 plays, 0 holds (stop/pause without losing position)
 //   restart  = 1-cycle pulse resets the read pointer to sample 0
+//   hold_last= 1 plays 0..last_index once, then holds the last sample
 //   reset    = global reset, clears everything
 //
 //   effective sample rate = f_clk / cycles_per_sample        (f_clk = 50 MHz)
@@ -30,6 +31,7 @@ module izh_current_player #(
     // ---- register-controlled playback (already synchronized into clk) -------
     input  wire               run,              // 1 = play, 0 = hold/stop
     input  wire               restart,          // 1-cycle pulse: back to sample 0
+    input  wire               hold_last,        // one-shot mode: hold at last_index
     input  wire [15:0]        cycles_per_sample,// advance every N clk (0 -> 1)
     input  wire [ADDR_W-1:0]  last_index,       // last sample (0 -> one sample)
 
@@ -52,6 +54,7 @@ module izh_current_player #(
     reg [ADDR_W-1:0] out_idx = {ADDR_W{1'b0}};
     reg        active  = 1'b0;      // registered run (status)
     reg        primed  = 1'b0;      // BRAM data for out_idx is valid
+    reg        done    = 1'b0;      // one-shot mode reached last_index
 
     wire [ADDR_W-1:0] out_idx_next =
         (out_idx == eff_last) ? ZERO_ADDR : out_idx + 1'b1;
@@ -59,7 +62,7 @@ module izh_current_player #(
         (out_idx_next == eff_last) ? ZERO_ADDR : out_idx_next + 1'b1;
 
     assign bram_en = 1'b1;          // free-running read; the address selects data
-    assign running = active;
+    assign running = active && !done;
 
     always @(posedge clk) begin
         sample_tick <= 1'b0;
@@ -70,6 +73,7 @@ module izh_current_player #(
             i_current <= {DATA_W{1'b0}};
             active    <= 1'b0;
             primed    <= 1'b0;
+            done      <= 1'b0;
         end else if (restart) begin
             // deterministic experiment reset: pointer to 0, re-prime the read
             bram_addr <= ZERO_ADDR;
@@ -77,9 +81,12 @@ module izh_current_player #(
             out_idx   <= ZERO_ADDR;
             primed    <= 1'b0;
             active    <= run;
+            done      <= 1'b0;
         end else begin
             active <= run;
-            if (run) begin
+            if (!hold_last)
+                done <= 1'b0;
+            if (run && !done) begin
                 if (!primed) begin
                     // One settle cycle so sample 0's BRAM data is valid first.
                     // If cps=1, immediately prefetch sample 1 so the first
@@ -91,9 +98,14 @@ module izh_current_player #(
                     div_cnt     <= 16'd0;
                     i_current   <= bram_data;     // sample for out_idx
                     sample_tick <= 1'b1;
-                    out_idx     <= out_idx_next;
-                    if (eff_cps == 16'd1)
-                        bram_addr <= out_idx_next2;
+                    if (hold_last && (out_idx == eff_last)) begin
+                        done      <= 1'b1;
+                        bram_addr <= eff_last;
+                    end else begin
+                        out_idx <= out_idx_next;
+                        if (eff_cps == 16'd1)
+                            bram_addr <= out_idx_next2;
+                    end
                 end else begin
                     if ((eff_cps != 16'd1) && (div_cnt == eff_cps - 16'd2))
                         bram_addr <= out_idx_next; // prefetch one clk before tick
