@@ -1135,6 +1135,51 @@ static void cmd_curp(void)
     send_hex(amp);
     send_str("\r\n");
 }
+
+/* CURW <cps> <count>  -> receive <count> little-endian Q16.16 samples over UART
+ *   into cur_wave[0..count-1], set last_index = count-1, and run the player at
+ *   <cps> cycles/sample.  Unlike CURP (an on-board triangle), this loads an
+ *   ARBITRARY host-built waveform (sine / step / zero / ...).  The held sample
+ *   becomes i_external on every neuron, so routing a current monitor mirrors it
+ *   to a DAC.  Effective frequency = 50 MHz / (cps * count).  The BRAM holds
+ *   full signed Q16.16; current sources are unipolar in use, so the host keeps
+ *   samples >= 0. */
+static void cmd_curw(void)
+{
+    char *p = &cmd[4];
+    u32 cps, count, i;
+
+    if (!parse_u32_arg(&p, &cps) || !parse_u32_arg(&p, &count)) {
+        send_str("ERR CURW <cps> <count>, then <count> little-endian Q16.16 words\r\n");
+        return;
+    }
+    if (count == 0u) {
+        send_str("ERR CURW count must be >= 1\r\n");
+        return;
+    }
+    if (count > CUR_WAVE_DEPTH)
+        count = CUR_WAVE_DEPTH;
+
+    send_str("CWRD count=");
+    send_uint(count);
+    send_str("\r\n");
+
+    for (i = 0u; i < count; i++)
+        Xil_Out32(CUR_WAVE_BRAM_BASE + i * 4u, recv_le32_blocking());
+
+    cur_player_restart_tog ^= 1u;
+    Xil_Out32(CUR_PLAYER_CTRL_REG,
+              ((cps & 0xFFFFu) << CUR_PLAYER_CPS_SHIFT) |
+              (((count - 1u) & 0x3FFu) << CUR_PLAYER_LAST_SHIFT) |
+              CUR_PLAYER_RUN |
+              (cur_player_restart_tog ? CUR_PLAYER_RESTART : 0u));
+
+    send_str("OK CURW cps=");
+    send_uint(cps);
+    send_str(" count=");
+    send_uint(count);
+    send_str("\r\n");
+}
 #endif
 
 /* Parse an optionally-signed integer (decimal or 0x hex), for pulse samples. */
@@ -2435,7 +2480,8 @@ static void cmd_help(void)
     send_str("  NSRC [ch|all] src  DAC crossbar (reg17): off,dds,bram[0-3],spike[0-3],mon[0-3],tag,0..15\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("  CURP off | <cps> <last> <amp_q16>  current player: triangle into i_external; f=50MHz/(cps*(last+1))\r\n");
-    send_str("  PULS default | <s0..sN>  spike pulse shape: up to 32 signed samples (full s16); default=neg trapezoid\r\n");
+    send_str("  CURW <cps> <count>  current player: load <count> host LE Q16.16 samples (arb. waveform); f=50MHz/(cps*count)\r\n");
+    send_str("  PULS default | <s0..sN>  spike pulse shape: up to 32 signed samples (full s16); default=7ns trapezoid\r\n");
 #endif
     send_str("  NEUR ch param value  set IZH Q16.16 param on ch=0..3 or all (writes config-bank BRAM)\r\n");
     send_str("                 params: a,b,c,d,i/current,iconst/bias (per-neuron); dt,period (global); reset,default\r\n");
@@ -2611,6 +2657,8 @@ static void process_cmd(void)
 #if HAS_BRAM_DATAPLANE
     } else if (strncmp(cmd, "CURP", 4) == 0) {
         cmd_curp();
+    } else if (strncmp(cmd, "CURW", 4) == 0) {
+        cmd_curw();
 #endif
     } else if (strncmp(cmd, "PULS", 4) == 0) {
         cmd_puls();

@@ -29,6 +29,14 @@ on connect -- acquisition is opt-in:
   - BRAM waveform builder: pick a shape (Sine/Triangle/Trapezoid/Square/Saw),
     period (ns), pulse width (ns), and a voltage range (clamped to the DAC's
     allowable range, default 0 V .. max), then program it to a channel.
+  - Source editors (two pop-up windows):
+      * Current source: shows the waveform programmed into the cur_wave current
+        RAM. Presets Sine (5 kHz default) / Zero current / Step (0 -> amp); the
+        amplitude is in mA and can NEVER go negative. "Program" loads it via
+        CURW; route a Monitor source on a DAC to mirror the live current out.
+      * Pulse shape: shows the spike pulse (<=32 signed DAC samples) and lets you
+        drag individual points up/down; "Program pulse" sends it via PULS. The
+        shaped pulse is one crossbar input -- route a Spike source to emit it.
   - CIC anti-alias (chip 1) toggle, autoscale, rising-edge trigger, Time/FFT.
   - UART Capture: grab an ADC snapshot over UART (PCAP) and pop up the 4
     channels -- works without the Ethernet path.
@@ -127,6 +135,53 @@ NEURON_PROFILE_VALUES = {
     "chattering": dict(a=0.02, b=0.20, c=-50.0, d=2.0, iconst=10.0),
     "fast":       dict(a=0.10, b=0.20, c=-65.0, d=2.0, iconst=10.0),
 }
+
+# --- programmable current source (cur_wave player, firmware CURW) -------------
+# Current sources are UNIPOLAR: they can NEVER go negative. We map physical
+# milliamps to the neuron model's Q16.16 current unit 1:1 -- i.e. 1 mA == 1.0
+# Izhikevich "I" unit -- so 10 mA equals the drive the built-in profiles use to
+# spike (iconst~10). Full-scale is configurable here.
+CUR_MAX_MA = 30.0              # full-scale current-source amplitude (mA)
+MA_TO_Q16 = 65536.0            # 1 mA -> Q16.16 LSBs (1 mA == 1.0 I-unit)
+CUR_PLAYER_CLK_HZ = 50.0e6     # the player advances in the 50 MHz neuron clock
+CUR_WAVE_MAX = 1024            # cur_wave BRAM depth (firmware CUR_WAVE_DEPTH)
+CUR_SINE_SAMPLES = 256         # samples per sine/step loop (smooth, fits BRAM)
+CUR_SOURCE_PRESETS = ["Sine", "Zero current", "Step (0 → amp)"]
+
+# --- programmable spike pulse shape (izh_spike_shaper, firmware PULS) ----------
+PULSE_MAX_SAMPLES = 32         # firmware SPIKE_MAX_SAMPLES
+# original 7 ns trapezoid boot default (firmware spike_shape_init_default)
+PULSE_DEFAULT = [0x1800, 0x3000, 0x6000, 0x6000, 0x6000, 0x3000, 0x1800]
+
+
+def ma_to_q16_u32(ma):
+    """Physical milliamps -> Q16.16 as a 32-bit word; clamped non-negative
+    (current sources can never go negative)."""
+    ma = max(0.0, float(ma))
+    return int(round(ma * MA_TO_Q16)) & 0xFFFFFFFF
+
+
+def gen_current_wave(kind, amp_ma, freq_hz, n=CUR_SINE_SAMPLES):
+    """Build a non-negative current waveform for the cur_wave player.
+
+    Returns (samples_ma, cps, actual_hz): the per-sample amplitudes in mA (all
+    >= 0), the player's cycles-per-sample divisor, and the resulting loop
+    frequency. The player loops n samples advancing every cps clk_50 cycles, so
+    f = 50 MHz / (cps * n)."""
+    amp_ma = max(0.0, min(CUR_MAX_MA, float(amp_ma)))
+    if kind.startswith("Zero"):
+        ys = np.zeros(2)
+    elif kind.startswith("Step"):
+        ys = np.zeros(n)
+        ys[n // 2:] = amp_ma                       # 0 for the first half, amp after
+    else:  # Sine, raised so the trough sits exactly at 0 (unipolar)
+        i = np.arange(n)
+        ys = 0.5 * amp_ma * (1.0 - np.cos(2.0 * np.pi * i / n))
+    count = len(ys)
+    cps = int(round(CUR_PLAYER_CLK_HZ / (max(1.0, float(freq_hz)) * count)))
+    cps = max(1, min(65535, cps))
+    actual = CUR_PLAYER_CLK_HZ / (cps * count)
+    return ys, cps, actual
 
 
 def izh_to_q16(v):
@@ -332,6 +387,38 @@ class DacControl:
         return self.cmd(f"NEUR {target} {param} 0x{q16 & 0xFFFFFFFF:08X}",
                         ok=("OK", "NEUR", "ERR"))
 
+    def program_current(self, samples_ma, cps):
+        """Load an arbitrary current waveform into cur_wave and run the player
+        (firmware CURW). samples_ma is an iterable of non-negative mA; cps sets
+        the per-sample dwell (loop f = 50 MHz / (cps * len)). Returns the
+        board's reply line ('OK CURW ...' on success)."""
+        words = [ma_to_q16_u32(v) for v in samples_ma]
+        n = len(words)
+        with self.lock:
+            self.s.reset_input_buffer()
+            self.s.write(f"CURW {cps} {n}\n".encode("ascii"))
+            self.s.flush()
+            ack = self._readuntil(("CWRD", "ERR"))
+            if not ack.startswith("CWRD"):
+                return ack or ""
+            self.s.write(struct.pack(f"<{n}I", *words))
+            self.s.flush()
+            return self._readuntil(("OK CURW", "ERR"))
+
+    def stop_current(self):
+        """Stop the current player (i_external held; CURP off)."""
+        return self.cmd("CURP off", ok=("CURP", "ERR"))
+
+    def program_pulse(self, counts):
+        """Set the spike-pulse shape to a list of signed DAC counts (<=32,
+        full s16) via PULS. Returns the board's reply ('PULS loaded ...')."""
+        toks = " ".join(str(int(round(v))) for v in counts)
+        return self.cmd(f"PULS {toks}", ok=("PULS", "ERR"))
+
+    def pulse_default(self):
+        """Reload the boot-default spike shape (original 7 ns trapezoid)."""
+        return self.cmd("PULS default", ok=("PULS", "ERR"))
+
     def _capture(self, cmd_str, frames):
         """Send a capture command, wait for the FE10CAFE sync, read
         frames*8*4 bytes, and decode to 4-channel int16 arrays (over UART)."""
@@ -477,6 +564,291 @@ class StreamTap:
         self.sock.close()
 
 
+# ------------------------------------------------------- pulse-shape editor
+class PulseEditor(pg.GraphItem):
+    """Draggable spike-pulse editor: N nodes at x = 0..N-1, y = DAC counts (full
+    signed s16). Drag a node up/down to reshape the pulse; x stays locked to the
+    sample index. on_change(ys) fires after every drag. Based on pyqtgraph's
+    draggable-GraphItem pattern."""
+
+    def __init__(self, on_change=None):
+        self.dragPoint = None
+        self.dragIndex = 0
+        self.on_change = on_change
+        self.ys = np.zeros(1)
+        pg.GraphItem.__init__(self)
+
+    def set_values(self, ys):
+        self.ys = np.clip(np.asarray(ys, dtype=float),
+                          -DAC_FULLSCALE, DAC_FULLSCALE)
+        self._push()
+
+    def values(self):
+        return [int(round(v)) for v in self.ys]
+
+    def _push(self):
+        n = len(self.ys)
+        pos = np.column_stack((np.arange(n, dtype=float), self.ys))
+        if n > 1:
+            adj = np.column_stack((np.arange(n - 1), np.arange(1, n))).astype(int)
+        else:
+            adj = np.empty((0, 2), dtype=int)
+        self.setData(pos=pos, adj=adj, size=14, symbol='o', pxMode=True,
+                     pen=pg.mkPen('#4FC3F7', width=2),
+                     symbolBrush=pg.mkBrush('#FFB74D'))
+
+    def setData(self, **kwds):
+        self.data = kwds
+        if 'pos' in self.data:
+            npts = self.data['pos'].shape[0]
+            self.data['data'] = np.empty(npts, dtype=[('index', int)])
+            self.data['data']['index'] = np.arange(npts)
+        self.updateGraph()
+
+    def updateGraph(self):
+        pg.GraphItem.setData(self, **self.data)
+
+    def mouseDragEvent(self, ev):
+        if ev.button() != QtCore.Qt.LeftButton:
+            ev.ignore()
+            return
+        if ev.isStart():
+            pts = self.scatter.pointsAt(ev.buttonDownPos())
+            if len(pts) == 0:
+                ev.ignore()
+                return
+            self.dragPoint = pts[0]
+            self.dragIndex = int(pts[0].data()[0])
+            ev.accept()
+        elif ev.isFinish():
+            self.dragPoint = None
+            return
+        else:
+            if self.dragPoint is None:
+                ev.ignore()
+                return
+            y = max(-DAC_FULLSCALE, min(DAC_FULLSCALE, float(ev.pos().y())))
+            self.ys[self.dragIndex] = y       # x stays pinned to the index
+            self._push()
+            if self.on_change:
+                self.on_change(self.ys)
+            ev.accept()
+
+
+class PulseShapeWindow(QtWidgets.QWidget):
+    """Window showing the spike pulse shape (<=32 signed DAC samples), editable
+    by dragging the points. Programs the shaper via PULS; the shaped pulse is one
+    of the crossbar inputs (route a Spike source on a DAC to emit it)."""
+    done = QtCore.pyqtSignal(bool, str)
+
+    def __init__(self, parent_scope):
+        super().__init__()
+        self.scope = parent_scope
+        self.setWindowTitle("Spike pulse shape editor")
+        self.resize(720, 460)
+        lay = QtWidgets.QVBoxLayout(self)
+        self.plot = pg.PlotWidget()
+        self.plot.setBackground("#101418")
+        self.plot.showGrid(x=True, y=True, alpha=0.25)
+        self.plot.setLabel("left", "DAC", units="counts")
+        self.plot.setLabel("bottom", "sample (1 ns @ 1 GS/s)")
+        self.plot.setMouseEnabled(x=False, y=False)   # so drags move points only
+        self.plot.setYRange(-DAC_FULLSCALE, DAC_FULLSCALE)
+        self.plot.addLine(y=0, pen=pg.mkPen('#37474F'))
+        self.editor = PulseEditor(on_change=lambda ys: self._info())
+        self.plot.addItem(self.editor)
+        lay.addWidget(self.plot, stretch=1)
+
+        ctl = QtWidgets.QHBoxLayout()
+        ctl.addWidget(QtWidgets.QLabel("samples"))
+        self.len_spin = QtWidgets.QSpinBox()
+        self.len_spin.setRange(1, PULSE_MAX_SAMPLES)
+        self.len_spin.setValue(len(PULSE_DEFAULT))
+        self.len_spin.valueChanged.connect(self._on_len)
+        ctl.addWidget(self.len_spin)
+        self.default_btn = QtWidgets.QPushButton("Load trapezoid")
+        self.default_btn.clicked.connect(self._on_default)
+        ctl.addWidget(self.default_btn)
+        self.zero_btn = QtWidgets.QPushButton("Flatten to 0")
+        self.zero_btn.clicked.connect(self._on_zero)
+        ctl.addWidget(self.zero_btn)
+        ctl.addStretch(1)
+        self.prog_btn = QtWidgets.QPushButton("Program pulse")
+        self.prog_btn.clicked.connect(self._on_prog)
+        ctl.addWidget(self.prog_btn)
+        lay.addLayout(ctl)
+
+        self.info = QtWidgets.QLabel()
+        self.info.setStyleSheet("color:#9fb3c8; font-size:11px;")
+        self.info.setWordWrap(True)
+        lay.addWidget(self.info)
+
+        self.done.connect(self._on_done)
+        self.editor.set_values(PULSE_DEFAULT)
+        self._info()
+
+    def _on_len(self, n):
+        ys = list(self.editor.ys)
+        ys = ys[:n] if n <= len(ys) else ys + [0.0] * (n - len(ys))
+        self.editor.set_values(ys)
+        self._info()
+
+    def _on_default(self):
+        self.len_spin.blockSignals(True)
+        self.len_spin.setValue(len(PULSE_DEFAULT))
+        self.len_spin.blockSignals(False)
+        self.editor.set_values(PULSE_DEFAULT)
+        self._info()
+
+    def _on_zero(self):
+        self.editor.set_values(np.zeros(self.len_spin.value()))
+        self._info()
+
+    def _info(self):
+        ys = self.editor.values()
+        nb = (len(ys) + 3) // 4
+        pk = max((abs(v) for v in ys), default=0)
+        self.info.setText(
+            f"{len(ys)} samples ({len(ys)} ns), nbeats={nb}, peak |{pk}| counts "
+            f"({pk * VOLTS_PER_COUNT:.3f} V).  Drag points up/down to edit; "
+            f"route a Spike source on a DAC to emit this pulse.")
+
+    def _on_prog(self):
+        dac = self.scope.dac
+        if not dac:
+            self.info.setText("connect a board first")
+            return
+        counts = self.editor.values()
+        self.prog_btn.setEnabled(False)
+
+        def work():
+            r = dac.program_pulse(counts)
+            self.done.emit(bool(r and not r.startswith("ERR")), r or "(no reply)")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_done(self, ok, reply):
+        self.prog_btn.setEnabled(True)
+        self.info.setText(("OK — " if ok else "ERR — ") + (reply or "").strip())
+
+
+class CurrentSourceWindow(QtWidgets.QWidget):
+    """Window showing the current-source waveform programmed into cur_wave RAM.
+    Presets: Sine (5 kHz default), Zero current, Step (0 -> amp). Amplitude is in
+    mA and can NEVER go negative. Programs the player via CURW; route a Monitor
+    source on a DAC to mirror the live current out for the scope."""
+    done = QtCore.pyqtSignal(bool, str)
+
+    def __init__(self, parent_scope):
+        super().__init__()
+        self.scope = parent_scope
+        self._ys = np.zeros(2)
+        self._cps = 1
+        self.setWindowTitle("Current source (cur_wave player)")
+        self.resize(720, 480)
+        lay = QtWidgets.QVBoxLayout(self)
+        self.plot = pg.PlotWidget()
+        self.plot.setBackground("#101418")
+        self.plot.showGrid(x=True, y=True, alpha=0.25)
+        self.plot.setLabel("left", "current", units="A")   # base unit; values in mA*1e-3
+        self.plot.setLabel("bottom", "time", units="s")
+        self.curve = self.plot.plot(pen=pg.mkPen('#81C784', width=1.5),
+                                    fillLevel=0.0, brush=(129, 199, 132, 60))
+        lay.addWidget(self.plot, stretch=1)
+
+        grid = QtWidgets.QGridLayout()
+        grid.addWidget(QtWidgets.QLabel("preset"), 0, 0)
+        self.kind_cb = QtWidgets.QComboBox()
+        self.kind_cb.addItems(CUR_SOURCE_PRESETS)
+        self.kind_cb.currentIndexChanged.connect(self._refresh)
+        grid.addWidget(self.kind_cb, 0, 1)
+        grid.addWidget(QtWidgets.QLabel("amplitude"), 1, 0)
+        self.amp_spin = QtWidgets.QDoubleSpinBox()
+        self.amp_spin.setRange(0.0, CUR_MAX_MA)            # NEVER negative
+        self.amp_spin.setDecimals(3)                       # finely controllable
+        self.amp_spin.setSingleStep(0.05)
+        self.amp_spin.setValue(10.0)
+        self.amp_spin.setSuffix(" mA")
+        self.amp_spin.valueChanged.connect(self._refresh)
+        grid.addWidget(self.amp_spin, 1, 1)
+        grid.addWidget(QtWidgets.QLabel("frequency"), 2, 0)
+        self.freq_spin = QtWidgets.QDoubleSpinBox()
+        self.freq_spin.setRange(1.0, 1.0e6)
+        self.freq_spin.setDecimals(1)
+        self.freq_spin.setSingleStep(100.0)
+        self.freq_spin.setValue(5000.0)                    # 5 kHz default
+        self.freq_spin.setSuffix(" Hz")
+        self.freq_spin.valueChanged.connect(self._refresh)
+        grid.addWidget(self.freq_spin, 2, 1)
+        lay.addLayout(grid)
+
+        row = QtWidgets.QHBoxLayout()
+        self.stop_btn = QtWidgets.QPushButton("Stop player")
+        self.stop_btn.clicked.connect(self._on_stop)
+        row.addWidget(self.stop_btn)
+        row.addStretch(1)
+        self.prog_btn = QtWidgets.QPushButton("Program current source")
+        self.prog_btn.clicked.connect(self._on_prog)
+        row.addWidget(self.prog_btn)
+        lay.addLayout(row)
+
+        self.info = QtWidgets.QLabel()
+        self.info.setStyleSheet("color:#9fb3c8; font-size:11px;")
+        self.info.setWordWrap(True)
+        lay.addWidget(self.info)
+
+        self.done.connect(self._on_done)
+        self._refresh()
+
+    def _refresh(self, *_):
+        kind = self.kind_cb.currentText()
+        amp = self.amp_spin.value()
+        freq = self.freq_spin.value()
+        # frequency is meaningless for a flat zero -- disable it for clarity
+        self.freq_spin.setEnabled(not kind.startswith("Zero"))
+        ys, cps, actual = gen_current_wave(kind, amp, freq)
+        self._ys, self._cps = ys, cps
+        n = len(ys)
+        dt = cps / CUR_PLAYER_CLK_HZ
+        reps = 3                                   # show a few loops for context
+        t = np.arange(n * reps) * dt
+        # plot in Amps (mA * 1e-3) so the axis SI-prefixes to mA cleanly
+        self.curve.setData(t, np.tile(ys, reps) * 1e-3)
+        self.plot.setYRange(-0.05 * CUR_MAX_MA * 1e-3,
+                            max(0.5, amp * 1.15) * 1e-3)
+        self.info.setText(
+            f"{kind}: {n} samples, cps={cps} → loop {actual:.1f} Hz, "
+            f"peak {ys.max():.3f} mA (1 mA = 1.0 I-unit, unipolar 0+).  "
+            f"Route a Monitor source on a DAC to view the live current.")
+
+    def _on_prog(self):
+        dac = self.scope.dac
+        if not dac:
+            self.info.setText("connect a board first")
+            return
+        ys, cps = self._ys, self._cps
+        self.prog_btn.setEnabled(False)
+
+        def work():
+            r = dac.program_current(ys, cps)
+            self.done.emit(bool(r and r.startswith("OK")), r or "(no reply)")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_stop(self):
+        dac = self.scope.dac
+        if not dac:
+            self.info.setText("connect a board first")
+            return
+
+        def work():
+            r = dac.stop_current()
+            self.done.emit(bool(r and not r.startswith("ERR")), r or "(no reply)")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_done(self, ok, reply):
+        self.prog_btn.setEnabled(True)
+        self.info.setText(("OK — " if ok else "ERR — ") + (reply or "").strip())
+
+
 # --------------------------------------------------------------- GUI
 class ScopeWindow(QtWidgets.QMainWindow):
     captured = QtCore.pyqtSignal(object)      # emits {ch: int16[]} from worker
@@ -496,6 +868,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.fft_view = False
         self.trigger = True
         self._popup = None
+        self._cur_win = None        # CurrentSourceWindow (lazily created)
+        self._pulse_win = None      # PulseShapeWindow (lazily created)
         self.setWindowTitle("DAC scope + control (PyQtGraph)")
         self.resize(1360, 880)
 
@@ -575,7 +949,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
             src = QtWidgets.QComboBox()
             src.addItems(SOURCE_LABELS)
             src.setCurrentText(initial)
-            g.addWidget(QtWidgets.QLabel("source"), 0, 0)
+            src.setToolTip("16:4 DAC crossbar (reg17): route any source to this "
+                           "DAC. Commit with Program DAC.")
+            g.addWidget(QtWidgets.QLabel("XBAR src"), 0, 0)
             g.addWidget(src, 0, 1, 1, 2)
             self.src_cbs.append(src)
             prof = QtWidgets.QComboBox()
@@ -650,6 +1026,23 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.np_status.setStyleSheet("color:#9fb3c8; font-size:11px;")
         pg_.addWidget(self.np_status, brow + 1, 0, 1, 3)
         right.addWidget(pb)
+
+        # programmable-source editor windows: the current-source waveform
+        # (cur_wave RAM, shown + presets, unipolar mA) and the spike pulse shape
+        # (draggable points). Both program the board over the existing UART.
+        ed = QtWidgets.QGroupBox("Source editors")
+        eg = QtWidgets.QVBoxLayout(ed)
+        self.cur_win_btn = QtWidgets.QPushButton("Current source…")
+        self.cur_win_btn.setToolTip("Show/program the cur_wave current source "
+                                    "(sine / zero / step; mA, never negative)")
+        self.cur_win_btn.clicked.connect(self._open_current_window)
+        self.pulse_win_btn = QtWidgets.QPushButton("Pulse shape…")
+        self.pulse_win_btn.setToolTip("Show/edit the spike pulse shape by "
+                                      "dragging points (<=32 signed samples)")
+        self.pulse_win_btn.clicked.connect(self._open_pulse_window)
+        eg.addWidget(self.cur_win_btn)
+        eg.addWidget(self.pulse_win_btn)
+        right.addWidget(ed)
 
         # BRAM waveform builder
         wf = QtWidgets.QGroupBox("BRAM waveform")
@@ -869,6 +1262,21 @@ class ScopeWindow(QtWidgets.QMainWindow):
         def cb():
             self._program_dac(ch)
         return cb
+
+    # ---- programmable-source editor windows ----
+    def _open_current_window(self):
+        if self._cur_win is None:
+            self._cur_win = CurrentSourceWindow(self)
+        self._cur_win.show()
+        self._cur_win.raise_()
+        self._cur_win.activateWindow()
+
+    def _open_pulse_window(self):
+        if self._pulse_win is None:
+            self._pulse_win = PulseShapeWindow(self)
+        self._pulse_win.show()
+        self._pulse_win.raise_()
+        self._pulse_win.activateWindow()
 
     def _program_dac(self, ch):
         """Commit DACn's staged selection: route the picked source (NSRC) and,
@@ -1296,6 +1704,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
     def closeEvent(self, ev):
         self.timer.stop()
         self.autosample_timer.stop()
+        for w in (self._cur_win, self._pulse_win):
+            if w is not None:
+                w.close()
         if self.tap:
             self.tap.close()
         if self.dac:

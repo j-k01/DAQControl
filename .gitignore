@@ -38,6 +38,9 @@ boot/
 captures/
 **/captures/
 
+# Generated design diagram (not tracked)
+notes/daq_block_diagram.svg
+
 # OS/editor noise
 .DS_Store
 Thumbs.db
