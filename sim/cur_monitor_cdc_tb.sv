@@ -60,8 +60,10 @@ module cur_monitor_cdc_tb;
 
     reg [31:0] va, vb, vc, vd;
     initial begin
-        repeat (3) @(negedge src_clk);
+        repeat (20) @(negedge src_clk);
         src_rst = 0;
+        wait (dut.fifo_wr_rst_busy === 1'b0 && dut.fifo_rd_rst_busy === 1'b0);
+        repeat (10) @(posedge dst_clk);
 
         // --- vector 1: normal values + both saturation rails ---
         va = 32'h000A_0000;   // 10.0  -> >>8 = 2560

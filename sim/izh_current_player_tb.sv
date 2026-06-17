@@ -3,8 +3,9 @@
 // Self-checking TB for the programmable current player.  Verifies: it walks the
 // BRAM in order and loops over 0..last_index; emits one sample_tick per new
 // sample at the cycles_per_sample rate; freezes (holds output, no ticks) when
-// run=0; and re-primes to sample 0 on restart.  A behavioral 1-cycle-latency
-// BRAM models the real port-B read.
+// run=0; re-primes to sample 0 on restart; treats last_index=0 as a literal
+// one-sample/DC waveform; and can play the full table when last_index=depth-1.
+// A behavioral 1-cycle-latency BRAM models the real port-B read.
 
 module izh_current_player_tb;
     localparam integer ADDR_W = 4, DATA_W = 32;
@@ -86,14 +87,37 @@ module izh_current_player_tb;
         end
 
         // 3) restart re-primes to sample 0
-        nseq = 0;
         @(negedge clk); restart = 1; run = 1;
-        @(negedge clk); restart = 0;
+        @(negedge clk); restart = 0; nseq = 0;
         wait (nseq >= 1);
         if (seq[0] !== mem[0]) begin
             errors = errors + 1;
             $display("FAIL: post-restart seq[0]=%h exp=%h", seq[0], mem[0]);
         end
+
+        // 4) last_index=0 is a literal one-sample loop, and cps=0 means cps=1.
+        @(negedge clk); cycles_per_sample = 0; last_index = 0; restart = 1; run = 1;
+        @(negedge clk); restart = 0; nseq = 0;
+        wait (nseq >= 5);
+        for (k = 0; k < 5; k = k + 1)
+            if (seq[k] !== mem[0]) begin
+                errors = errors + 1;
+                $display("FAIL: one-sample seq[%0d]=%h exp=%h", k, seq[k], mem[0]);
+            end
+        if (bram_addr !== 0) begin
+            errors = errors + 1;
+            $display("FAIL: one-sample bram_addr=%0d exp=0", bram_addr);
+        end
+
+        // 5) full table is represented explicitly by last_index=depth-1.
+        @(negedge clk); cycles_per_sample = 1; last_index = (1 << ADDR_W) - 1; restart = 1;
+        @(negedge clk); restart = 0; nseq = 0;
+        wait (nseq >= 20);
+        for (k = 0; k < 20; k = k + 1)
+            if (seq[k] !== mem[k % (1 << ADDR_W)]) begin
+                errors = errors + 1;
+                $display("FAIL: full-depth seq[%0d]=%h exp=%h", k, seq[k], mem[k % (1 << ADDR_W)]);
+            end
 
         if (errors == 0)
             $display("TB_RESULT: PASS izh_current_player (all checks)");

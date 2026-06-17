@@ -29,8 +29,10 @@ module cur_monitor_cdc #(
     wire [WIDTH-1:0] fifo_dout;
     wire             fifo_full;
     wire             fifo_empty;
-    wire             fifo_wr_en = capture & ~fifo_full;
-    wire             fifo_rd_en = ~fifo_empty;
+    wire             fifo_wr_rst_busy;
+    wire             fifo_rd_rst_busy;
+    wire             fifo_wr_en = capture & ~fifo_full & ~fifo_wr_rst_busy;
+    wire             fifo_rd_en = ~fifo_empty & ~fifo_rd_rst_busy;
 
     xpm_fifo_async #(
         .FIFO_MEMORY_TYPE   ("auto"),
@@ -57,8 +59,8 @@ module cur_monitor_cdc #(
         .sleep         (1'b0),
         .almost_empty  (), .almost_full (), .data_valid (), .dbiterr (),
         .overflow      (), .prog_empty  (), .prog_full  (), .rd_data_count (),
-        .rd_rst_busy   (), .sbiterr     (), .underflow  (), .wr_ack (),
-        .wr_data_count (), .wr_rst_busy ()
+        .rd_rst_busy   (fifo_rd_rst_busy), .sbiterr     (), .underflow  (), .wr_ack (),
+        .wr_data_count (), .wr_rst_busy (fifo_wr_rst_busy)
     );
 
     // ---- dst_clk: hold the newest complete payload --------------------------

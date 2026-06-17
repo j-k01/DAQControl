@@ -1007,7 +1007,7 @@ module top #(
     // rate, with register start/stop/reset.  Control register = regf_value index
     // 16 (byte offset 0x40):
     //   [15:0]  cycles_per_sample   (advance every N clk_50 cycles; 0 -> 1)
-    //   [25:16] last_index          (loop length-1; 0 -> full 1024 samples)
+    //   [25:16] last_index          (loop length-1; 0 -> one sample)
     //   [30]    run                 (1 = play, 0 = hold/stop)
     //   [31]    restart             (TOGGLE this bit to reset to sample 0)
     wire [31:0] cur_ctrl = regf_value[16*32 +: 32];

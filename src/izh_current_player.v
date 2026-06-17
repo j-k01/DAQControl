@@ -31,7 +31,7 @@ module izh_current_player #(
     input  wire               run,              // 1 = play, 0 = hold/stop
     input  wire               restart,          // 1-cycle pulse: back to sample 0
     input  wire [15:0]        cycles_per_sample,// advance every N clk (0 -> 1)
-    input  wire [ADDR_W-1:0]  last_index,       // last sample (0 -> full depth-1)
+    input  wire [ADDR_W-1:0]  last_index,       // last sample (0 -> one sample)
 
     // ---- waveform BRAM read port (port B, this clock domain) ----------------
     output reg  [ADDR_W-1:0]  bram_addr,        // sample index
@@ -44,14 +44,19 @@ module izh_current_player #(
     output wire               running           // status: playback active
 );
     localparam [ADDR_W-1:0] ZERO_ADDR = {ADDR_W{1'b0}};
-    localparam [ADDR_W-1:0] FULL_LAST = {ADDR_W{1'b1}};      // depth-1
 
     wire [15:0]       eff_cps  = (cycles_per_sample == 16'd0) ? 16'd1 : cycles_per_sample;
-    wire [ADDR_W-1:0] eff_last = (last_index == ZERO_ADDR)    ? FULL_LAST : last_index;
+    wire [ADDR_W-1:0] eff_last = last_index;
 
     reg [15:0] div_cnt = 16'd0;
+    reg [ADDR_W-1:0] out_idx = {ADDR_W{1'b0}};
     reg        active  = 1'b0;      // registered run (status)
-    reg        primed  = 1'b0;      // BRAM read latency settled after (re)start
+    reg        primed  = 1'b0;      // BRAM data for out_idx is valid
+
+    wire [ADDR_W-1:0] out_idx_next =
+        (out_idx == eff_last) ? ZERO_ADDR : out_idx + 1'b1;
+    wire [ADDR_W-1:0] out_idx_next2 =
+        (out_idx_next == eff_last) ? ZERO_ADDR : out_idx_next + 1'b1;
 
     assign bram_en = 1'b1;          // free-running read; the address selects data
     assign running = active;
@@ -61,6 +66,7 @@ module izh_current_player #(
         if (reset) begin
             bram_addr <= ZERO_ADDR;
             div_cnt   <= 16'd0;
+            out_idx   <= ZERO_ADDR;
             i_current <= {DATA_W{1'b0}};
             active    <= 1'b0;
             primed    <= 1'b0;
@@ -68,22 +74,29 @@ module izh_current_player #(
             // deterministic experiment reset: pointer to 0, re-prime the read
             bram_addr <= ZERO_ADDR;
             div_cnt   <= 16'd0;
+            out_idx   <= ZERO_ADDR;
             primed    <= 1'b0;
             active    <= run;
         end else begin
             active <= run;
             if (run) begin
                 if (!primed) begin
-                    // one settle cycle so sample 0's BRAM data is valid first
+                    // One settle cycle so sample 0's BRAM data is valid first.
+                    // If cps=1, immediately prefetch sample 1 so the first
+                    // two output ticks are sample 0, sample 1, not 0, 0.
                     primed  <= 1'b1;
                     div_cnt <= 16'd0;
+                    bram_addr <= (eff_cps == 16'd1) ? out_idx_next : ZERO_ADDR;
                 end else if (div_cnt >= eff_cps - 16'd1) begin
                     div_cnt     <= 16'd0;
-                    i_current   <= bram_data;     // sample for the current address
+                    i_current   <= bram_data;     // sample for out_idx
                     sample_tick <= 1'b1;
-                    bram_addr   <= (bram_addr == eff_last) ? ZERO_ADDR
-                                                           : bram_addr + 1'b1;
+                    out_idx     <= out_idx_next;
+                    if (eff_cps == 16'd1)
+                        bram_addr <= out_idx_next2;
                 end else begin
+                    if ((eff_cps != 16'd1) && (div_cnt == eff_cps - 16'd2))
+                        bram_addr <= out_idx_next; // prefetch one clk before tick
                     div_cnt <= div_cnt + 16'd1;
                 end
             end

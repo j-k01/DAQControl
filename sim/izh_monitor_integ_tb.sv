@@ -5,6 +5,7 @@
 //
 //   izh_current_player -> i_external -> izh_dac_bank.i_mon
 //       -> cur_monitor_cdc -> mon_words
+//       -> cur_monitor_cdc(N=1) -> pure current-source DAC word
 //
 // using the SAME capture logic as top.v (sample_tick | clk_50 heartbeat) and the
 // player driven exactly like firmware "CURP 1 49 0x500000" (cps=1 -> sample_tick
@@ -65,6 +66,12 @@ module izh_monitor_integ_tb;
         .dst_clk(gt_clk), .mon_words(mon_words)
     );
 
+    wire [63:0] cur_source_word;
+    cur_monitor_cdc #(.N(1), .SHIFT(8)) u_cur_source_cdc (
+        .src_clk(clk_50), .src_rst(neuron_rst), .i_mon(i_current), .capture(capture),
+        .dst_clk(gt_clk), .mon_words(cur_source_word)
+    );
+
     function [15:0] scl(input [31:0] q);
         integer v;
         begin
@@ -77,7 +84,7 @@ module izh_monitor_integ_tb;
 
     integer i, errors;
     reg signed [31:0] amp;
-    reg signed [15:0] sw, monmin, monmax;
+    reg signed [15:0] sw, cw, monmin, monmax, curmin, curmax;
     reg signed [31:0] imn, imonmin, imonmax;
 
     initial begin
@@ -90,19 +97,27 @@ module izh_monitor_integ_tb;
             else             cur_wave[i] = 32'sd0;
         end
 
-        repeat (4) @(negedge clk_50);
+        repeat (20) @(negedge clk_50);
         neuron_rst = 0;
+        wait (u_cdc.fifo_wr_rst_busy === 1'b0 && u_cdc.fifo_rd_rst_busy === 1'b0 &&
+              u_cur_source_cdc.fifo_wr_rst_busy === 1'b0 &&
+              u_cur_source_cdc.fifo_rd_rst_busy === 1'b0);
+        repeat (10) @(posedge gt_clk);
         @(negedge clk_50); run = 1; restart = 1;
         @(negedge clk_50); restart = 0;
 
         // sample i_mon (neuron domain) and mon_words (DAC domain) over many cycles
         monmin = 16'sh7FFF; monmax = 16'sh8000;
+        curmin = 16'sh7FFF; curmax = 16'sh8000;
         imonmin = 32'sh7FFFFFFF; imonmax = 32'sh80000000;
         for (i = 0; i < 6000; i = i + 1) begin
             @(posedge gt_clk);
             sw = mon_words[15:0];               // monitor 0, sample 0
+            cw = cur_source_word[15:0];         // pure current source, sample 0
             if (sw > monmax) monmax = sw;
             if (sw < monmin) monmin = sw;
+            if (cw > curmax) curmax = cw;
+            if (cw < curmin) curmin = cw;
             imn = i_mon[31:0];
             if (imn > imonmax) imonmax = imn;
             if (imn < imonmin) imonmin = imn;
@@ -110,6 +125,7 @@ module izh_monitor_integ_tb;
 
         $display("i_mon[ch0]   swing: min=%0d max=%0d range=%0d", imonmin, imonmax, imonmax - imonmin);
         $display("mon_words[ch0,s0] swing: min=%0d max=%0d range=%0d", monmin, monmax, monmax - monmin);
+        $display("cur_source_word swing: min=%0d max=%0d range=%0d", curmin, curmax, curmax - curmin);
         $display("expected mon swing ~ %0d .. %0d", $signed(scl(32'sh80000000)), $signed(scl(32'h7FFFFFFF)));
 
         if ((imonmax - imonmin) < 1000) begin
@@ -120,9 +136,17 @@ module izh_monitor_integ_tb;
             errors = errors + 1;
             $display("FAIL: mon_words is flat -> CDC/monitor chain does not propagate i_mon");
         end
+        if (($signed(curmax) - $signed(curmin)) < 1000) begin
+            errors = errors + 1;
+            $display("FAIL: cur_source_word is flat -> pure current CDC does not propagate i_current");
+        end
+        if (!(curmin < monmin && curmax < monmax)) begin
+            errors = errors + 1;
+            $display("FAIL: pure current should not include +I_const monitor offset");
+        end
 
         if (errors == 0)
-            $display("TB_RESULT: PASS izh_monitor_integ (mon_words tracks injected current in sim)");
+            $display("TB_RESULT: PASS izh_monitor_integ (monitor and pure-current paths track injected current)");
         else
             $display("TB_RESULT: FAIL izh_monitor_integ (reproduces silence; bug is in this RTL chain)");
         $finish;

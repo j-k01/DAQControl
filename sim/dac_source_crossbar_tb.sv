@@ -2,7 +2,8 @@
 
 // Self-checking TB for the 16:4 DAC source crossbar.  Verifies: independent
 // per-DAC routing across all 16 select codes, distinct-source mixes, the single
-// broadcast DDS entry reaching multiple DACs at once, and the off codes (0/15).
+// broadcast DDS entry reaching multiple DACs at once, source 15 routing, and
+// off code 0.
 //
 // The loop variable is a [15:0] vector (not an integer): bit-selecting an
 // `integer` crashes xsim 2023.1 elaboration, as do string task args.
@@ -33,10 +34,10 @@ module dac_source_crossbar_tb;
 
     initial begin
         errors = 0;
-        // Off entries (0 and 15) are zero, mirroring how top.v wires the
-        // crossbar; the rest carry a unique pattern.
+        // Off entry 0 is zero; the rest carry a unique pattern. In top.v source
+        // 15 is the pure injected-current source.
         for (idx = 0; idx < 16; idx = idx + 1) begin
-            if (idx == 16'd0 || idx == 16'd15)
+            if (idx == 16'd0)
                 ref_word[idx] = 64'd0;
             else
                 ref_word[idx] = {16'h1000 + idx, 16'h2000 + idx,
@@ -65,10 +66,15 @@ module dac_source_crossbar_tb;
         check(d0, ref_word[1], 30); check(d1, ref_word[1], 31);
         check(d2, ref_word[1], 32); check(d3, ref_word[1], 33);
 
-        // 4) off codes 0 and 15 -> zero on every DAC
+        // 4) source 15 is routable to every DAC
+        sel = 16'hFFFF; #1;
+        check(d0, ref_word[15], 40); check(d1, ref_word[15], 41);
+        check(d2, ref_word[15], 42); check(d3, ref_word[15], 43);
+
+        // 5) off code 0 -> zero on every DAC
         sel = 16'hF00F; #1;
-        check(d0, 64'd0, 40); check(d1, 64'd0, 41);
-        check(d2, 64'd0, 42); check(d3, 64'd0, 43);
+        check(d0, ref_word[15], 50); check(d1, 64'd0, 51);
+        check(d2, 64'd0, 52); check(d3, ref_word[15], 53);
 
         if (errors == 0)
             $display("TB_RESULT: PASS dac_source_crossbar (all checks)");
