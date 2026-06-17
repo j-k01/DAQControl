@@ -374,7 +374,8 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
 
     create_bd_intf_port -mode Master -vlnv xilinx.com:interface:uart_rtl:1.0 rs232_uart
 
-    foreach port_name {RW_REG0_0 RW_REG1_0 RW_REG2_0 RW_REG3_0 RW_REG4_0 RW_REG5_0 RW_REG6_0 RW_REG7_0} {
+    foreach port_name {RW_REG0_0 RW_REG1_0 RW_REG2_0 RW_REG3_0 RW_REG4_0 RW_REG5_0 RW_REG6_0 RW_REG7_0 \
+                       RW_REG8_0 RW_REG9_0 RW_REG10_0 RW_REG11_0 RW_REG12_0 RW_REG13_0 RW_REG14_0 RW_REG15_0} {
         create_bd_port -dir O -from 31 -to 0 $port_name
     }
     foreach port_name {RO_REG0_IN_0 RO_REG1_IN_0 RO_REG2_IN_0 RO_REG3_IN_0 RO_REG4_IN_0 RO_REG5_IN_0 RO_REG6_IN_0 RO_REG7_IN_0} {
@@ -655,8 +656,10 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
         }
     }
 
-    foreach idx {0 1 2 3 4 5 6 7} {
+    foreach idx {0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15} {
         safe_connect_bd_net [get_bd_pins AXI4_register_file_0/RW_REG${idx}] [get_bd_ports RW_REG${idx}_0]
+    }
+    foreach idx {0 1 2 3 4 5 6 7} {
         safe_connect_bd_net [get_bd_ports RO_REG${idx}_IN_0] [get_bd_pins AXI4_register_file_0/RO_REG${idx}_IN]
         safe_connect_bd_net [get_bd_ports RO_REG${idx}_WE_0] [get_bd_pins AXI4_register_file_0/RO_REG${idx}_WE]
         safe_connect_bd_net [get_bd_pins AXI4_register_file_0/RO_REG${idx}_RDINT] [get_bd_ports RO_REG${idx}_RDINT_0]

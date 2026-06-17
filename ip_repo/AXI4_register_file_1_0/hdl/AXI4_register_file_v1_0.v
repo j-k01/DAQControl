@@ -4,10 +4,11 @@
 	module AXI4_register_file_v1_0 #
 	(
 		parameter integer C_S00_AXI_DATA_WIDTH	= 32,
-		parameter integer C_S00_AXI_ADDR_WIDTH	= 6
+		parameter integer C_S00_AXI_ADDR_WIDTH	= 7
 	)
 	(
-		// RW registers — MicroBlaze reads/writes, fabric reads
+		// RW registers — MicroBlaze reads/writes, fabric reads. Byte offsets:
+		// RW0-7 @ 0x00-0x1c, RO0-7 @ 0x20-0x3c (unchanged), RW8-15 @ 0x40-0x5c (new).
 		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG0,
 		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG1,
 		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG2,
@@ -16,6 +17,14 @@
 		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG5,
 		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG6,
 		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG7,
+		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG8,
+		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG9,
+		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG10,
+		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG11,
+		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG12,
+		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG13,
+		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG14,
+		output wire [C_S00_AXI_DATA_WIDTH-1:0] RW_REG15,
 
 		// RO registers — fabric writes (with WE), MicroBlaze reads
 		input wire [C_S00_AXI_DATA_WIDTH-1:0] RO_REG0_IN,
@@ -81,6 +90,14 @@
 		.RW_REG5(RW_REG5),
 		.RW_REG6(RW_REG6),
 		.RW_REG7(RW_REG7),
+		.RW_REG8(RW_REG8),
+		.RW_REG9(RW_REG9),
+		.RW_REG10(RW_REG10),
+		.RW_REG11(RW_REG11),
+		.RW_REG12(RW_REG12),
+		.RW_REG13(RW_REG13),
+		.RW_REG14(RW_REG14),
+		.RW_REG15(RW_REG15),
 		.RO_REG0_IN(RO_REG0_IN),
 		.RO_REG0_WE(RO_REG0_WE),
 		.RO_REG1_IN(RO_REG1_IN),

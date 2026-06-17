@@ -23,6 +23,7 @@ module izh_dac_bank #(
     input  wire                   clk,        // clk_50 (neuron domain)
     input  wire                   reset,      // global reset, active high
     input  wire                   prog_start, // 1-cycle pulse (CDC'd to clk): load bank
+    input  wire signed [31:0]     i_external, // injected current (Q16.16): added to each neuron's I
 
     output reg  [ADDR_W-1:0]      cfg_addr,   // config BRAM port-B read address
     input  wire [31:0]            cfg_data,   // config BRAM port-B read data (1-cycle latency)
@@ -161,7 +162,7 @@ module izh_dac_bank #(
                 .b_param    (b_param[n]),
                 .c_param    (c_param[n]),
                 .d_param    (d_param[n]),
-                .I          (i_param[n]),
+                .I          (i_param[n] + i_external),   // static bias + injected current source
                 .v_timestep (g_dt),
                 .I_constant (i_const[n]),
                 .step_enable(step),

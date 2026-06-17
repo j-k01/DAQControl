@@ -90,6 +90,14 @@ module top #(
     wire [31:0] rw_reg5;
     wire [31:0] rw_reg6;
     wire [31:0] rw_reg7;
+    wire [31:0] rw_reg8;
+    wire [31:0] rw_reg9;
+    wire [31:0] rw_reg10;
+    wire [31:0] rw_reg11;
+    wire [31:0] rw_reg12;
+    wire [31:0] rw_reg13;
+    wire [31:0] rw_reg14;
+    wire [31:0] rw_reg15;
 
     wire ro_reg0_rdint;
     wire ro_reg1_rdint;
@@ -251,6 +259,14 @@ module top #(
         .RW_REG5_0            (rw_reg5),
         .RW_REG6_0            (rw_reg6),
         .RW_REG7_0            (rw_reg7),
+        .RW_REG8_0            (rw_reg8),
+        .RW_REG9_0            (rw_reg9),
+        .RW_REG10_0           (rw_reg10),
+        .RW_REG11_0           (rw_reg11),
+        .RW_REG12_0           (rw_reg12),
+        .RW_REG13_0           (rw_reg13),
+        .RW_REG14_0           (rw_reg14),
+        .RW_REG15_0           (rw_reg15),
         .RO_REG0_IN_0         (status_reg),
         .RO_REG0_WE_0         (1'b1),
         .RO_REG1_IN_0         (clk_fmc_count),
@@ -958,6 +974,10 @@ module top #(
         .clk         (clk_50),
         .reset       (neuron_rst),
         .prog_start  (izh_prog_start),
+        // Injected current source (Q16.16) added to every neuron's I. Tied off
+        // until the current-source player (izh_current_player + cur_wave BRAM)
+        // is wired in; see notes. Replace 32'd0 with the player's i_current.
+        .i_external  (32'sd0),
         .cfg_addr    (neuron_cfg_fabric_addr),
         .cfg_data    (neuron_cfg_fabric_dout),
         .spike_flags (izh_spike_flags_neuron),

@@ -4,11 +4,15 @@
 	module AXI4_register_file_v1_0_S00_AXI #
 	(
 		parameter integer C_S_AXI_DATA_WIDTH	= 32,
-		parameter integer C_S_AXI_ADDR_WIDTH	= 6
+		parameter integer C_S_AXI_ADDR_WIDTH	= 7
 	)
 	(
 		// --- Fabric-facing ports ---
-		// RW regs: AXI can read/write, fabric can read
+		// Drop-in extension of the 8-RW register file to 16 RW.  Reg index =
+		// araddr[6:2]; byte offset = index*4.  Layout (unchanged RW0-7 / RO0-7):
+		//   RW0-7  : index 0x00-0x07  (byte 0x00-0x1c)
+		//   RO0-7  : index 0x08-0x0f  (byte 0x20-0x3c)  -- read-only, unchanged
+		//   RW8-15 : index 0x10-0x17  (byte 0x40-0x5c)  -- NEW
 		output wire [C_S_AXI_DATA_WIDTH-1:0] RW_REG0,
 		output wire [C_S_AXI_DATA_WIDTH-1:0] RW_REG1,
 		output wire [C_S_AXI_DATA_WIDTH-1:0] RW_REG2,
@@ -17,6 +21,14 @@
 		output wire [C_S_AXI_DATA_WIDTH-1:0] RW_REG5,
 		output wire [C_S_AXI_DATA_WIDTH-1:0] RW_REG6,
 		output wire [C_S_AXI_DATA_WIDTH-1:0] RW_REG7,
+		output wire [C_S_AXI_DATA_WIDTH-1:0] RW_REG8,
+		output wire [C_S_AXI_DATA_WIDTH-1:0] RW_REG9,
+		output wire [C_S_AXI_DATA_WIDTH-1:0] RW_REG10,
+		output wire [C_S_AXI_DATA_WIDTH-1:0] RW_REG11,
+		output wire [C_S_AXI_DATA_WIDTH-1:0] RW_REG12,
+		output wire [C_S_AXI_DATA_WIDTH-1:0] RW_REG13,
+		output wire [C_S_AXI_DATA_WIDTH-1:0] RW_REG14,
+		output wire [C_S_AXI_DATA_WIDTH-1:0] RW_REG15,
 		// RO regs: AXI can only read, fabric writes with WE
 		input wire [C_S_AXI_DATA_WIDTH-1:0] RO_REG0_IN,
 		input wire                           RO_REG0_WE,
@@ -81,9 +93,9 @@
 	reg  	axi_rvalid;
 
 	localparam integer ADDR_LSB = (C_S_AXI_DATA_WIDTH/32) + 1;
-	localparam integer OPT_MEM_ADDR_BITS = 3;
+	localparam integer OPT_MEM_ADDR_BITS = 4;   // 5-bit reg index -> up to 32 regs
 
-	// 16 registers: 8 RW + 8 RO
+	// 24 registers: 16 RW (0x00-0x0f) + 8 RO (0x10-0x17)
 	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_rw_reg0;
 	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_rw_reg1;
 	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_rw_reg2;
@@ -92,6 +104,14 @@
 	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_rw_reg5;
 	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_rw_reg6;
 	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_rw_reg7;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_rw_reg8;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_rw_reg9;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_rw_reg10;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_rw_reg11;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_rw_reg12;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_rw_reg13;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_rw_reg14;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_rw_reg15;
 	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_ro_reg0;
 	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_ro_reg1;
 	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_ro_reg2;
@@ -108,14 +128,22 @@
 	reg	 aw_en;
 
 	// Fabric read outputs
-	assign RW_REG0 = slv_rw_reg0;
-	assign RW_REG1 = slv_rw_reg1;
-	assign RW_REG2 = slv_rw_reg2;
-	assign RW_REG3 = slv_rw_reg3;
-	assign RW_REG4 = slv_rw_reg4;
-	assign RW_REG5 = slv_rw_reg5;
-	assign RW_REG6 = slv_rw_reg6;
-	assign RW_REG7 = slv_rw_reg7;
+	assign RW_REG0  = slv_rw_reg0;
+	assign RW_REG1  = slv_rw_reg1;
+	assign RW_REG2  = slv_rw_reg2;
+	assign RW_REG3  = slv_rw_reg3;
+	assign RW_REG4  = slv_rw_reg4;
+	assign RW_REG5  = slv_rw_reg5;
+	assign RW_REG6  = slv_rw_reg6;
+	assign RW_REG7  = slv_rw_reg7;
+	assign RW_REG8  = slv_rw_reg8;
+	assign RW_REG9  = slv_rw_reg9;
+	assign RW_REG10 = slv_rw_reg10;
+	assign RW_REG11 = slv_rw_reg11;
+	assign RW_REG12 = slv_rw_reg12;
+	assign RW_REG13 = slv_rw_reg13;
+	assign RW_REG14 = slv_rw_reg14;
+	assign RW_REG15 = slv_rw_reg15;
 
 	// AXI output assignments
 	assign S_AXI_AWREADY	= axi_awready;
@@ -190,8 +218,7 @@
 	    end
 	end
 
-	// Write logic — only RW regs (0-3) accept AXI writes
-	// RO regs (4-7) are written by fabric only
+	// Write logic — RW regs accept AXI writes; RO regs are fabric-written only
 	assign slv_reg_wren = axi_wready && S_AXI_WVALID && axi_awready && S_AXI_AWVALID;
 
 	always @( posedge S_AXI_ACLK )
@@ -206,6 +233,14 @@
 	      slv_rw_reg5 <= 0;
 	      slv_rw_reg6 <= 0;
 	      slv_rw_reg7 <= 0;
+	      slv_rw_reg8 <= 0;
+	      slv_rw_reg9 <= 0;
+	      slv_rw_reg10 <= 0;
+	      slv_rw_reg11 <= 0;
+	      slv_rw_reg12 <= 0;
+	      slv_rw_reg13 <= 0;
+	      slv_rw_reg14 <= 0;
+	      slv_rw_reg15 <= 0;
 	      slv_ro_reg0 <= 0;
 	      slv_ro_reg1 <= 0;
 	      slv_ro_reg2 <= 0;
@@ -226,43 +261,75 @@
 	    if (RO_REG6_WE) slv_ro_reg6 <= RO_REG6_IN;
 	    if (RO_REG7_WE) slv_ro_reg7 <= RO_REG7_IN;
 
-	    // AXI writes to RW registers
+	    // AXI writes to RW registers (reg index = araddr[ADDR_LSB+4:ADDR_LSB])
 	    if (slv_reg_wren)
 	      begin
 	        case ( axi_awaddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] )
-	          3'h0:
+	          5'h00:
 	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
 	              if ( S_AXI_WSTRB[byte_index] == 1 )
 	                slv_rw_reg0[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
-	          3'h1:
+	          5'h01:
 	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
 	              if ( S_AXI_WSTRB[byte_index] == 1 )
 	                slv_rw_reg1[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
-	          3'h2:
+	          5'h02:
 	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
 	              if ( S_AXI_WSTRB[byte_index] == 1 )
 	                slv_rw_reg2[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
-	          3'h3:
+	          5'h03:
 	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
 	              if ( S_AXI_WSTRB[byte_index] == 1 )
 	                slv_rw_reg3[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
-	          4'h4:
+	          5'h04:
 	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
 	              if ( S_AXI_WSTRB[byte_index] == 1 )
 	                slv_rw_reg4[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
-	          4'h5:
+	          5'h05:
 	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
 	              if ( S_AXI_WSTRB[byte_index] == 1 )
 	                slv_rw_reg5[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
-	          4'h6:
+	          5'h06:
 	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
 	              if ( S_AXI_WSTRB[byte_index] == 1 )
 	                slv_rw_reg6[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
-	          4'h7:
+	          5'h07:
 	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
 	              if ( S_AXI_WSTRB[byte_index] == 1 )
 	                slv_rw_reg7[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
-	          // 4'h8 - 4'hf: RO regs, AXI writes are silently ignored
+	          // 5'h08 - 5'h0f: RO regs, AXI writes are silently ignored
+	          5'h10:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_rw_reg8[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	          5'h11:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_rw_reg9[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	          5'h12:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_rw_reg10[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	          5'h13:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_rw_reg11[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	          5'h14:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_rw_reg12[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	          5'h15:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_rw_reg13[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	          5'h16:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_rw_reg14[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	          5'h17:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_rw_reg15[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
 	          default : ;
 	        endcase
 	      end
@@ -338,27 +405,35 @@
 	    end
 	end
 
-	// Read logic — all 8 registers readable from AXI
+	// Read logic — RW0-7 @ index 0x00-0x07, RO0-7 @ 0x08-0x0f, RW8-15 @ 0x10-0x17
 	assign slv_reg_rden = axi_arready & S_AXI_ARVALID & ~axi_rvalid;
 	always @(*)
 	begin
 	      case ( axi_araddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] )
-	        4'h0   : reg_data_out <= slv_rw_reg0;
-	        4'h1   : reg_data_out <= slv_rw_reg1;
-	        4'h2   : reg_data_out <= slv_rw_reg2;
-	        4'h3   : reg_data_out <= slv_rw_reg3;
-	        4'h4   : reg_data_out <= slv_rw_reg4;
-	        4'h5   : reg_data_out <= slv_rw_reg5;
-	        4'h6   : reg_data_out <= slv_rw_reg6;
-	        4'h7   : reg_data_out <= slv_rw_reg7;
-	        4'h8   : reg_data_out <= slv_ro_reg0;
-	        4'h9   : reg_data_out <= slv_ro_reg1;
-	        4'ha   : reg_data_out <= slv_ro_reg2;
-	        4'hb   : reg_data_out <= slv_ro_reg3;
-	        4'hc   : reg_data_out <= slv_ro_reg4;
-	        4'hd   : reg_data_out <= slv_ro_reg5;
-	        4'he   : reg_data_out <= slv_ro_reg6;
-	        4'hf   : reg_data_out <= slv_ro_reg7;
+	        5'h00 : reg_data_out <= slv_rw_reg0;
+	        5'h01 : reg_data_out <= slv_rw_reg1;
+	        5'h02 : reg_data_out <= slv_rw_reg2;
+	        5'h03 : reg_data_out <= slv_rw_reg3;
+	        5'h04 : reg_data_out <= slv_rw_reg4;
+	        5'h05 : reg_data_out <= slv_rw_reg5;
+	        5'h06 : reg_data_out <= slv_rw_reg6;
+	        5'h07 : reg_data_out <= slv_rw_reg7;
+	        5'h08 : reg_data_out <= slv_ro_reg0;
+	        5'h09 : reg_data_out <= slv_ro_reg1;
+	        5'h0a : reg_data_out <= slv_ro_reg2;
+	        5'h0b : reg_data_out <= slv_ro_reg3;
+	        5'h0c : reg_data_out <= slv_ro_reg4;
+	        5'h0d : reg_data_out <= slv_ro_reg5;
+	        5'h0e : reg_data_out <= slv_ro_reg6;
+	        5'h0f : reg_data_out <= slv_ro_reg7;
+	        5'h10 : reg_data_out <= slv_rw_reg8;
+	        5'h11 : reg_data_out <= slv_rw_reg9;
+	        5'h12 : reg_data_out <= slv_rw_reg10;
+	        5'h13 : reg_data_out <= slv_rw_reg11;
+	        5'h14 : reg_data_out <= slv_rw_reg12;
+	        5'h15 : reg_data_out <= slv_rw_reg13;
+	        5'h16 : reg_data_out <= slv_rw_reg14;
+	        5'h17 : reg_data_out <= slv_rw_reg15;
 	        default : reg_data_out <= 0;
 	      endcase
 	end
@@ -379,7 +454,7 @@
 	    end
 	end
 
-	// RO register read strobes — pulse for one cycle on AXI read
+	// RO register read strobes — pulse for one cycle on AXI read (RO at 0x08-0x0f)
 	reg ro_reg0_rdint_r, ro_reg1_rdint_r, ro_reg2_rdint_r, ro_reg3_rdint_r;
 	reg ro_reg4_rdint_r, ro_reg5_rdint_r, ro_reg6_rdint_r, ro_reg7_rdint_r;
 	assign RO_REG0_RDINT = ro_reg0_rdint_r;
@@ -416,14 +491,14 @@
 	      ro_reg7_rdint_r <= 1'b0;
 	      if (slv_reg_rden)
 	        case ( axi_araddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB] )
-	          4'h8 : ro_reg0_rdint_r <= 1'b1;
-	          4'h9 : ro_reg1_rdint_r <= 1'b1;
-	          4'ha : ro_reg2_rdint_r <= 1'b1;
-	          4'hb : ro_reg3_rdint_r <= 1'b1;
-	          4'hc : ro_reg4_rdint_r <= 1'b1;
-	          4'hd : ro_reg5_rdint_r <= 1'b1;
-	          4'he : ro_reg6_rdint_r <= 1'b1;
-	          4'hf : ro_reg7_rdint_r <= 1'b1;
+	          5'h08 : ro_reg0_rdint_r <= 1'b1;
+	          5'h09 : ro_reg1_rdint_r <= 1'b1;
+	          5'h0a : ro_reg2_rdint_r <= 1'b1;
+	          5'h0b : ro_reg3_rdint_r <= 1'b1;
+	          5'h0c : ro_reg4_rdint_r <= 1'b1;
+	          5'h0d : ro_reg5_rdint_r <= 1'b1;
+	          5'h0e : ro_reg6_rdint_r <= 1'b1;
+	          5'h0f : ro_reg7_rdint_r <= 1'b1;
 	          default : ;
 	        endcase
 	    end
