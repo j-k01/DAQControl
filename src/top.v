@@ -176,6 +176,17 @@ module top #(
     wire        neuron_cfg_axi_bram_rst;
     wire [3:0]  neuron_cfg_axi_bram_we;
 
+    // Current-source waveform BRAM (port A AXI clk_200; port B clk_50 reader).
+    wire [31:0] cur_wave_axi_bram_addr;
+    wire        cur_wave_axi_bram_clk;
+    wire [31:0] cur_wave_axi_bram_din;
+    wire [31:0] cur_wave_axi_bram_dout;
+    wire        cur_wave_axi_bram_en;
+    wire        cur_wave_axi_bram_rst;
+    wire [3:0]  cur_wave_axi_bram_we;
+    wire [9:0]  cur_wave_fabric_addr;
+    wire [31:0] cur_wave_fabric_dout;
+
     wire [31:0] dac0_bram_addr;
     wire        dac0_bram_clk;
     wire [63:0] dac0_bram_din;
@@ -325,7 +336,14 @@ module top #(
         .NEURON_CFG_AXI_BRAM_PORTA_dout (neuron_cfg_axi_bram_dout),
         .NEURON_CFG_AXI_BRAM_PORTA_en   (neuron_cfg_axi_bram_en),
         .NEURON_CFG_AXI_BRAM_PORTA_rst  (neuron_cfg_axi_bram_rst),
-        .NEURON_CFG_AXI_BRAM_PORTA_we   (neuron_cfg_axi_bram_we)
+        .NEURON_CFG_AXI_BRAM_PORTA_we   (neuron_cfg_axi_bram_we),
+        .CUR_WAVE_AXI_BRAM_PORTA_addr (cur_wave_axi_bram_addr),
+        .CUR_WAVE_AXI_BRAM_PORTA_clk  (cur_wave_axi_bram_clk),
+        .CUR_WAVE_AXI_BRAM_PORTA_din  (cur_wave_axi_bram_din),
+        .CUR_WAVE_AXI_BRAM_PORTA_dout (cur_wave_axi_bram_dout),
+        .CUR_WAVE_AXI_BRAM_PORTA_en   (cur_wave_axi_bram_en),
+        .CUR_WAVE_AXI_BRAM_PORTA_rst  (cur_wave_axi_bram_rst),
+        .CUR_WAVE_AXI_BRAM_PORTA_we   (cur_wave_axi_bram_we)
 `endif
     );
 
@@ -459,7 +477,17 @@ module top #(
         .neuron_cfg_axi_we   (neuron_cfg_axi_bram_we),
         .neuron_cfg_fabric_clk  (clk_50),
         .neuron_cfg_fabric_addr (neuron_cfg_fabric_addr),
-        .neuron_cfg_fabric_dout (neuron_cfg_fabric_dout)
+        .neuron_cfg_fabric_dout (neuron_cfg_fabric_dout),
+        .cur_wave_axi_addr      (cur_wave_axi_bram_addr),
+        .cur_wave_axi_clk       (cur_wave_axi_bram_clk),
+        .cur_wave_axi_din       (cur_wave_axi_bram_din),
+        .cur_wave_axi_dout      (cur_wave_axi_bram_dout),
+        .cur_wave_axi_en        (cur_wave_axi_bram_en),
+        .cur_wave_axi_rst       (cur_wave_axi_bram_rst),
+        .cur_wave_axi_we        (cur_wave_axi_bram_we),
+        .cur_wave_fabric_clk    (clk_50),
+        .cur_wave_fabric_addr   (cur_wave_fabric_addr),
+        .cur_wave_fabric_dout   (cur_wave_fabric_dout)
     );
 `endif
 
@@ -970,16 +998,57 @@ module top #(
     wire [5:0]  neuron_cfg_fabric_addr;
     wire [31:0] neuron_cfg_fabric_dout;
 
+    // ---- Programmable current source (clk_50) -------------------------------
+    // Plays the cur_wave BRAM into every neuron's I at a register-controlled
+    // rate, with register start/stop/reset.  Control register = regf_value index
+    // 16 (byte offset 0x40):
+    //   [15:0]  cycles_per_sample   (advance every N clk_50 cycles; 0 -> 1)
+    //   [25:16] last_index          (loop length-1; 0 -> full 1024 samples)
+    //   [30]    run                 (1 = play, 0 = hold/stop)
+    //   [31]    restart             (TOGGLE this bit to reset to sample 0)
+    wire [31:0] cur_ctrl = regf_value[16*32 +: 32];
+    // One CDC for the quasi-static control bits (cycles/sample, last index, run);
+    // restart is edge-detected from its own toggle just below.
+    wire [30:0] cur_cfg_50;
+    cdc_vector_sync #(.WIDTH(31)) u_cur_cfg_sync (
+        .dest_clk (clk_50), .dest_rst (neuron_rst),
+        .src (cur_ctrl[30:0]), .dest (cur_cfg_50));
+    wire cur_run_50 = cur_cfg_50[30];
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [2:0] cur_restart_sync = 3'b000;
+    always @(posedge clk_50) begin
+        if (neuron_rst) cur_restart_sync <= 3'b000;
+        else            cur_restart_sync <= {cur_restart_sync[1:0], cur_ctrl[31]};
+    end
+    wire cur_restart_50 = cur_restart_sync[2] ^ cur_restart_sync[1];
+
+    wire signed [31:0] cur_i_current;
+    izh_current_player #(
+        .ADDR_W (10),
+        .DATA_W (32)
+    ) u_izh_current_player (
+        .clk               (clk_50),
+        .reset             (neuron_rst),
+        .run               (cur_run_50),
+        .restart           (cur_restart_50),
+        .cycles_per_sample (cur_cfg_50[15:0]),
+        .last_index        (cur_cfg_50[25:16]),
+        .bram_addr         (cur_wave_fabric_addr),
+        .bram_en           (),
+        .bram_data         (cur_wave_fabric_dout),
+        .i_current         (cur_i_current),
+        .sample_tick       (),
+        .running           ()
+    );
+
     izh_dac_bank #(
         .ADDR_W (6)
     ) u_izh_dac_bank (
         .clk         (clk_50),
         .reset       (neuron_rst),
         .prog_start  (izh_prog_start),
-        // Injected current source (Q16.16) added to every neuron's I. Tied off
-        // until the current-source player (izh_current_player + cur_wave BRAM)
-        // is wired in; see notes. Replace 32'd0 with the player's i_current.
-        .i_external  (32'sd0),
+        // Injected current source (Q16.16): the programmable current player's
+        // held output, summed into every neuron's I.
+        .i_external  (cur_i_current),
         .cfg_addr    (neuron_cfg_fabric_addr),
         .cfg_data    (neuron_cfg_fabric_dout),
         .spike_flags (izh_spike_flags_neuron),
