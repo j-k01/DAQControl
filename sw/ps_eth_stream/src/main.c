@@ -546,6 +546,14 @@ static void parse_command(const char *cmd, const ip_addr_t *addr, u16 port)
         burst_addr = *addr;
         burst_port = port;
         burst_have_host = 1;
+        /* Sync to the current request counter at registration. The MB's
+         * readout_req (mailbox 0x10) is monotonic and never reset, while this
+         * app's burst_req_last starts at 0 after a reload -- without this line
+         * the very next burst_service() sees req != burst_req_last and fires a
+         * PHANTOM drain of the stale DDR region (the "press Collect twice / many
+         * times" bug). Latching it here means only a real BRDO (req+1) issued
+         * AFTER this registration triggers a drain. */
+        burst_req_last = strm_mbox_read(0x10u);
         send_status_packet(addr, port, "BRST_READY\n");
         return;
     }

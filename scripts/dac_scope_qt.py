@@ -1531,12 +1531,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
             if not self.dac.cmd(f"BCAP {kb}k",
                                 ok=("OK BCAP", "ERR")).startswith("OK BCAP"):
                 return None
-            # Discard any phantom drain (the A53 fires one of the STALE region on
-            # the first BRST registration after a reload, since its burst_req_last
-            # starts at 0 vs the MB's monotonic readout_req) so only the fresh
-            # post-BRDO drain counts. Without this, the first Collect returns
-            # stale/garbled data (~200% coverage) -- the "press twice" bug.
-            asm.clear()
             self.dac.cmd("BRDO", ok=("OK BRDO", "ERR"))
             deadline = time.time() + 8.0
             while time.time() < deadline:
