@@ -35,13 +35,16 @@ set common_sources [list \
     ../../src/dataplane_bram_ip.v \
     ../../src/dac_bram_player.v \
     ../../src/adc_bram_capture.v \
+    ../../src/izh_current_player.v \
     ../../src/izh_spike_trapezoid.v \
     ../../src/izh_dac_channel.v \
     ../../src/izh_dac_bank.sv \
     ../../src/jesd/dac39j84_sample_remap.v \
     ../../src/jesd/dac39j84_physical_mapper.v \
     ../../src/jesd/dac_channel_source_mux.v \
+    ../../src/jesd/dac_source_crossbar.v \
     ../../src/jesd/dac_source_to_converter_preimage.v \
+    ../../src/jesd/cur_monitor_cdc.v \
     ../../src/jesd/litejesd_dac_tx.v \
     ../../src/jesd/daq_litejesd_dac_tx_path.v \
     ../../src/jesd/adc1_sundance_halfbeat.v \

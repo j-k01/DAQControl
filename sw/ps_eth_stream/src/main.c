@@ -461,7 +461,7 @@ static void burst_send_packet(u32 chip, u32 ddr_addr, u32 offset, u32 bytes)
     put_u32_le(payload + 12, chip);
     put_u32_le(payload + 16, offset);          /* byte offset within chip region */
     put_u32_le(payload + 20, bytes);
-    put_u32_le(payload + 24, 0u);
+    put_u32_le(payload + 24, burst_req_last);  /* burst transaction/request id */
     put_u32_le(payload + 28, 1u);              /* decim=1: no decimation */
     memcpy(payload + DAQ_HEADER_BYTES, (const void *)(UINTPTR)ddr_addr, bytes);
     udp_sendto(tx_pcb, p, &burst_addr, burst_port);
@@ -546,6 +546,9 @@ static void parse_command(const char *cmd, const ip_addr_t *addr, u16 port)
         burst_addr = *addr;
         burst_port = port;
         burst_have_host = 1;
+        burst_active = 0;
+        burst_chip = 0u;
+        burst_off = 0u;
         /* Sync to the current request counter at registration. The MB's
          * readout_req (mailbox 0x10) is monotonic and never reset, while this
          * app's burst_req_last starts at 0 after a reload -- without this line

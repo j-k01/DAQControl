@@ -22,6 +22,7 @@ module daq_litejesd_dac_tx_path #(
     input  wire [23:0]   sine_phase_inc,
     input  wire [15:0]   dac_src_sel,        // 4-bit crossbar source select per DAC
     input  wire [255:0]  mon_words,          // 4 x 64-bit per-neuron current monitor (GT domain)
+    input  wire [63:0]   current_word,       // pure injected current source (GT domain)
     input  wire          tag_source_enable,
     input  wire          program_enable,
     input  wire [63:0]   program_word0,
@@ -248,7 +249,7 @@ module daq_litejesd_dac_tx_path #(
     assign xbar_src[12*64 +: 64] = mon_words[2*64 +: 64];  // 12 current monitor 2
     assign xbar_src[13*64 +: 64] = mon_words[3*64 +: 64];  // 13 current monitor 3
     assign xbar_src[14*64 +: 64] = dac_tag_word0;          // 14 debug tag
-    assign xbar_src[15*64 +: 64] = 64'd0;                  // 15 off
+    assign xbar_src[15*64 +: 64] = current_word;           // 15 pure injected current
 
     wire [63:0] selected_src_converter0;
     wire [63:0] selected_src_converter1;

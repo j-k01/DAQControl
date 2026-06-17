@@ -582,6 +582,7 @@ module top #(
     wire [3:0]  izh_spike_flags_tx;
     wire [15:0]  dac_src_sel_tx;     // 4 bits/DAC crossbar select (reg17[15:0]) in GT domain
     wire [255:0] mon_words_tx;       // 4 x 64-bit current-monitor DAC words in GT domain
+    wire [63:0]  cur_source_word_tx; // pure injected-current DAC word in GT domain
     wire [511:0] spike_shape_tx;     // programmable spike pulse: 8 beat-words (regs 32-47) in GT domain
     wire [4:0]   spike_nbeats_tx;    // spike pulse length in beats (reg18[4:0], 1..8) in GT domain
     wire [31:0] dac_neuron_debug_async;
@@ -1148,8 +1149,9 @@ module top #(
 
     // Source select for the 16:4 crossbar lives wholly in the GT (DAC) clock
     // domain: each DAC independently routes any of 16 sources (off / DDS /
-    // BRAM 0-3 / spike pulse 0-3 / current monitor 0-3 / tag) via its own 4-bit
-    // field.  Firmware sets reg17[15:0] (4 bits per DAC: [3:0]=DAC0 ..
+    // BRAM 0-3 / spike pulse 0-3 / current monitor 0-3 / tag / pure current)
+    // via its own 4-bit field.  Firmware sets reg17[15:0] (4 bits per DAC:
+    // [3:0]=DAC0 ..
     // [15:12]=DAC3) and we sync it across; independent of the neuron bank.
     cdc_vector_sync #(
         .WIDTH (16)
@@ -1204,6 +1206,18 @@ module top #(
         .capture   (cur_mon_capture),
         .dst_clk   (gth_tx_usrclk2),
         .mon_words (mon_words_tx)
+    );
+
+    cur_monitor_cdc #(
+        .N     (1),
+        .SHIFT (8)
+    ) u_cur_source_cdc (
+        .src_clk   (clk_50),
+        .src_rst   (neuron_rst),
+        .i_mon     (cur_i_current),
+        .capture   (cur_mon_capture),
+        .dst_clk   (gth_tx_usrclk2),
+        .mon_words (cur_source_word_tx)
     );
 
     // The neurons live in the slow clk_50 neuron domain.  Only their one-bit
@@ -1376,6 +1390,7 @@ module top #(
         .sine_phase_inc   (dac_dds_phase_inc_tx),
         .dac_src_sel      (dac_src_sel_tx),
         .mon_words        (mon_words_tx),
+        .current_word     (cur_source_word_tx),
         .tag_source_enable(dac_tag_source_enable_tx),
         .program_enable   (dac_program_enable),
         .program_word0    (dac_program_word0_async),
@@ -1543,6 +1558,7 @@ module top #(
     assign dac_program_word3_async = 64'd0;
     assign dac_src_sel_tx = 16'd0;
     assign mon_words_tx = 256'd0;
+    assign cur_source_word_tx = 64'd0;
     assign spike_shape_tx = 512'd0;
     assign spike_nbeats_tx = 5'd0;
     assign dac_program_status_async = 32'd0;

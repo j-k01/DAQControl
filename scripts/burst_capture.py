@@ -46,6 +46,8 @@ class Reassembler:
         self.cov = [np.zeros(self.nslot, dtype=bool), np.zeros(self.nslot, dtype=bool)]
         self.last_t = time.time()
         self.lock = threading.Lock()
+        self.request_id = None
+        self.observed_request_id = None
         self.running = True
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
@@ -56,6 +58,19 @@ class Reassembler:
 
     def register(self):
         self.sock.sendto(b"BRST", self.board)
+
+    def _clear_locked(self):
+        self.buf = [bytearray(self.bytes_per_chip), bytearray(self.bytes_per_chip)]
+        self.got = [0, 0]
+        self.cov = [np.zeros(self.nslot, dtype=bool), np.zeros(self.nslot, dtype=bool)]
+        self.last_t = time.time()
+
+    def set_request_id(self, request_id):
+        with self.lock:
+            self.request_id = request_id & 0xFFFFFFFF
+            if self.observed_request_id != self.request_id:
+                self.observed_request_id = self.request_id
+                self._clear_locked()
 
     def _rx(self):
         bpc = self.bytes_per_chip
@@ -68,25 +83,35 @@ class Reassembler:
                 break
             if len(data) < HDR.size:
                 continue
-            magic, _v, hdr, _seq, chip, off, nbytes, _d, _dec = HDR.unpack_from(data)
+            magic, _v, hdr, _seq, chip, off, nbytes, tag, _dec = HDR.unpack_from(data)
             if magic != MAGIC or chip > 1:
                 continue
             payload = data[hdr:hdr + nbytes]
             if off + len(payload) > bpc:
                 continue
-            self.buf[chip][off:off + len(payload)] = payload
-            self.got[chip] += len(payload)
-            self.cov[chip][off // self.slot] = True
-            self.last_t = time.time()
+            with self.lock:
+                if self.request_id is not None:
+                    if tag != self.request_id:
+                        continue
+                elif self.observed_request_id != tag:
+                    self.observed_request_id = tag
+                    self._clear_locked()
+                self.buf[chip][off:off + len(payload)] = payload
+                self.got[chip] += len(payload)
+                self.cov[chip][off // self.slot] = True
+                self.last_t = time.time()
 
     def coverage(self, chip):
-        return float(self.cov[chip].mean())
+        with self.lock:
+            return float(self.cov[chip].mean())
 
     def idle(self, secs):
-        return (time.time() - self.last_t) > secs
+        with self.lock:
+            return (time.time() - self.last_t) > secs
 
     def complete(self):
-        return self.cov[0].all() and self.cov[1].all()
+        with self.lock:
+            return self.cov[0].all() and self.cov[1].all()
 
     def close(self):
         self.running = False
@@ -103,6 +128,16 @@ def uart_cmd(s, cmd, ok_prefixes, timeout=20.0):
         if line.startswith(tuple(ok_prefixes)):
             return line
     return ""
+
+
+def parse_brdo_request(line):
+    for tok in line.replace(",", " ").split():
+        if tok.startswith("request="):
+            try:
+                return int(tok.split("=", 1)[1], 0) & 0xFFFFFFFF
+            except ValueError:
+                return None
+    return None
 
 
 def decode_chip(raw, base_ch):
@@ -146,7 +181,12 @@ def main():
 
     print("BRDO (reading out over UDP) ...")
     t1 = time.time()
-    print(" ", uart_cmd(s, "BRDO", ("OK BRDO", "ERR"), timeout=10.0))
+    brdo = uart_cmd(s, "BRDO", ("OK BRDO", "ERR"), timeout=10.0)
+    print(" ", brdo or "(no BRDO response)")
+    req = parse_brdo_request(brdo)
+    if req is None:
+        asm.close(); s.close(); sys.exit("readout did not return a request id")
+    asm.set_request_id(req)
     deadline = time.time() + args.drain_timeout
     while not asm.complete() and time.time() < deadline:
         time.sleep(0.1)

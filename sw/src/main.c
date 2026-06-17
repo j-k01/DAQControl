@@ -157,6 +157,7 @@
 #define XSRC_SPIKE0  6u    /* +ch : neuron spike pulse 0..3 */
 #define XSRC_MON0    10u   /* +ch : neuron current monitor 0..3 */
 #define XSRC_TAG     14u   /* debug tag word */
+#define XSRC_CUR     15u   /* pure injected current source */
 #define XSRC_NIBBLE(ch)  (((u32)(ch) & 3u) * 4u)
 
 /* Programmable current player: control register (reg16) + waveform BRAM.  The
@@ -296,6 +297,8 @@ static const u32 adc_dma_ddr_base[ADC_DMA_CHIPS] = {
     ADC_DMA0_DDR_BASE,
     ADC_DMA1_DDR_BASE
 };
+
+static void stream_stop(void);
 #endif
 
 static XUartNs550 uart;
@@ -972,6 +975,10 @@ static int parse_dac_source(char **cursor, u32 channel, u32 *code)
                token_pref_digit(p, "monitor", &d, &hd) ||
                token_pref_digit(p, "imon", &d, &hd)) {
         *code = XSRC_MON0 + (hd ? d : (channel & 3u));
+    } else if (token_eq_ci(p, "cur") || token_eq_ci(p, "current") ||
+               token_eq_ci(p, "current_source") ||
+               token_eq_ci(p, "inject") || token_eq_ci(p, "injection")) {
+        *code = XSRC_CUR;
     } else if (token_eq_ci(p, "tag")) {
         *code = XSRC_TAG;
     } else if (parse_u32_arg(&p, code)) {
@@ -991,9 +998,9 @@ static int parse_dac_source(char **cursor, u32 channel, u32 *code)
 
 /* Per-DAC source select is the 16:4 crossbar in the GT clock domain (reg17, one
  * 4-bit nibble per DAC).  Any of 16 sources -- off / DDS / BRAM 0-3 / spike 0-3
- * / current monitor 0-3 / tag -- routes to any DAC, independent of the neuron
- * config bank.  program_enable (rw_reg3[6]) gates the BRAM read pipeline, so we
- * keep it on whenever any DAC routes a BRAM source. */
+ * / current monitor 0-3 / current source / tag -- routes to any DAC, independent
+ * of the neuron config bank.  program_enable (rw_reg3[6]) gates the BRAM read
+ * pipeline, so we keep it on whenever any DAC routes a BRAM source. */
 static void cmd_nsrc(void)
 {
     char *p = &cmd[4];
@@ -1028,7 +1035,7 @@ static void cmd_nsrc(void)
         char *vp = src_tok;
         if (!parse_dac_source(&vp, all_channels ? 0u : channel, &code)) {
             send_str("ERR NSRC [all|0..3] "
-                     "off|dds|bram[0-3]|spike[0-3]|mon[0-3]|tag|0..15\r\n");
+                     "off|dds|bram[0-3]|spike[0-3]|mon[0-3]|current|tag|0..15\r\n");
             return;
         }
     }
@@ -1084,8 +1091,8 @@ static void cmd_nsrc(void)
 /* CURP off                       -> stop the current player (run=0)
  * CURP <cps> <last_index> <amp>  -> fill cur_wave[0..last_index] with a
  *   zero-mean Q16.16 triangle of amplitude +/-amp, then run the player at that
- *   rate.  The held sample becomes i_external on every neuron, so routing a
- *   current monitor (NSRC <ch> mon<n>) mirrors it out a DAC. */
+ *   rate.  The held sample becomes i_external on every neuron, so routing
+ *   NSRC <ch> current mirrors the injected waveform out a DAC. */
 static u32 cur_player_restart_tog = 0u;
 static void cmd_curp(void)
 {
@@ -1140,7 +1147,7 @@ static void cmd_curp(void)
  *   into cur_wave[0..count-1], set last_index = count-1, and run the player at
  *   <cps> cycles/sample.  Unlike CURP (an on-board triangle), this loads an
  *   ARBITRARY host-built waveform (sine / step / zero / ...).  The held sample
- *   becomes i_external on every neuron, so routing a current monitor mirrors it
+ *   becomes i_external on every neuron, so routing NSRC <ch> current mirrors it
  *   to a DAC.  Effective frequency = 50 MHz / (cps * count).  The BRAM holds
  *   full signed Q16.16; current sources are unipolar in use, so the host keeps
  *   samples >= 0. */
@@ -2198,6 +2205,10 @@ static void cmd_burst(char *args)
     beats = bytes >> 4;
     burst_bytes = bytes;
 
+    if (stream_active) {
+        stream_stop();                       /* burst capture owns both DMAs */
+    }
+
     Xil_Out32(RW_REG6, beats);              /* PL capture length (both chips) */
     dma_arm_burst(0u, BURST_DDR_BASE0, bytes);
     dma_arm_burst(1u, BURST_DDR_BASE1, bytes);
@@ -2477,7 +2488,7 @@ static void cmd_help(void)
     send_str("  ADCS [chip sel]  ADC frontend status; ADCS CH n [hi|lo] reads adc_chN\r\n");
     send_str("  ADCT [all|adc0|adc1] mode  ADS54J60 test mode: off,d21,k28,ila,rpat,transport\r\n");
     send_str("  COUP [all|1..4] [ac|dc] ADC input coupling; default/safe state is AC\r\n");
-    send_str("  NSRC [ch|all] src  DAC crossbar (reg17): off,dds,bram[0-3],spike[0-3],mon[0-3],tag,0..15\r\n");
+    send_str("  NSRC [ch|all] src  DAC crossbar (reg17): off,dds,bram[0-3],spike[0-3],mon[0-3],current,tag,0..15\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("  CURP off | <cps> <last> <amp_q16>  current player: triangle into i_external; f=50MHz/(cps*(last+1))\r\n");
     send_str("  CURW <cps> <count>  current player: load <count> host LE Q16.16 samples (arb. waveform); f=50MHz/(cps*count)\r\n");
@@ -2550,7 +2561,7 @@ static void cmd_help(void)
     send_str("RW3 restart pulses: [0] HMC, [1] DAC, [2] ADC\r\n");
     send_str("    [5:4] RO3 DAC debug select (3=neuron debug word); [6] DAC program/BRAM enable\r\n");
     send_str("RW4 neuron: [0] config-bank prog toggle (NEUR pulses it)\r\n");
-    send_str("REG17 DAC crossbar: 4 bits/DAC: 0=off,1=DDS,2-5=BRAM0-3,6-9=spike0-3,10-13=mon0-3,14=tag (NSRC)\r\n");
+    send_str("REG17 DAC crossbar: 4 bits/DAC: 0=off,1=DDS,2-5=BRAM0-3,6-9=spike0-3,10-13=mon0-3,14=tag,15=current (NSRC)\r\n");
     send_str("    IZH debug via RW1=7: conv_sel 5=ch0 dt, 6=ch0 last spike interval, 7=ch0 update period\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("    [3] ADC BRAM capture/DAC program restart pulse\r\n");

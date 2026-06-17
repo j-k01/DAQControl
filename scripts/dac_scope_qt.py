@@ -11,7 +11,7 @@ on connect -- acquisition is opt-in:
 
   - Connection: pick the UART COM port and connect/reconnect (no streaming).
   - Per channel (DAC0..3): pick any crossbar source -- Off / DDS / BRAM 0-3 /
-    Spike 0-3 / Monitor 0-3 (per-neuron current) / Tag -- from the source
+    Spike 0-3 / Monitor 0-3 (per-neuron current) / Current source / Tag -- from the source
     dropdown (+ a neuron-profile dropdown), then hit "Program DACn" to commit:
     the dropdowns only stage a choice; the button sends NSRC (+ NEUR when the
     source is a Spike/Monitor of a neuron) and the per-DAC status line confirms
@@ -33,7 +33,7 @@ on connect -- acquisition is opt-in:
       * Current source: shows the waveform programmed into the cur_wave current
         RAM. Presets Sine (5 kHz default) / Zero current / Step (0 -> amp); the
         amplitude is in mA and can NEVER go negative. "Program" loads it via
-        CURW; route a Monitor source on a DAC to mirror the live current out.
+        CURW; route Current source on a DAC to mirror the injected current out.
       * Pulse shape: shows the spike pulse (<=32 signed DAC samples) and lets you
         drag individual points up/down; "Program pulse" sends it via PULS. The
         shaped pulse is one crossbar input -- route a Spike source to emit it.
@@ -72,19 +72,21 @@ PROGRAM_SAMPLES = 16384
 CAPT_SYNC = b"\xFE\x10\xCA\xFE"
 NEURON_PROFILES = ["regular", "bursting", "chattering", "fast"]
 # 16:4 DAC crossbar sources -- one per-DAC pick, matching firmware NSRC tokens
-# (reg17 codes: 0 off, 1 DDS, 2-5 BRAM, 6-9 spike, 10-13 monitor, 14 tag).
+# (reg17 codes: 0 off, 1 DDS, 2-5 BRAM, 6-9 spike, 10-13 monitor,
+# 14 tag, 15 pure injected current source).
 SOURCE_LABELS = [
     "Off", "DDS",
     "BRAM 0", "BRAM 1", "BRAM 2", "BRAM 3",
     "Spike 0", "Spike 1", "Spike 2", "Spike 3",
     "Monitor 0", "Monitor 1", "Monitor 2", "Monitor 3",
-    "Tag",
+    "Current source", "Tag",
 ]
 LABEL_TO_NSRC = {
     "Off": "off", "DDS": "dds",
     "BRAM 0": "bram0", "BRAM 1": "bram1", "BRAM 2": "bram2", "BRAM 3": "bram3",
     "Spike 0": "spike0", "Spike 1": "spike1", "Spike 2": "spike2", "Spike 3": "spike3",
     "Monitor 0": "mon0", "Monitor 1": "mon1", "Monitor 2": "mon2", "Monitor 3": "mon3",
+    "Current source": "current",
     "Tag": "tag",
 }
 WAVEFORMS = ["Sine", "Triangle", "Trapezoid", "Square", "Sawtooth"]
@@ -145,12 +147,14 @@ CUR_MAX_MA = 30.0              # full-scale current-source amplitude (mA)
 MA_TO_Q16 = 65536.0            # 1 mA -> Q16.16 LSBs (1 mA == 1.0 I-unit)
 CUR_PLAYER_CLK_HZ = 50.0e6     # the player advances in the 50 MHz neuron clock
 CUR_WAVE_MAX = 1024            # cur_wave BRAM depth (firmware CUR_WAVE_DEPTH)
-CUR_SINE_SAMPLES = 256         # max samples per loop (low freq); fewer at high freq
+CUR_SOURCE_MIN_HZ = 2.0e3      # experiment-facing current-source range
+CUR_SOURCE_MAX_HZ = 100.0e3
+CUR_SINE_SAMPLES = CUR_WAVE_MAX  # use the whole current BRAM when it helps
 CUR_SINE_SAMPLES_MIN = 16      # min samples (keeps a high-freq sine recognizable)
 CUR_SOURCE_PRESETS = ["Sine", "Zero current", "Step (0 → amp)"]
-# Measured DAC->ADC loopback is AC-coupled with a high-pass corner ~200 kHz, so a
-# current MONITOR routed to a DAC only shows on the (AC) scope ABOVE this; below
-# it the signal is attenuated/blocked (DC-couple, or raise frequency, to view).
+# Some DAC->ADC loopback setups are AC-coupled with a high-pass corner near this
+# value. The injected current still drives the neurons below it; use a DC-coupled
+# readout path if the analog loopback attenuates the 2 kHz..100 kHz band.
 CUR_LOOPBACK_AC_CORNER_HZ = 200e3
 
 # --- programmable spike pulse shape (izh_spike_shaper, firmware PULS) ----------
@@ -166,6 +170,29 @@ def ma_to_q16_u32(ma):
     return int(round(ma * MA_TO_Q16)) & 0xFFFFFFFF
 
 
+def choose_current_timing(freq_hz, n_max=CUR_SINE_SAMPLES,
+                          n_min=CUR_SINE_SAMPLES_MIN):
+    """Pick sample count and dwell for the 50 MHz current player.
+
+    The player period is count * cycles_per_sample clk_50 ticks.  Search the
+    legal current-BRAM sizes and choose the closest frequency, preferring more
+    waveform samples when the error ties.
+    """
+    freq_hz = max(CUR_SOURCE_MIN_HZ, min(CUR_SOURCE_MAX_HZ, float(freq_hz)))
+    target_ticks = CUR_PLAYER_CLK_HZ / freq_hz
+    max_n = int(max(n_min, min(n_max, round(target_ticks))))
+    best = None
+    for n in range(int(n_min), max_n + 1):
+        cps = int(round(target_ticks / n))
+        cps = max(1, min(65535, cps))
+        actual = CUR_PLAYER_CLK_HZ / (cps * n)
+        err = abs(actual - freq_hz)
+        if best is None or err < best[0] or (err == best[0] and n > best[1]):
+            best = (err, n, cps, actual)
+    _, n, cps, actual = best
+    return n, cps, actual
+
+
 def gen_current_wave(kind, amp_ma, freq_hz, n_max=CUR_SINE_SAMPLES,
                      n_min=CUR_SINE_SAMPLES_MIN):
     """Build a non-negative current waveform for the cur_wave player.
@@ -173,29 +200,17 @@ def gen_current_wave(kind, amp_ma, freq_hz, n_max=CUR_SINE_SAMPLES,
     Returns (samples_ma, cps, actual_hz): per-sample amplitudes in mA (all >= 0),
     the player's cycles-per-sample divisor, and the resulting loop frequency. The
     player loops len(ys) samples advancing every cps clk_50 cycles, so
-    f = 50 MHz / (cps * len). To reach the loopback's AC passband (>~200 kHz) we
-    SHRINK the sample count at high frequency (cps pinned at 1) instead of being
-    capped at 50MHz/256 = 195 kHz; low frequency keeps the full table and slows
-    the player via cps."""
+    f = 50 MHz / (cps * len)."""
     amp_ma = max(0.0, min(CUR_MAX_MA, float(amp_ma)))
-    freq_hz = max(1.0, float(freq_hz))
     if kind.startswith("Zero"):
         return np.zeros(2), 1, 0.0
-    n_cps1 = CUR_PLAYER_CLK_HZ / freq_hz            # samples needed if cps == 1
-    if n_cps1 <= n_max:
-        n = int(max(n_min, min(n_max, round(n_cps1))))
-        cps = 1
-    else:
-        n = n_max
-        cps = int(min(65535, round(CUR_PLAYER_CLK_HZ / (freq_hz * n))))
-    cps = max(1, cps)
+    n, cps, actual = choose_current_timing(freq_hz, n_max=n_max, n_min=n_min)
     if kind.startswith("Step"):
         ys = np.zeros(n)
         ys[n // 2:] = amp_ma                         # 0 for the first half, amp after
     else:  # Sine, raised so the trough sits exactly at 0 (unipolar)
         i = np.arange(n)
         ys = 0.5 * amp_ma * (1.0 - np.cos(2.0 * np.pi * i / n))
-    actual = CUR_PLAYER_CLK_HZ / (cps * len(ys))
     return ys, cps, actual
 
 
@@ -749,8 +764,8 @@ class PulseShapeWindow(QtWidgets.QWidget):
 class CurrentSourceWindow(QtWidgets.QWidget):
     """Window showing the current-source waveform programmed into cur_wave RAM.
     Presets: Sine (5 kHz default), Zero current, Step (0 -> amp). Amplitude is in
-    mA and can NEVER go negative. Programs the player via CURW; route a Monitor
-    source on a DAC to mirror the live current out for the scope."""
+    mA and can NEVER go negative. Programs the player via CURW; route Current
+    source on a DAC to mirror the injected current out for the scope."""
     done = QtCore.pyqtSignal(bool, str)
 
     def __init__(self, parent_scope):
@@ -787,10 +802,10 @@ class CurrentSourceWindow(QtWidgets.QWidget):
         grid.addWidget(self.amp_spin, 1, 1)
         grid.addWidget(QtWidgets.QLabel("frequency"), 2, 0)
         self.freq_spin = QtWidgets.QDoubleSpinBox()
-        self.freq_spin.setRange(1.0, 1.0e6)
+        self.freq_spin.setRange(CUR_SOURCE_MIN_HZ, CUR_SOURCE_MAX_HZ)
         self.freq_spin.setDecimals(1)
         self.freq_spin.setSingleStep(100.0)
-        self.freq_spin.setValue(500000.0)                  # 500 kHz: well above the ~200kHz loopback AC corner (clean on the scope)
+        self.freq_spin.setValue(5000.0)
         self.freq_spin.setSuffix(" Hz")
         self.freq_spin.valueChanged.connect(self._refresh)
         grid.addWidget(self.freq_spin, 2, 1)
@@ -830,16 +845,16 @@ class CurrentSourceWindow(QtWidgets.QWidget):
         self.curve.setData(t, np.tile(ys, reps) * 1e-3)
         self.plot.setYRange(-0.05 * CUR_MAX_MA * 1e-3,
                             max(0.5, amp * 1.15) * 1e-3)
-        # The loopback is AC-coupled (~200 kHz corner): a current below that
-        # drives the neuron fine but is attenuated/invisible via a Monitor on the
-        # AC scope. Warn so a "blank scope" isn't mistaken for a broken source.
+        # The injected-current source is intentionally 2 kHz..100 kHz. If the
+        # physical DAC->ADC loopback is AC-coupled, it may attenuate this band
+        # even though the neuron input and DAC source are correct.
         if not kind.startswith("Zero") and actual < CUR_LOOPBACK_AC_CORNER_HZ:
             tail = (f"  ⚠ {actual/1e3:.1f} kHz is below the ~"
-                    f"{CUR_LOOPBACK_AC_CORNER_HZ/1e3:.0f} kHz loopback AC corner — "
-                    f"drives the neuron, but won't show via a Monitor on the AC "
-                    f"scope (raise frequency or DC-couple to view).")
+                    f"{CUR_LOOPBACK_AC_CORNER_HZ/1e3:.0f} kHz loopback AC corner; "
+                    f"use the Current source DAC route or a DC-coupled readout "
+                    f"to inspect it cleanly.")
         else:
-            tail = "  Route a Monitor source on a DAC to view the live current."
+            tail = "  Route Current source on a DAC to view the injected waveform."
         self.info.setText(
             f"{kind}: {n} samples, cps={cps} → loop {actual/1e3:.2f} kHz, "
             f"peak {ys.max():.3f} mA (1 mA = 1.0 I-unit, unipolar 0+).{tail}")
@@ -1512,7 +1527,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         stream uses (now released). Reuses burst_capture.Reassembler for
         offset-bitmap (dedup'd) coverage."""
         try:
-            from burst_capture import Reassembler, decode_chip
+            from burst_capture import Reassembler, decode_chip, parse_brdo_request
         except Exception:  # noqa: BLE001
             return None
         bpc = nbytes
@@ -1531,14 +1546,18 @@ class ScopeWindow(QtWidgets.QMainWindow):
             if not self.dac.cmd(f"BCAP {kb}k",
                                 ok=("OK BCAP", "ERR")).startswith("OK BCAP"):
                 return None
-            self.dac.cmd("BRDO", ok=("OK BRDO", "ERR"))
-            deadline = time.time() + 8.0
+            brdo = self.dac.cmd("BRDO", ok=("OK BRDO", "ERR"))
+            req = parse_brdo_request(brdo)
+            if not brdo.startswith("OK BRDO") or req is None:
+                return None
+            asm.set_request_id(req)
+            deadline = time.time() + max(8.0, (2.0 * bpc / 70.0e6) + 2.0)
             while time.time() < deadline:
                 if asm.complete():
                     break
-                if (time.time() - asm.last_t) > 0.6 and asm.coverage(0) > 0:
-                    break
                 time.sleep(0.05)
+            if not asm.complete():
+                return None
             chans = {}
             chans.update(decode_chip(asm.buf[0], 0))
             chans.update(decode_chip(asm.buf[1], 2))

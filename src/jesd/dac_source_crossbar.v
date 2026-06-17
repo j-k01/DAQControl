@@ -10,7 +10,7 @@
 //   6..9   : neuron spike pulse 0..3
 //   10..13 : neuron current monitor 0..3
 //   14     : debug tag word
-//   15     : off (zero)
+//   15     : injected current source (pure i_external)
 //
 // sel layout: sel[3:0] -> DAC0, sel[7:4] -> DAC1, sel[11:8] -> DAC2,
 //             sel[15:12] -> DAC3.  Pure routing -- one 16:1 mux per DAC.
