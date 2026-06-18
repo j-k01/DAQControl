@@ -56,6 +56,7 @@ The normal sequence is:
 1. Clean generated Vivado state.
 2. Regenerate/build hardware and export XSA.
 3. Build MicroBlaze firmware from that XSA.
+4. Build the A53 PS-Ethernet app from the same XSA.
 
 Run this on capitolpeak:
 
@@ -64,7 +65,13 @@ cd /home/jkincaid/DAQControl
 rm -rf project .Xil
 /home/jkincaid/bin/with_xilinx_2024_1 vivado -mode batch -source rebuild.tcl -tclargs --with-ps-ddr-dma --jobs 8
 /home/jkincaid/bin/with_xilinx_2024_1 xsct build_sw.tcl
+/home/jkincaid/bin/with_xilinx_2024_1 xsct build_ps_eth_stream.tcl
 ```
+
+The A53 app is part of the Ethernet behavior. If `sw/ps_eth_stream/src/main.c`
+or the burst mailbox/header contract changes, rebuilding only `build_sw.tcl`
+leaves `prebuilt/ps_eth_stream.elf` stale even though the FPGA and MicroBlaze
+artifacts are fresh.
 
 Only run `build.tcl --bake` when the user explicitly requests a self-contained
 bitstream with firmware BRAM INIT already populated.
@@ -82,4 +89,5 @@ bash -lc "... && ..."'` quoting has already caused the wrong command to run
   - `hw/DAQ_LAUNCH.ltx`
   - `prebuilt/top.bit`, if refreshed
   - `prebuilt/firmware.elf`, if firmware changed
+  - `prebuilt/ps_eth_stream.elf`, if PS Ethernet app behavior changed
 - Do not confuse "build launched" with "new bitstream available".
