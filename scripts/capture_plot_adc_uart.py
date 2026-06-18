@@ -337,6 +337,11 @@ def wait_for_line_prefix(port, prefix):
         line = read_line(port)
         if line.startswith(prefix):
             return line
+        # NSRC originally replied "DAC source ..."; newer firmware replies
+        # "DAC xbar ..." to reflect the 16:4 crossbar register.  Treat them as
+        # the same command acknowledgment so older helper scripts keep working.
+        if prefix == "DAC source" and line.startswith("DAC xbar"):
+            return line
 
 
 def parse_reg_line(line, register_name):
