@@ -276,8 +276,8 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
  * aligned (one trigger fires both, ADCs SYSREF-synced). RW6 carries the beat
  * count per chip (16 B/beat). The A53 reads the regions out over UDP on MB
  * request via the burst mailbox. */
-#define BURST_DDR_BASE0   0x18000000u    /* chip0 capture region (<=128 MB)   */
-#define BURST_DDR_BASE1   0x20000000u    /* chip1 capture region (<=128 MB)   */
+#define BURST_DDR_BASE0   0x20000000u    /* chip0 capture region (<=128 MB)   */
+#define BURST_DDR_BASE1   0x28000000u    /* chip1 capture region (<=128 MB)   */
 #define BURST_MAX_BYTES   0x08000000u    /* 128 MB/chip; fits below A53 app   */
 /* Per-descriptor byte count. MUST fit the SG buffer-length field, which is 26
  * bits (c_sg_length_width=26) -> max 0x03FFFFFF. 0x04000000 (64 MB) is 2^26,
