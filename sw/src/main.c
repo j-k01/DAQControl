@@ -276,8 +276,8 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
  * aligned (one trigger fires both, ADCs SYSREF-synced). RW6 carries the beat
  * count per chip (16 B/beat). The A53 reads the regions out over UDP on MB
  * request via the burst mailbox. */
-#define BURST_DDR_BASE0   0x10040000u    /* chip0 capture region (16 MB max)  */
-#define BURST_DDR_BASE1   0x11040000u    /* chip1 capture region (16 MB max)  */
+#define BURST_DDR_BASE0   0x18000000u    /* chip0 capture region (16 MB max)  */
+#define BURST_DDR_BASE1   0x19000000u    /* chip1 capture region (16 MB max)  */
 #define BURST_MAX_BYTES   0x01000000u    /* 16 MB/chip, below stream rings     */
 /* Per-descriptor byte count. MUST fit the SG buffer-length field, which is 26
  * bits (c_sg_length_width=26) -> max 0x03FFFFFF. 0x04000000 (64 MB) is 2^26,
@@ -289,7 +289,8 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
  * 0C=base1 10=readout_req(MB++) 14=readout_done(A53 echo) 18=beats */
 
 static const u32 strm_desc_base[ADC_DMA_CHIPS] = { 0x10030000u, 0x10034000u };
-static const u32 strm_ring_base[ADC_DMA_CHIPS] = { 0x12080000u, 0x14080000u };
+static const u32 strm_ring_base[ADC_DMA_CHIPS] = { 0x1A080000u, 0x1C080000u };
+static u32 burst_ddr_base[ADC_DMA_CHIPS] = { BURST_DDR_BASE0, BURST_DDR_BASE1 };
 
 static u32 stream_active = 0;
 static u32 stream_decim = 0;
@@ -2323,6 +2324,78 @@ static void cmd_dma_capture(u32 frames)
 
 static u32 burst_bytes = BURST_MAX_BYTES;
 
+static int ranges_overlap(u32 a, u32 bytes_a, u32 b, u32 bytes_b)
+{
+    unsigned long long a0 = (unsigned long long)a;
+    unsigned long long a1 = a0 + (unsigned long long)bytes_a;
+    unsigned long long b0 = (unsigned long long)b;
+    unsigned long long b1 = b0 + (unsigned long long)bytes_b;
+
+    return (a0 < b1) && (b0 < a1);
+}
+
+static int burst_map_is_valid(u32 base0, u32 base1)
+{
+    u32 i;
+
+    if (((base0 | base1) & 0x0Fu) != 0u) {
+        send_str("ERR BMAP bases must be 16-byte aligned\r\n");
+        return 0;
+    }
+    if (base0 > (0x80000000u - BURST_MAX_BYTES) ||
+        base1 > (0x80000000u - BURST_MAX_BYTES)) {
+        send_str("ERR BMAP bases must fit in DDR_LOW below 0x80000000\r\n");
+        return 0;
+    }
+    if (ranges_overlap(base0, BURST_MAX_BYTES, base1, BURST_MAX_BYTES)) {
+        send_str("ERR BMAP chip windows overlap\r\n");
+        return 0;
+    }
+    for (i = 0; i < ADC_DMA_CHIPS; i++) {
+        if (ranges_overlap(base0, BURST_MAX_BYTES,
+                           strm_ring_base[i], STRM_RING_BYTES) ||
+            ranges_overlap(base1, BURST_MAX_BYTES,
+                           strm_ring_base[i], STRM_RING_BYTES)) {
+            send_str("ERR BMAP overlaps stream ring\r\n");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* BMAP [base0 base1] -- debug/bring-up hook for DMA destination windows.
+ * With no args, prints the active map used by BCAP/BRDO. */
+static void cmd_burst_map(char *args)
+{
+    char *p = args;
+    u32 base0;
+    u32 base1;
+
+    if (parse_u32_arg(&p, &base0)) {
+        if (!parse_u32_arg(&p, &base1)) {
+            send_str("ERR BMAP expects base0 base1, or no args\r\n");
+            return;
+        }
+        if (!burst_map_is_valid(base0, base1)) {
+            return;
+        }
+        burst_ddr_base[0] = base0;
+        burst_ddr_base[1] = base1;
+    }
+
+    send_str("BMAP base0=");
+    send_hex(burst_ddr_base[0]);
+    send_str(" base1=");
+    send_hex(burst_ddr_base[1]);
+    send_str(" max_bytes=");
+    send_uint(BURST_MAX_BYTES);
+    send_str(" stream0=");
+    send_hex(strm_ring_base[0]);
+    send_str(" stream1=");
+    send_hex(strm_ring_base[1]);
+    send_str("\r\n");
+}
+
 /* BCAP [N[k|m]] -- full-rate, un-decimated, sample-aligned burst capture of all
  * 4 ADC channels into two low-DDR regions. N defaults to MB ('m' optional,
  * back-compatible with BCAP <MB>); a 'k' suffix means KB for small grabs
@@ -2367,15 +2440,15 @@ static void cmd_burst(char *args)
     }
 
     set_adc_capture_beats(beats);           /* PL capture length (both chips) */
-    dma_arm_burst(0u, BURST_DDR_BASE0, bytes);
-    dma_arm_burst(1u, BURST_DDR_BASE1, bytes);
+    dma_arm_burst(0u, burst_ddr_base[0], bytes);
+    dma_arm_burst(1u, burst_ddr_base[1], bytes);
 
     /* publish region info for the A53 readout. readout_req (0x10) stays
      * monotonic across captures -- the A53 drains on any change -- so we do not
      * reset it here. */
     Xil_Out32(STRM_MAILBOX + 0x04u, bytes);
-    Xil_Out32(STRM_MAILBOX + 0x08u, BURST_DDR_BASE0);
-    Xil_Out32(STRM_MAILBOX + 0x0Cu, BURST_DDR_BASE1);
+    Xil_Out32(STRM_MAILBOX + 0x08u, burst_ddr_base[0]);
+    Xil_Out32(STRM_MAILBOX + 0x0Cu, burst_ddr_base[1]);
     Xil_Out32(STRM_MAILBOX + 0x18u, beats);
     Xil_Out32(STRM_MAILBOX + 0x00u, BURST_MAGIC);
 
@@ -2394,9 +2467,9 @@ static void cmd_burst(char *args)
     send_str(" beats=");
     send_uint(beats);
     send_str(" base0=");
-    send_hex(BURST_DDR_BASE0);
+    send_hex(burst_ddr_base[0]);
     send_str(" base1=");
-    send_hex(BURST_DDR_BASE1);
+    send_hex(burst_ddr_base[1]);
     send_str(" ");
     print_named_hex("dma0", s0);
     send_str(" ");
@@ -2673,6 +2746,7 @@ static void cmd_help(void)
     send_str("  DMAC [frames]    arm ADC0/ADC1 S2MM DMA to PS DDR, then pulse ADC capture\r\n");
     send_str("  BCAP [MB]        full-rate un-decimated burst capture of all 4 ADC ch (default/max 16 MB/chip)\r\n");
     send_str("  BRDO             ask the A53 to read the last BCAP regions out over UDP\r\n");
+    send_str("  BMAP [b0 b1]     show/set BCAP DDR bases (debug)\r\n");
     send_str("  STRM [decim [cic]]|STOP|STAT  continuous decimated stream into DDR rings (cyclic SG)\r\n");
     send_str("  STRM CIC on|off  live A/B toggle: chip1 ch2/3 CIC anti-alias (D=128) vs keep-1-of-D\r\n");
     send_str("  DSTA             print AXI DMA S2MM status registers\r\n");
@@ -2940,6 +3014,8 @@ static void process_cmd(void)
         cmd_burst(&cmd[4]);
     } else if (strncmp(cmd, "BRDO", 4) == 0) {
         cmd_burst_readout(&cmd[4]);
+    } else if (strncmp(cmd, "BMAP", 4) == 0) {
+        cmd_burst_map(&cmd[4]);
     } else if (strncmp(cmd, "DMAC", 4) == 0) {
         char *p = &cmd[4];
         u32 frames = ADC_CAPTURE_FRAMES;

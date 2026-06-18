@@ -6,9 +6,9 @@ after the MicroBlaze firmware has captured them:
 - app DDR window: `0x01000000` through `0x0EFFFFFF`
 - debug mailbox: `0x0F000000`
 - burst/stream mailbox: `0x1003FF00`
-- chip0 burst buffer: `0x10040000`
-- chip1 burst buffer: `0x11040000`
-- continuous stream rings: `0x12080000` and `0x14080000`
+- chip0 burst buffer: `0x18000000`
+- chip1 burst buffer: `0x19000000`
+- continuous stream rings: `0x1A080000` and `0x1C080000`
 - maximum burst size: 16 MB/chip on the current HP DDR_LOW map
 
 The MicroBlaze firmware still owns capture control. The host registers its UDP
