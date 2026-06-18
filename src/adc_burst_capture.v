@@ -155,11 +155,19 @@ module adc_burst_capture #(
                 else
                     fifo_clear <= 1'b0;
             end else if (start_pending && fifo_ready_after_clear) begin
-                running <= 1'b1;
-                armed <= 1'b1;
-                in_rem <= pending_beats;
-                axis_enable <= 1'b1;
                 start_pending <= 1'b0;
+                if (pending_beats == 32'd0) begin
+                    running <= 1'b0;
+                    armed <= 1'b0;
+                    done <= 1'b1;
+                    in_rem <= 32'd0;
+                    axis_enable <= 1'b0;
+                end else begin
+                    running <= 1'b1;
+                    armed <= 1'b1;
+                    in_rem <= pending_beats;
+                    axis_enable <= 1'b1;
+                end
             end
 
             if (have_beat & ~fifo_full) begin

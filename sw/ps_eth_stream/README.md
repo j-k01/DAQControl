@@ -1,15 +1,19 @@
 # PS Ethernet Readout
 
-This app runs on `psu_cortexa53_0` and reads the ADC DMA buffers from PS DDR:
+This app runs on `psu_cortexa53_0` and reads ADC DMA burst buffers from PS DDR
+after the MicroBlaze firmware has captured them:
 
 - app DDR window: `0x01000000` through `0x0EFFFFFF`
-- chip0 buffer: `0x10000000`
-- chip1 buffer: `0x10020000`
-- frame size per chip: 16 bytes
-- nominal frame count: 4096
+- debug mailbox: `0x0F000000`
+- burst mailbox: `0x0F001000`
+- chip0 burst buffer: `0x18000000`
+- chip1 burst buffer: `0x20000000`
+- maximum burst size: 128 MB/chip on the current 1 GB DDR map
 
-The MicroBlaze firmware still owns capture control. Run `DMAC 4096` over UART
-first, then request Ethernet readout from the host.
+The MicroBlaze firmware still owns capture control. The host registers its UDP
+destination with `BRST`, asks the firmware to run `BCAP <MB>`, then sends
+`BRDO` over UART. The A53 streams the exact captured regions named in the burst
+mailbox.
 
 ## Build
 
@@ -83,26 +87,25 @@ Set the host Ethernet interface to the same subnet, for example
 `192.168.2.1/24`, then run:
 
 ```powershell
-python scripts\receive_ps_eth_stream.py --board-ip 192.168.2.10 --local-port 5005 --chip all --frames 4096
+python scripts\burst_capture.py --port COM10 --board-ip 192.168.2.10 --local-ip 192.168.2.1 --local-port 5005 --mb 64
 ```
 
-The app sends binary captures to:
+The script writes a NumPy array with four decoded ADC channels:
 
 ```text
-captures/eth/ps_eth_capture_chip0.bin
-captures/eth/ps_eth_capture_chip1.bin
+captures/burst.npy
 ```
 
 Each UDP data packet starts with a 32-byte little-endian header:
 
 ```text
-u32 magic        0x44415144 ("DAQD")
+u32 magic        0x53514144 ("DAQS")
 u16 version      1
 u16 header_bytes 32
 u32 sequence
 u32 chip         0 or 1
-u32 word_offset  u32 offset in the chip buffer
-u32 word_count
+u32 byte_offset  byte offset in the chip buffer
 u32 byte_count
-u32 flags        bit0 = last packet for this chip
+u32 request_id   matches the `BRDO` request id
+u32 decimation   0 for burst readout
 ```

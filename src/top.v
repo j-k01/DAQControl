@@ -253,6 +253,8 @@ module top #(
     wire         adc1_dma_axis_tready;
     wire [31:0]  adc0_dma_status_async;
     wire [31:0]  adc1_dma_status_async;
+    wire [31:0]  adc0_dma_status_reg;
+    wire [31:0]  adc1_dma_status_reg;
 `endif
 
     wire [31:0] status_reg;
@@ -1910,6 +1912,15 @@ module top #(
         .m_axis_tready (adc1_dma_axis_tready),
         .status        (adc1_dma_status_async)
     );
+
+    cdc_vector_sync #(
+        .WIDTH (64)
+    ) u_adc_dma_status_sync (
+        .dest_clk (clk_200),
+        .dest_rst (fabric_rst),
+        .src      ({adc1_dma_status_async, adc0_dma_status_async}),
+        .dest     ({adc1_dma_status_reg, adc0_dma_status_reg})
+    );
 `endif
 `else
     assign adc_capture_status_async = 32'd0;
@@ -1924,6 +1935,8 @@ module top #(
     assign adc1_dma_axis_tvalid = 1'b0;
     assign adc0_dma_status_async = 32'd0;
     assign adc1_dma_status_async = 32'd0;
+    assign adc0_dma_status_reg = 32'd0;
+    assign adc1_dma_status_reg = 32'd0;
 `endif
 `endif
 `else
@@ -1963,6 +1976,8 @@ module top #(
     assign adc1_dma_axis_tvalid = 1'b0;
     assign adc0_dma_status_async = 32'd0;
     assign adc1_dma_status_async = 32'd0;
+    assign adc0_dma_status_reg = 32'd0;
+    assign adc1_dma_status_reg = 32'd0;
 `endif
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     assign adc_bram_addr = 32'd0;
@@ -2202,6 +2217,9 @@ module top #(
             5'd5: adc0_selected_debug_reg = adc1_rx_sample_b_low_reg;
             5'd6: adc0_selected_debug_reg = adc1_rx_sample_b_high_reg;
             5'd7: adc0_selected_debug_reg = adc1_rx_raw_lane_reg;
+`ifdef DAQ_WITH_PS_DDR_DMA
+            5'd8: adc0_selected_debug_reg = adc0_dma_status_reg;
+`endif
             default: adc0_selected_debug_reg = 32'd0;
         endcase
     end
@@ -2216,6 +2234,9 @@ module top #(
             5'd5: adc1_selected_debug_reg = adc2_rx_sample_b_low_reg;
             5'd6: adc1_selected_debug_reg = adc2_rx_sample_b_high_reg;
             5'd7: adc1_selected_debug_reg = adc2_rx_raw_lane_reg;
+`ifdef DAQ_WITH_PS_DDR_DMA
+            5'd8: adc1_selected_debug_reg = adc1_dma_status_reg;
+`endif
             default: adc1_selected_debug_reg = 32'd0;
         endcase
     end

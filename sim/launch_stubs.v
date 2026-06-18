@@ -38,6 +38,18 @@ module microblaze_bd_wrapper (
     input  wire [1535:0] REG_IN_0,
     input  wire [47:0] REG_WE_0,
     output wire [47:0] REG_RDINT_0,
+    input  wire        gt_rx_usrclk_2,
+    input  wire        reset_rtl,
+    input  wire [127:0] S_AXIS_S2MM_0_tdata,
+    input  wire [15:0]  S_AXIS_S2MM_0_tkeep,
+    input  wire         S_AXIS_S2MM_0_tlast,
+    output wire         S_AXIS_S2MM_0_tready,
+    input  wire         S_AXIS_S2MM_0_tvalid,
+    input  wire [127:0] S_AXIS_S2MM_1_tdata,
+    input  wire [15:0]  S_AXIS_S2MM_1_tkeep,
+    input  wire         S_AXIS_S2MM_1_tlast,
+    output wire         S_AXIS_S2MM_1_tready,
+    input  wire         S_AXIS_S2MM_1_tvalid,
     output reg  [31:0] RW_REG0_0,
     output reg  [31:0] RW_REG1_0,
     output reg  [31:0] RW_REG2_0,
@@ -155,6 +167,8 @@ module microblaze_bd_wrapper (
 
     assign rs232_uart_txd = 1'b1;
     assign REG_RDINT_0 = 48'd0;
+    assign S_AXIS_S2MM_0_tready = 1'b1;
+    assign S_AXIS_S2MM_1_tready = 1'b1;
     assign RO_REG0_RDINT_0 = 1'b0;
     assign RO_REG1_RDINT_0 = 1'b0;
     assign RO_REG2_RDINT_0 = 1'b0;
@@ -218,12 +232,17 @@ module microblaze_bd_wrapper (
     assign SPIKE_SHAPE_AXI_BRAM_PORTA_rst = 1'b0;
     assign SPIKE_SHAPE_AXI_BRAM_PORTA_we = 4'd0;
 
-    wire unused = Clk ^ reset ^ rs232_uart_rxd ^ RO_REG0_WE_0 ^ RO_REG1_WE_0 ^
+    wire unused = Clk ^ reset ^ rs232_uart_rxd ^ gt_rx_usrclk_2 ^ reset_rtl ^
+                  RO_REG0_WE_0 ^ RO_REG1_WE_0 ^
                   RO_REG2_WE_0 ^ RO_REG3_WE_0 ^ RO_REG4_WE_0 ^ RO_REG5_WE_0 ^
                   RO_REG6_WE_0 ^ RO_REG7_WE_0 ^ ^RO_REG0_IN_0 ^
                   ^RO_REG1_IN_0 ^ ^RO_REG2_IN_0 ^ ^RO_REG3_IN_0 ^
                   ^RO_REG4_IN_0 ^ ^RO_REG5_IN_0 ^ ^RO_REG6_IN_0 ^ ^RO_REG7_IN_0 ^
                   ^REG_IN_0 ^ ^REG_WE_0 ^
+                  ^S_AXIS_S2MM_0_tdata ^ ^S_AXIS_S2MM_0_tkeep ^
+                  S_AXIS_S2MM_0_tlast ^ S_AXIS_S2MM_0_tvalid ^
+                  ^S_AXIS_S2MM_1_tdata ^ ^S_AXIS_S2MM_1_tkeep ^
+                  S_AXIS_S2MM_1_tlast ^ S_AXIS_S2MM_1_tvalid ^
                   ^DAC0_AXI_BRAM_PORTA_dout ^ ^DAC1_AXI_BRAM_PORTA_dout ^
                   ^DAC2_AXI_BRAM_PORTA_dout ^ ^DAC3_AXI_BRAM_PORTA_dout ^
                   ^ADC0_AXI_BRAM_PORTA_dout ^ ^ADC1_AXI_BRAM_PORTA_dout ^

@@ -35,6 +35,7 @@ set common_sources [list \
     ../../src/dataplane_bram_ip.v \
     ../../src/dac_bram_player.v \
     ../../src/adc_bram_capture.v \
+    ../../src/adc_burst_capture.v \
     ../../src/izh_current_player.v \
     ../../src/izh_spike_trapezoid.v \
     ../../src/izh_spike_shaper.v \
@@ -80,5 +81,7 @@ proc run_compile {work_dir snapshot extra_defines sources} {
 run_compile sim/work_litejesd top_litejesd_compile {} $common_sources
 cd $root_dir
 run_compile sim/work_litejesd_bram top_litejesd_bram_compile {DAQ_WITH_BRAM_DATAPLANE} $common_sources
+cd $root_dir
+run_compile sim/work_litejesd_psddr top_litejesd_psddr_compile {DAQ_WITH_PS_DDR_DMA} $common_sources
 
 puts "LiteJESD/GTH top compile checks passed."

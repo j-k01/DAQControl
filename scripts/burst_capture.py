@@ -4,16 +4,16 @@ read it out over Ethernet.
 
 Flow (all MB-controlled, capture and readout decoupled):
   1. register this host with the A53 (UDP "BRST")
-  2. BCAP <MB>  over UART -> both DMAs capture <MB> MB/chip in parallel (~128 ms
-     for 512 MB), sample-aligned (chip0=ch0/ch1, chip1=ch2/ch3, 1-to-1)
-  3. BRDO       over UART -> A53 streams both 512 MB regions out over UDP
+  2. BCAP <MB>  over UART -> both DMAs capture <MB> MB/chip in parallel,
+     sample-aligned (chip0=ch0/ch1, chip1=ch2/ch3, 1-to-1)
+  3. BRDO       over UART -> A53 streams both regions out over UDP
   4. reassemble by (chip, byte-offset), decode to 4 channels, report loss
 
 Each chip region is 2 channels x int16; frame = 8 int16 (4 even-ch + 4 odd-ch),
 so the decode matches the streaming path. The Ethernet drain is the slow part
-(~9 s for 1 GB over 1 GbE); the capture itself is ~128 ms.
+(~1.1 s for 128 MB over 1 GbE); the capture itself is the fast part.
 
-  python scripts/burst_capture.py --mb 512
+  python scripts/burst_capture.py --mb 64
   python scripts/burst_capture.py --mb 64 --plot
 """
 from __future__ import annotations
@@ -31,6 +31,7 @@ import serial
 HDR = struct.Struct("<IHHIIIIII")   # magic ver hdr seq chip off bytes drops decim
 MAGIC = 0x53514144
 VOLTS_PER_COUNT = 1.9 / 65536.0
+MAX_MB_PER_CHIP = 128
 
 
 class Reassembler:
@@ -186,11 +187,15 @@ def main():
     ap.add_argument("--cmd-port", type=int, default=5006)
     ap.add_argument("--local-ip", default="192.168.2.1")
     ap.add_argument("--local-port", type=int, default=5005)
-    ap.add_argument("--mb", type=int, default=512, help="MB/chip to capture")
+    ap.add_argument("--mb", type=int, default=64,
+                    help=f"MB/chip to capture, 1..{MAX_MB_PER_CHIP}")
     ap.add_argument("--drain-timeout", type=float, default=60.0)
     ap.add_argument("--out", default="captures/burst.npy")
     ap.add_argument("--plot", action="store_true")
     args = ap.parse_args()
+    if args.mb < 1 or args.mb > MAX_MB_PER_CHIP:
+        raise SystemExit(f"--mb must be 1..{MAX_MB_PER_CHIP}; "
+                         "the current firmware maps burst buffers below 1 GB DDR")
 
     bytes_per_chip = args.mb * (1 << 20)
     s = serial.Serial(args.port, args.baud, timeout=5, write_timeout=5)
