@@ -46,13 +46,16 @@ git pull --ff-only origin merge-stream-neuron
 
 ## Rebuild Sequence
 
-When firmware changed, do not run only `rebuild.tcl` and assume the bitstream is
-baked with the new ELF. The safe sequence is:
+Do not bake the MicroBlaze firmware into the bitstream by default. Baking with
+`build.tcl --bake` roughly doubles build time and is usually not relevant for
+our workflow; the firmware can be programmed/loaded quickly as a final separate
+step.
+
+The normal sequence is:
 
 1. Clean generated Vivado state.
 2. Regenerate/build hardware and export XSA.
 3. Build MicroBlaze firmware from that XSA.
-4. Re-run `build.tcl --bake` so the final bitstream contains the new firmware.
 
 Run this on capitolpeak:
 
@@ -61,8 +64,10 @@ cd /home/jkincaid/DAQControl
 rm -rf project .Xil
 /home/jkincaid/bin/with_xilinx_2024_1 vivado -mode batch -source rebuild.tcl -tclargs --with-ps-ddr-dma --jobs 8
 /home/jkincaid/bin/with_xilinx_2024_1 xsct build_sw.tcl
-/home/jkincaid/bin/with_xilinx_2024_1 vivado -mode batch -source build.tcl -tclargs --bake --jobs 8
 ```
+
+Only run `build.tcl --bake` when the user explicitly requests a self-contained
+bitstream with firmware BRAM INIT already populated.
 
 Use a temporary remote shell script for background launches. Nested `ssh 'nohup
 bash -lc "... && ..."'` quoting has already caused the wrong command to run
