@@ -2,70 +2,70 @@
 
 // Programmable spike-pulse shaper (replaces the fixed izh_spike_trapezoid).
 //
-// On each spike rising edge it plays a programmable pulse from a beat-word
-// table: NBEATS_MAX (16) "beat-words" of 64 bits each = 4 SIGNED s16 DAC samples
-// per beat, at the DAC rate (4 samples per jesd_clk beat = 1 GS/s, so up to 64
-// samples / 64 ns).  `nbeats` (1..NBEATS_MAX) selects how many beat-words play.
+// On each spike rising edge it plays a programmable pulse from a BRAM-backed
+// beat-word table.  One beat-word is 64 bits = 4 SIGNED s16 DAC samples at the
+// DAC/JESD beat rate.  `nbeats` selects how many beat-words play.
 //
 // Samples are full-range signed s16 (-32768..+32767): the pulse can be positive,
-// negative, or biphasic.  The whole table is a flat bus (all beat-words present
-// at once), so each beat is just a 16:1 mux -- no memory rate limit, and four
-// independent neuron shapers can share one shape bus combinationally.  Between
+// negative, or biphasic.  The shape RAM is synchronous with 1-cycle latency, so
+// the first pulse beat appears one clk after the detected spike edge.  Between
 // pulses the output is 0.
 
 module izh_spike_shaper #(
-    parameter integer NBEATS_MAX = 16          // 16 beats * 4 samples = 64 max
+    parameter integer ADDR_W = 10              // 1024 beats * 4 = 4096 samples
 ) (
-    input  wire                      clk,       // jesd_clk (DAC domain)
-    input  wire                      reset,
-    input  wire                      spike,
-    input  wire [NBEATS_MAX*64-1:0]  shape,     // beat-word b at [b*64 +: 64] = {s3,s2,s1,s0}
-    input  wire [4:0]                nbeats,    // 1..NBEATS_MAX
-    output wire                      active,
-    output wire [63:0]               dac_word   // 4 signed s16 samples this beat
+    input  wire               clk,       // jesd_clk (DAC domain)
+    input  wire               reset,
+    input  wire               spike,
+    output reg  [ADDR_W-1:0]  shape_addr,
+    input  wire [63:0]        shape_data, // beat-word b = {s3,s2,s1,s0}
+    input  wire [ADDR_W:0]    nbeats,     // 1..2**ADDR_W
+    output wire               active,
+    output wire [63:0]        dac_word    // 4 signed s16 samples this beat
 );
-    // unpack the flat bus to a beat-word array (array index is simulator-portable
-    // and synthesizes to the same mux as a variable part-select)
-    wire [63:0] bw [0:NBEATS_MAX-1];
-    genvar gi;
-    generate
-        for (gi = 0; gi < NBEATS_MAX; gi = gi + 1) begin : g_unpack
-            assign bw[gi] = shape[gi*64 +: 64];
-        end
-    endgenerate
+    localparam [ADDR_W:0] MAX_BEATS = {1'b1, {ADDR_W{1'b0}}};
 
-    // clamp beat count to 1..NBEATS_MAX
-    wire [4:0] nb = (nbeats == 5'd0)               ? 5'd1 :
-                    (nbeats > NBEATS_MAX[4:0])     ? NBEATS_MAX[4:0] :
-                                                     nbeats;
+    wire [ADDR_W:0] nb = (nbeats == {(ADDR_W+1){1'b0}}) ? {{ADDR_W{1'b0}}, 1'b1} :
+                         (nbeats > MAX_BEATS)         ? MAX_BEATS :
+                                                        nbeats;
 
     reg       spike_d  = 1'b0;
     reg       active_r = 1'b0;
-    reg [4:0] bidx     = 5'd0;              // beat-word index
+    reg       fetching = 1'b0;
+    reg [ADDR_W:0] out_idx = {(ADDR_W+1){1'b0}};
     wire      spike_edge = spike & ~spike_d;
 
     always @(posedge clk) begin
         if (reset) begin
             spike_d  <= 1'b0;
             active_r <= 1'b0;
-            bidx     <= 5'd0;
+            fetching <= 1'b0;
+            out_idx  <= {(ADDR_W+1){1'b0}};
+            shape_addr <= {ADDR_W{1'b0}};
         end else begin
             spike_d <= spike;
             if (spike_edge) begin
+                active_r <= 1'b0;               // BRAM data for addr 0 arrives next clk
+                fetching <= 1'b1;
+                out_idx  <= {(ADDR_W+1){1'b0}};
+                shape_addr <= {ADDR_W{1'b0}};
+            end else if (fetching) begin
                 active_r <= 1'b1;
-                bidx     <= 5'd0;
-            end else if (active_r) begin
-                if (bidx + 5'd1 >= nb) begin
-                    active_r <= 1'b0;
-                    bidx     <= 5'd0;
+                if (out_idx + {{ADDR_W{1'b0}}, 1'b1} >= nb) begin
+                    fetching <= 1'b0;
+                    out_idx  <= {(ADDR_W+1){1'b0}};
+                    shape_addr <= {ADDR_W{1'b0}};
                 end else begin
-                    bidx <= bidx + 5'd1;
+                    out_idx <= out_idx + {{ADDR_W{1'b0}}, 1'b1};
+                    shape_addr <= out_idx[ADDR_W-1:0] + {{(ADDR_W-1){1'b0}}, 1'b1};
                 end
+            end else begin
+                active_r <= 1'b0;
             end
         end
     end
 
     assign active   = active_r;
-    assign dac_word = active_r ? bw[bidx[3:0]] : 64'd0;
+    assign dac_word = active_r ? shape_data : 64'd0;
 
 endmodule

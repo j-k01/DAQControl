@@ -111,7 +111,28 @@ module dataplane_bram_ip (
     input  wire [3:0]   cur_wave_axi_we,
     input  wire         cur_wave_fabric_clk,
     input  wire [9:0]   cur_wave_fabric_addr,
-    output wire [31:0]  cur_wave_fabric_dout
+    output wire [31:0]  cur_wave_fabric_dout,
+
+    // Spike pulse shape: AXI writes a shared table of signed s16 DAC samples
+    // packed two per 32-bit word. Internally the table is replicated four
+    // times so the four neuron-triggered shapers can read independent 64-bit
+    // beat words ({s3,s2,s1,s0}) in the DAC/JESD clock domain.
+    input  wire [31:0]  spike_shape_axi_addr,
+    input  wire         spike_shape_axi_clk,
+    input  wire [31:0]  spike_shape_axi_din,
+    output wire [31:0]  spike_shape_axi_dout,
+    input  wire         spike_shape_axi_en,
+    input  wire         spike_shape_axi_rst,
+    input  wire [3:0]   spike_shape_axi_we,
+    input  wire         spike_shape_fabric_clk,
+    input  wire [9:0]   spike_shape_fabric_addr0,
+    output wire [63:0]  spike_shape_fabric_dout0,
+    input  wire [9:0]   spike_shape_fabric_addr1,
+    output wire [63:0]  spike_shape_fabric_dout1,
+    input  wire [9:0]   spike_shape_fabric_addr2,
+    output wire [63:0]  spike_shape_fabric_dout2,
+    input  wire [9:0]   spike_shape_fabric_addr3,
+    output wire [63:0]  spike_shape_fabric_dout3
 );
 
     dac0_program_bram u_dac0_program_bram (
@@ -291,10 +312,31 @@ module dataplane_bram_ip (
         .injectdbiterrb (1'b0)
     );
 
+    spike_shape_bram_bank #(
+        .ADDR_W (10)
+    ) u_spike_shape_bram_bank (
+        .axi_addr      (spike_shape_axi_addr),
+        .axi_clk       (spike_shape_axi_clk),
+        .axi_din       (spike_shape_axi_din),
+        .axi_dout      (spike_shape_axi_dout),
+        .axi_en        (spike_shape_axi_en),
+        .axi_we        (spike_shape_axi_we),
+        .fabric_clk    (spike_shape_fabric_clk),
+        .fabric_addr0  (spike_shape_fabric_addr0),
+        .fabric_dout0  (spike_shape_fabric_dout0),
+        .fabric_addr1  (spike_shape_fabric_addr1),
+        .fabric_dout1  (spike_shape_fabric_dout1),
+        .fabric_addr2  (spike_shape_fabric_addr2),
+        .fabric_dout2  (spike_shape_fabric_dout2),
+        .fabric_addr3  (spike_shape_fabric_addr3),
+        .fabric_dout3  (spike_shape_fabric_dout3)
+    );
+
     wire unused = dac0_axi_rst ^ dac0_fabric_rst ^
                   dac1_axi_rst ^ dac1_fabric_rst ^
                   dac2_axi_rst ^ dac2_fabric_rst ^
                   dac3_axi_rst ^ dac3_fabric_rst ^
                   adc0_axi_rst ^ adc1_axi_rst ^ adc_fabric_rst ^
-                  neuron_cfg_axi_rst ^ cur_wave_axi_rst;
+                  neuron_cfg_axi_rst ^ cur_wave_axi_rst ^
+                  spike_shape_axi_rst;
 endmodule

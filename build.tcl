@@ -88,6 +88,9 @@ proc validate_microblaze_bd_contract {} {
         dac3_program_bram_ctrl
         adc0_capture_bram_ctrl
         adc1_capture_bram_ctrl
+        neuron_cfg_bram_ctrl
+        cur_wave_bram_ctrl
+        spike_shape_bram_ctrl
     }
     foreach cell_name $bram_dataplane_cells {
         set count [llength [get_bd_cells -quiet $cell_name]]
@@ -106,6 +109,9 @@ proc validate_microblaze_bd_contract {} {
         DAC3_AXI_BRAM_PORTA
         ADC0_AXI_BRAM_PORTA
         ADC1_AXI_BRAM_PORTA
+        NEURON_CFG_AXI_BRAM_PORTA
+        CUR_WAVE_AXI_BRAM_PORTA
+        SPIKE_SHAPE_AXI_BRAM_PORTA
     }
     foreach port_name $bram_dataplane_ports {
         set count [llength [get_bd_intf_ports -quiet $port_name]]

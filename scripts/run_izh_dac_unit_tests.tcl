@@ -32,7 +32,7 @@ proc run_tb {snapshot sources} {
         lappend xvlog_cmd $source
     }
     exec {*}$xvlog_cmd
-    exec xelab.bat $snapshot -snapshot $snapshot
+    exec xelab.bat -L xpm $snapshot -snapshot $snapshot
     set out [exec xsim.bat $snapshot -runall]
     puts $out
     if {[string first "TB_RESULT: PASS" $out] < 0} {
@@ -43,6 +43,12 @@ proc run_tb {snapshot sources} {
 run_tb izh_spike_shaper_tb [list \
     ../../src/izh_spike_shaper.v \
     ../izh_spike_shaper_tb.sv \
+]
+
+run_tb spike_shape_bram_integration_tb [list \
+    ../../src/izh_spike_shaper.v \
+    ../../src/spike_shape_bram_bank.sv \
+    ../spike_shape_bram_integration_tb.sv \
 ]
 
 run_tb izh_dac_integration_tb [list \

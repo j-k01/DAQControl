@@ -35,7 +35,7 @@ on connect -- acquisition is opt-in:
         the amplitude is in mA and can NEVER go negative. "Program" loads it
         via CURW; route Current source on a DAC to mirror the injected current
         out.
-      * Pulse shape: shows the spike pulse (<=32 signed DAC samples) and lets you
+      * Pulse shape: shows the spike pulse (<=4096 signed DAC samples) and lets you
         drag individual points up/down; "Program pulse" sends it via PULS. The
         shaped pulse is one crossbar input -- route a Spike source to emit it.
   - CIC anti-alias (chip 1) toggle, autoscale, rising-edge trigger, Time/FFT.
@@ -159,7 +159,7 @@ CUR_SOURCE_PRESETS = ["Sine", "Constant current", "Step 0 -> constant"]
 CUR_LOOPBACK_AC_CORNER_HZ = 200e3
 
 # --- programmable spike pulse shape (izh_spike_shaper, firmware PULS) ----------
-PULSE_MAX_SAMPLES = 32         # firmware SPIKE_MAX_SAMPLES
+PULSE_MAX_SAMPLES = 4096       # firmware SPIKE_MAX_SAMPLES
 # original 7 ns trapezoid boot default (firmware spike_shape_init_default)
 PULSE_DEFAULT = [0x1800, 0x3000, 0x6000, 0x6000, 0x6000, 0x3000, 0x1800]
 
@@ -445,10 +445,19 @@ class DacControl:
         return self.cmd("CURP off", ok=("CURP", "ERR"))
 
     def program_pulse(self, counts):
-        """Set the spike-pulse shape to a list of signed DAC counts (<=32,
-        full s16) via PULS. Returns the board's reply ('PULS loaded ...')."""
-        toks = " ".join(str(int(round(v))) for v in counts)
-        return self.cmd(f"PULS {toks}", ok=("PULS", "ERR"))
+        """Set the spike-pulse shape to signed DAC counts via binary PULS."""
+        vals = [max(-32768, min(32767, int(round(v)))) for v in counts]
+        n = len(vals)
+        with self.lock:
+            self.s.reset_input_buffer()
+            self.s.write(f"PULS bin {n}\n".encode("ascii"))
+            self.s.flush()
+            ack = self._readuntil(("PBRD", "ERR"))
+            if not ack.startswith("PBRD"):
+                return ack or ""
+            self.s.write(struct.pack(f"<{n}h", *vals))
+            self.s.flush()
+            return self._readuntil(("PULS", "ERR"))
 
     def pulse_default(self):
         """Reload the boot-default spike shape (original 7 ns trapezoid)."""
@@ -671,7 +680,7 @@ class PulseEditor(pg.GraphItem):
 
 
 class PulseShapeWindow(QtWidgets.QWidget):
-    """Window showing the spike pulse shape (<=32 signed DAC samples), editable
+    """Window showing the spike pulse shape (<=4096 signed DAC samples), editable
     by dragging the points. Programs the shaper via PULS; the shaped pulse is one
     of the crossbar inputs (route a Spike source on a DAC to emit it)."""
     done = QtCore.pyqtSignal(bool, str)
@@ -1173,7 +1182,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         eg = QtWidgets.QVBoxLayout(ed)
         self.pulse_win_btn = QtWidgets.QPushButton("Pulse shape…")
         self.pulse_win_btn.setToolTip("Show/edit the spike pulse shape by "
-                                      "dragging points (<=32 signed samples)")
+                                      "dragging points (<=4096 signed samples)")
         self.pulse_win_btn.clicked.connect(self._open_pulse_window)
         eg.addWidget(self.pulse_win_btn)
         wave_lay.addWidget(ed)

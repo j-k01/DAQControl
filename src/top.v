@@ -96,7 +96,7 @@ module top #(
     // drive the fabric-sourced ("read-only") registers; regf_rdint pulses for
     // one cycle on a CPU read. Add new control/status regs by slicing regf_value
     // / driving regf_in[idx] -- all contiguous at byte offset idx*4.
-    localparam integer REGF_NUM = 48;   // 0-17 ctrl/status, 18 spike nbeats, 32-47 spike shape (8 beat-words)
+    localparam integer REGF_NUM = 48;   // 0-17 ctrl/status, 18 spike nbeats, 32-47 spare legacy pulse regs
     wire [REGF_NUM*32-1:0] regf_value;
     wire [REGF_NUM*32-1:0] regf_in;
     wire [REGF_NUM-1:0]    regf_we;
@@ -187,6 +187,16 @@ module top #(
     wire [9:0]  cur_wave_fabric_addr;
     wire [31:0] cur_wave_fabric_dout;
 
+    // Spike pulse shape BRAM (port A AXI clk_200; replicated port B readers in
+    // the DAC/JESD clock domain, one read address per neuron shaper).
+    wire [31:0] spike_shape_axi_bram_addr;
+    wire        spike_shape_axi_bram_clk;
+    wire [31:0] spike_shape_axi_bram_din;
+    wire [31:0] spike_shape_axi_bram_dout;
+    wire        spike_shape_axi_bram_en;
+    wire        spike_shape_axi_bram_rst;
+    wire [3:0]  spike_shape_axi_bram_we;
+
     wire [31:0] dac0_bram_addr;
     wire        dac0_bram_clk;
     wire [63:0] dac0_bram_din;
@@ -248,6 +258,11 @@ module top #(
     wire [31:0] status_reg;
     wire [31:0] clk_fmc_count;
     wire [31:0] sysref_count;
+    wire [10:0] spike_nbeats_tx;    // spike pulse length in beats (reg18[10:0], 1..1024) in GT domain
+    wire [9:0]  spike_shape_addr_tx0, spike_shape_addr_tx1;
+    wire [9:0]  spike_shape_addr_tx2, spike_shape_addr_tx3;
+    wire [63:0] spike_shape_word_tx0, spike_shape_word_tx1;
+    wire [63:0] spike_shape_word_tx2, spike_shape_word_tx3;
     reg  [31:0] selected_count;
     wire [31:0] adc_frontend_status_reg;
     reg  [31:0] adc0_selected_debug_reg;
@@ -343,7 +358,14 @@ module top #(
         .CUR_WAVE_AXI_BRAM_PORTA_dout (cur_wave_axi_bram_dout),
         .CUR_WAVE_AXI_BRAM_PORTA_en   (cur_wave_axi_bram_en),
         .CUR_WAVE_AXI_BRAM_PORTA_rst  (cur_wave_axi_bram_rst),
-        .CUR_WAVE_AXI_BRAM_PORTA_we   (cur_wave_axi_bram_we)
+        .CUR_WAVE_AXI_BRAM_PORTA_we   (cur_wave_axi_bram_we),
+        .SPIKE_SHAPE_AXI_BRAM_PORTA_addr (spike_shape_axi_bram_addr),
+        .SPIKE_SHAPE_AXI_BRAM_PORTA_clk  (spike_shape_axi_bram_clk),
+        .SPIKE_SHAPE_AXI_BRAM_PORTA_din  (spike_shape_axi_bram_din),
+        .SPIKE_SHAPE_AXI_BRAM_PORTA_dout (spike_shape_axi_bram_dout),
+        .SPIKE_SHAPE_AXI_BRAM_PORTA_en   (spike_shape_axi_bram_en),
+        .SPIKE_SHAPE_AXI_BRAM_PORTA_rst  (spike_shape_axi_bram_rst),
+        .SPIKE_SHAPE_AXI_BRAM_PORTA_we   (spike_shape_axi_bram_we)
 `endif
     );
 
@@ -487,8 +509,29 @@ module top #(
         .cur_wave_axi_we        (cur_wave_axi_bram_we),
         .cur_wave_fabric_clk    (clk_50),
         .cur_wave_fabric_addr   (cur_wave_fabric_addr),
-        .cur_wave_fabric_dout   (cur_wave_fabric_dout)
+        .cur_wave_fabric_dout   (cur_wave_fabric_dout),
+        .spike_shape_axi_addr   (spike_shape_axi_bram_addr),
+        .spike_shape_axi_clk    (spike_shape_axi_bram_clk),
+        .spike_shape_axi_din    (spike_shape_axi_bram_din),
+        .spike_shape_axi_dout   (spike_shape_axi_bram_dout),
+        .spike_shape_axi_en     (spike_shape_axi_bram_en),
+        .spike_shape_axi_rst    (spike_shape_axi_bram_rst),
+        .spike_shape_axi_we     (spike_shape_axi_bram_we),
+        .spike_shape_fabric_clk (gth_tx_usrclk2),
+        .spike_shape_fabric_addr0 (spike_shape_addr_tx0),
+        .spike_shape_fabric_dout0 (spike_shape_word_tx0),
+        .spike_shape_fabric_addr1 (spike_shape_addr_tx1),
+        .spike_shape_fabric_dout1 (spike_shape_word_tx1),
+        .spike_shape_fabric_addr2 (spike_shape_addr_tx2),
+        .spike_shape_fabric_dout2 (spike_shape_word_tx2),
+        .spike_shape_fabric_addr3 (spike_shape_addr_tx3),
+        .spike_shape_fabric_dout3 (spike_shape_word_tx3)
     );
+`else
+    assign spike_shape_word_tx0 = 64'd0;
+    assign spike_shape_word_tx1 = 64'd0;
+    assign spike_shape_word_tx2 = 64'd0;
+    assign spike_shape_word_tx3 = 64'd0;
 `endif
 
     (* ASYNC_REG = "TRUE" *) reg [2:0] uart_rxd_sync = 3'b111;
@@ -583,8 +626,6 @@ module top #(
     wire [15:0]  dac_src_sel_tx;     // 4 bits/DAC crossbar select (reg17[15:0]) in GT domain
     wire [255:0] mon_words_tx;       // 4 x 64-bit current-monitor DAC words in GT domain
     wire [63:0]  cur_source_word_tx; // pure injected-current DAC word in GT domain
-    wire [511:0] spike_shape_tx;     // programmable spike pulse: 8 beat-words (regs 32-47) in GT domain
-    wire [4:0]   spike_nbeats_tx;    // spike pulse length in beats (reg18[4:0], 1..8) in GT domain
     wire [31:0] dac_neuron_debug_async;
     wire [31:0] dac_neuron_debug_reg;
     wire [31:0] dac_program_status_async;
@@ -1165,23 +1206,15 @@ module top #(
         .dest     (dac_src_sel_tx)
     );
 
-    // Programmable spike-pulse shape + length into the DAC domain.  Regs 32-47 =
-    // 8 beat-words (512b = 32 samples), reg18[4:0] = beat count (1..8).  Quasi-
-    // static (firmware loads it before spiking), synced like the other controls.
+    // Programmable spike-pulse length into the DAC domain.  The shape samples
+    // themselves live in the pulse-shape BRAM; reg18[10:0] is the beat count
+    // (1..1024), one beat = four 16-bit DAC samples.
     cdc_vector_sync #(
-        .WIDTH (512)
-    ) u_spike_shape_sync (
-        .dest_clk (gth_tx_usrclk2),
-        .dest_rst (litejesd_reset),
-        .src      (regf_value[32*32 +: 512]),
-        .dest     (spike_shape_tx)
-    );
-    cdc_vector_sync #(
-        .WIDTH (5)
+        .WIDTH (11)
     ) u_spike_nbeats_sync (
         .dest_clk (gth_tx_usrclk2),
         .dest_rst (litejesd_reset),
-        .src      (regf_value[18*32 +: 5]),
+        .src      (regf_value[18*32 +: 11]),
         .dest     (spike_nbeats_tx)
     );
 
@@ -1238,22 +1271,27 @@ module top #(
 
     // Programmable spike-pulse shapers (one per neuron).  These live here -- NOT
     // in the JESD wrapper -- and their outputs are just four of the crossbar's
-    // inputs.  Each turns a neuron spike into the programmable pulse (shared
-    // shape bus + beat count, both already synced into this GT/DAC domain).
+    // inputs.  Each turns a neuron spike into the programmable pulse.  The shape
+    // RAM is replicated behind one AXI write port so these four shapers can read
+    // independent addresses when neurons spike at different times.
     wire [63:0] neuron_word_tx0, neuron_word_tx1, neuron_word_tx2, neuron_word_tx3;
     wire        spike_shaper_rst = litejesd_reset | ~litejesd_active_async;
-    izh_spike_shaper #(.NBEATS_MAX(8)) u_spike_shaper0 (
+    izh_spike_shaper #(.ADDR_W(10)) u_spike_shaper0 (
         .clk(gth_tx_usrclk2), .reset(spike_shaper_rst), .spike(izh_spike_flags_tx[0]),
-        .shape(spike_shape_tx), .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx0));
-    izh_spike_shaper #(.NBEATS_MAX(8)) u_spike_shaper1 (
+        .shape_addr(spike_shape_addr_tx0), .shape_data(spike_shape_word_tx0),
+        .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx0));
+    izh_spike_shaper #(.ADDR_W(10)) u_spike_shaper1 (
         .clk(gth_tx_usrclk2), .reset(spike_shaper_rst), .spike(izh_spike_flags_tx[1]),
-        .shape(spike_shape_tx), .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx1));
-    izh_spike_shaper #(.NBEATS_MAX(8)) u_spike_shaper2 (
+        .shape_addr(spike_shape_addr_tx1), .shape_data(spike_shape_word_tx1),
+        .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx1));
+    izh_spike_shaper #(.ADDR_W(10)) u_spike_shaper2 (
         .clk(gth_tx_usrclk2), .reset(spike_shaper_rst), .spike(izh_spike_flags_tx[2]),
-        .shape(spike_shape_tx), .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx2));
-    izh_spike_shaper #(.NBEATS_MAX(8)) u_spike_shaper3 (
+        .shape_addr(spike_shape_addr_tx2), .shape_data(spike_shape_word_tx2),
+        .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx2));
+    izh_spike_shaper #(.ADDR_W(10)) u_spike_shaper3 (
         .clk(gth_tx_usrclk2), .reset(spike_shaper_rst), .spike(izh_spike_flags_tx[3]),
-        .shape(spike_shape_tx), .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx3));
+        .shape_addr(spike_shape_addr_tx3), .shape_data(spike_shape_word_tx3),
+        .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx3));
 
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_program_req_sync = 3'b000;
@@ -1562,8 +1600,7 @@ module top #(
     assign dac_src_sel_tx = 16'd0;
     assign mon_words_tx = 256'd0;
     assign cur_source_word_tx = 64'd0;
-    assign spike_shape_tx = 512'd0;
-    assign spike_nbeats_tx = 5'd0;
+    assign spike_nbeats_tx = 11'd0;
     assign dac_program_status_async = 32'd0;
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     assign dac0_bram_addr = 32'd0;

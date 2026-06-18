@@ -377,8 +377,9 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
     # Unified register bank: flattened buses (NUM_REG = 48 registers x 32 bits).
     # REG = each register's value (out); REG_IN/REG_WE = per-register fabric write
     # port (in); REG_RDINT = per-register CPU-read strobe (out).
-    # Regs 0-17 control/status, 18 = spike-pulse nbeats, 32-47 = spike-pulse shape
-    # (8 beat-words = 32 samples).  IP defaults (NUM_REG=48, addr width 8) match.
+    # Regs 0-17 control/status, 18 = spike-pulse nbeats.  The pulse shape itself
+    # lives in SPIKE_SHAPE_AXI_BRAM_PORTA; regs 32-47 are spare legacy pulse regs.
+    # IP defaults (NUM_REG=48, addr width 8) match.
     set reg_file_num_reg 48
     create_bd_port -dir O -from [expr {$reg_file_num_reg*32 - 1}] -to 0 REG_0
     create_bd_port -dir I -from [expr {$reg_file_num_reg*32 - 1}] -to 0 REG_IN_0
@@ -434,6 +435,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
         create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* adc1_capture_bram_ctrl
         create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* neuron_cfg_bram_ctrl
         create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* cur_wave_bram_ctrl
+        create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:* spike_shape_bram_ctrl
         foreach bram_ctrl {dac0_program_bram_ctrl dac1_program_bram_ctrl dac2_program_bram_ctrl dac3_program_bram_ctrl} {
             set_property -dict [list \
                 CONFIG.SINGLE_PORT_BRAM {1} \
@@ -442,7 +444,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
                 CONFIG.SUPPORTS_NARROW_BURST {1} \
             ] [get_bd_cells $bram_ctrl]
         }
-        foreach bram_ctrl {adc0_capture_bram_ctrl adc1_capture_bram_ctrl neuron_cfg_bram_ctrl cur_wave_bram_ctrl} {
+        foreach bram_ctrl {adc0_capture_bram_ctrl adc1_capture_bram_ctrl neuron_cfg_bram_ctrl cur_wave_bram_ctrl spike_shape_bram_ctrl} {
             set_property -dict [list \
                 CONFIG.SINGLE_PORT_BRAM {1} \
                 CONFIG.PROTOCOL {AXI4} \
@@ -457,6 +459,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
         export_bram_ctrl_port adc1_capture_bram_ctrl/BRAM_PORTA ADC1_AXI_BRAM_PORTA
         export_bram_ctrl_port neuron_cfg_bram_ctrl/BRAM_PORTA NEURON_CFG_AXI_BRAM_PORTA
         export_bram_ctrl_port cur_wave_bram_ctrl/BRAM_PORTA CUR_WAVE_AXI_BRAM_PORTA
+        export_bram_ctrl_port spike_shape_bram_ctrl/BRAM_PORTA SPIKE_SHAPE_AXI_BRAM_PORTA
     }
     if {$include_ps_ddr_dma} {
         create_bd_cell -type ip -vlnv xilinx.com:ip:zynq_ultra_ps_e:* zynq_ultra_ps_e_0
@@ -533,10 +536,13 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
     # so its index stays stable whether or not DDR-DMA is built.
     set neuron_cfg_mi -1
     set cur_wave_mi -1
+    set spike_shape_mi -1
     if {$include_bram_dataplane} {
         set neuron_cfg_mi $axi_masters
         incr axi_masters
         set cur_wave_mi $axi_masters
+        incr axi_masters
+        set spike_shape_mi $axi_masters
         incr axi_masters
     }
     set_property CONFIG.NUM_MI $axi_masters [get_bd_cells microblaze_0_axi_periph]
@@ -554,6 +560,8 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
         safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/$neuron_cfg_mi_name] [get_bd_intf_pins neuron_cfg_bram_ctrl/S_AXI]
         set cur_wave_mi_name [format "M%02d_AXI" $cur_wave_mi]
         safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/$cur_wave_mi_name] [get_bd_intf_pins cur_wave_bram_ctrl/S_AXI]
+        set spike_shape_mi_name [format "M%02d_AXI" $spike_shape_mi]
+        safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/$spike_shape_mi_name] [get_bd_intf_pins spike_shape_bram_ctrl/S_AXI]
     }
     if {$include_ps_ddr_dma} {
         safe_connect_bd_intf_net [get_bd_intf_pins microblaze_0_axi_periph/M08_AXI] [get_bd_intf_pins axi_clock_converter_0/S_AXI]
@@ -585,6 +593,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
     if {$include_bram_dataplane} {
         lappend axi_clk_pins [format "M%02d_ACLK" $neuron_cfg_mi]
         lappend axi_clk_pins [format "M%02d_ACLK" $cur_wave_mi]
+        lappend axi_clk_pins [format "M%02d_ACLK" $spike_shape_mi]
     }
     foreach pin_name $axi_clk_pins {
         safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins microblaze_0_axi_periph/$pin_name]
@@ -601,6 +610,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
         safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins adc1_capture_bram_ctrl/s_axi_aclk]
         safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins neuron_cfg_bram_ctrl/s_axi_aclk]
         safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins cur_wave_bram_ctrl/s_axi_aclk]
+        safe_connect_bd_net [get_bd_ports Clk] [get_bd_pins spike_shape_bram_ctrl/s_axi_aclk]
     }
     if {$include_ps_ddr_dma} {
         foreach dma {0 1} {
@@ -635,6 +645,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
     if {$include_bram_dataplane} {
         lappend axi_rst_pins [format "M%02d_ARESETN" $neuron_cfg_mi]
         lappend axi_rst_pins [format "M%02d_ARESETN" $cur_wave_mi]
+        lappend axi_rst_pins [format "M%02d_ARESETN" $spike_shape_mi]
     }
     foreach pin_name $axi_rst_pins {
         safe_connect_bd_net $resetn_pin [get_bd_pins microblaze_0_axi_periph/$pin_name]
@@ -649,6 +660,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
         safe_connect_bd_net $resetn_pin [get_bd_pins adc1_capture_bram_ctrl/s_axi_aresetn]
         safe_connect_bd_net $resetn_pin [get_bd_pins neuron_cfg_bram_ctrl/s_axi_aresetn]
         safe_connect_bd_net $resetn_pin [get_bd_pins cur_wave_bram_ctrl/s_axi_aresetn]
+        safe_connect_bd_net $resetn_pin [get_bd_pins spike_shape_bram_ctrl/s_axi_aresetn]
     }
     if {$include_ps_ddr_dma} {
         safe_connect_bd_net [get_bd_ports reset_rtl] [get_bd_pins rst_gt_rx_usrclk2/ext_reset_in]
@@ -680,6 +692,7 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
         assign_mb_addr_exact microblaze_0/Data adc1_capture_bram_ctrl/S_AXI/Mem0 0xC0110000 0x00010000
         assign_mb_addr_exact microblaze_0/Data neuron_cfg_bram_ctrl/S_AXI/Mem0 0xC0040000 0x00008000
         assign_mb_addr_exact microblaze_0/Data cur_wave_bram_ctrl/S_AXI/Mem0 0xC0050000 0x00008000
+        assign_mb_addr_exact microblaze_0/Data spike_shape_bram_ctrl/S_AXI/Mem0 0xC0060000 0x00008000
     }
     if {$include_ps_ddr_dma} {
         assign_mb_addr_exact microblaze_0/Data axi_dma_0/S_AXI_LITE/Reg 0x41E00000 0x00010000
@@ -727,7 +740,12 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
     }
 
     if {$include_bram_dataplane} {
-        foreach bram_ctrl {dac0_program_bram_ctrl dac1_program_bram_ctrl dac2_program_bram_ctrl dac3_program_bram_ctrl adc0_capture_bram_ctrl adc1_capture_bram_ctrl} {
+        foreach bram_ctrl {
+            dac0_program_bram_ctrl dac1_program_bram_ctrl
+            dac2_program_bram_ctrl dac3_program_bram_ctrl
+            adc0_capture_bram_ctrl adc1_capture_bram_ctrl
+            neuron_cfg_bram_ctrl cur_wave_bram_ctrl spike_shape_bram_ctrl
+        } {
             require_cell_property $bram_ctrl CONFIG.DATA_WIDTH 32
             require_cell_property $bram_ctrl CONFIG.SINGLE_PORT_BRAM 1
         }

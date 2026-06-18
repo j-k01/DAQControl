@@ -18,7 +18,10 @@
     defined(XPAR_DAC2_PROGRAM_BRAM_CTRL_S_AXI_BASEADDR) && \
     defined(XPAR_DAC3_PROGRAM_BRAM_CTRL_S_AXI_BASEADDR) && \
     defined(XPAR_ADC0_CAPTURE_BRAM_CTRL_S_AXI_BASEADDR) && \
-    defined(XPAR_ADC1_CAPTURE_BRAM_CTRL_S_AXI_BASEADDR)
+    defined(XPAR_ADC1_CAPTURE_BRAM_CTRL_S_AXI_BASEADDR) && \
+    defined(XPAR_NEURON_CFG_BRAM_CTRL_S_AXI_BASEADDR) && \
+    defined(XPAR_CUR_WAVE_BRAM_CTRL_S_AXI_BASEADDR) && \
+    defined(XPAR_SPIKE_SHAPE_BRAM_CTRL_S_AXI_BASEADDR)
 #define HAS_BRAM_DATAPLANE 1
 #define DAC_PROGRAM_CHANNELS 4u
 #define DAC_PROGRAM_FRAMES 4096u
@@ -172,18 +175,25 @@
 #define CUR_PLAYER_HOLD_LAST   (1u << 26)        /* one-shot: hold last_index */
 #define CUR_PLAYER_RUN         (1u << 30)
 #define CUR_PLAYER_RESTART     (1u << 31)        /* toggle to reset to sample 0 */
-#define CUR_WAVE_BRAM_BASE     0xC0050000u       /* 1024 x Q16.16, AXI port A */
+#define CUR_WAVE_BRAM_BASE     XPAR_CUR_WAVE_BRAM_CTRL_S_AXI_BASEADDR /* 1024 x Q16.16 */
 #define CUR_WAVE_DEPTH         1024u
 
-/* Programmable spike-pulse shape: register-file regs 32-47 hold 8 beat-words
- * (= 32 signed s16 DAC samples, 2/reg), reg 18 holds the pulse length in beats
- * (1..8).  Each neuron's spike shaper plays shape[0..nbeats*4-1] at the DAC rate.
- * Loaded by PULS; boot-initialized to a negative trapezoid. */
-#define SPIKE_NBEATS_REG       (REG_BASE + 18u*4u)   /* reg 18: pulse length in beats */
-#define SPIKE_SHAPE_BASE       (REG_BASE + 32u*4u)   /* regs 32-47: 8 beat-words */
-#define SPIKE_SHAPE_REGS       16u                   /* 16 regs = 8 beat-words */
-#define SPIKE_MAX_SAMPLES      32u
-#define SPIKE_MAX_BEATS        8u
+/* Programmable spike-pulse shape: samples live in a BRAM loaded by PULS.  The
+ * BRAM stores signed s16 DAC samples packed two per u32.  Reg 18 holds the
+ * pulse length in 64-bit DAC beat-words (1 beat = 4 samples).  The HDL
+ * replicates the RAM four times behind one AXI write port so each neuron pulse
+ * source can read an independent address while sharing the same programmed
+ * shape. */
+#define SPIKE_NBEATS_REG       (REG_BASE + 18u*4u)   /* reg 18[10:0]: pulse beat count */
+#if HAS_BRAM_DATAPLANE
+#define SPIKE_SHAPE_BRAM_BASE  XPAR_SPIKE_SHAPE_BRAM_CTRL_S_AXI_BASEADDR
+#define SPIKE_MAX_SAMPLES      4096u
+#define SPIKE_MAX_BEATS        (SPIKE_MAX_SAMPLES / 4u)
+#define SPIKE_SHAPE_WORDS      (SPIKE_MAX_SAMPLES / 2u)
+#else
+#define SPIKE_MAX_SAMPLES      0u
+#define SPIKE_MAX_BEATS        0u
+#endif
 
 #if HAS_BRAM_DATAPLANE
 #define NEURON_CFG_BRAM_BASE   XPAR_NEURON_CFG_BRAM_CTRL_S_AXI_BASEADDR
@@ -401,6 +411,15 @@ static u32 recv_le32_blocking(void)
     value |= (u32)recv_byte_blocking() << 8;
     value |= (u32)recv_byte_blocking() << 16;
     value |= (u32)recv_byte_blocking() << 24;
+    return value;
+}
+
+static u16 recv_le16_blocking(void)
+{
+    u16 value = 0;
+
+    value |= (u16)recv_byte_blocking();
+    value |= (u16)recv_byte_blocking() << 8;
     return value;
 }
 
@@ -1228,29 +1247,79 @@ static int parse_s32_arg(char **cursor, s32 *value)
     return 1;
 }
 
-/* Write `count` (<=32) signed s16 samples as the spike-pulse shape: 2 samples
- * per register (regs 32-47), zero-padded, and set nbeats = ceil(count/4). */
+#define SPIKE_TEXT_MAX_SAMPLES 32u
+
+/* Write signed s16 samples as the spike-pulse shape: two samples per AXI word,
+ * zero-pad the final 64-bit DAC beat, and set nbeats = ceil(count/4). */
 static void spike_shape_write(const s16 *samples, u32 count)
 {
-    u32 buf[SPIKE_SHAPE_REGS];
-    u32 i, nb;
+#if HAS_BRAM_DATAPLANE
+    u32 i, nb, total_words, word;
 
     if (count > SPIKE_MAX_SAMPLES)
         count = SPIKE_MAX_SAMPLES;
-    for (i = 0; i < SPIKE_SHAPE_REGS; i++)
-        buf[i] = 0u;
-    for (i = 0; i < count; i++) {
-        u32 v = (u32)(u16)samples[i];
-        if (i & 1u) buf[i >> 1] |= (v << 16);
-        else        buf[i >> 1] |= v;
-    }
-    for (i = 0; i < SPIKE_SHAPE_REGS; i++)
-        Xil_Out32(SPIKE_SHAPE_BASE + i * 4u, buf[i]);
-
     nb = (count + 3u) >> 2;                 /* ceil(count/4) beats */
     if (nb == 0u) nb = 1u;
     if (nb > SPIKE_MAX_BEATS) nb = SPIKE_MAX_BEATS;
+    total_words = nb * 2u;                  /* 2 AXI u32 words per 64-bit beat */
+
+    for (i = 0; i < total_words; i++) {
+        u32 sidx = i * 2u;
+        word = 0u;
+        if (sidx < count)
+            word |= (u32)(u16)samples[sidx];
+        if ((sidx + 1u) < count)
+            word |= (u32)(u16)samples[sidx + 1u] << 16;
+        Xil_Out32(SPIKE_SHAPE_BRAM_BASE + i * 4u, word);
+    }
+
     Xil_Out32(SPIKE_NBEATS_REG, nb);
+#else
+    (void)samples;
+    (void)count;
+#endif
+}
+
+static u32 spike_shape_recv_binary(u32 rx_count)
+{
+#if HAS_BRAM_DATAPLANE
+    u32 store_count = rx_count;
+    u32 nb, total_words, i, word_index, word = 0u;
+
+    if (store_count > SPIKE_MAX_SAMPLES)
+        store_count = SPIKE_MAX_SAMPLES;
+
+    nb = (store_count + 3u) >> 2;
+    if (nb == 0u) nb = 1u;
+    if (nb > SPIKE_MAX_BEATS) nb = SPIKE_MAX_BEATS;
+    total_words = nb * 2u;
+
+    for (i = 0; i < rx_count; i++) {
+        u16 sample = recv_le16_blocking();
+        if (i < store_count) {
+            if (i & 1u) {
+                word |= (u32)sample << 16;
+                Xil_Out32(SPIKE_SHAPE_BRAM_BASE + (i >> 1) * 4u, word);
+                word = 0u;
+            } else {
+                word = (u32)sample;
+            }
+        }
+    }
+    if (store_count & 1u)
+        Xil_Out32(SPIKE_SHAPE_BRAM_BASE + (store_count >> 1) * 4u, word);
+
+    for (word_index = (store_count + 1u) >> 1; word_index < total_words; word_index++)
+        Xil_Out32(SPIKE_SHAPE_BRAM_BASE + word_index * 4u, 0u);
+
+    Xil_Out32(SPIKE_NBEATS_REG, nb);
+    return store_count;
+#else
+    u32 i;
+    for (i = 0; i < rx_count; i++)
+        (void)recv_le16_blocking();
+    return 0u;
+#endif
 }
 
 /* Power-on default: the original 7 ns trapezoid (1/4,1/2,1,1,1,1/2,1/4 of
@@ -1296,13 +1365,14 @@ static void dac_bram_init_default(void)
 }
 #endif
 
-/* PULS default              -> reload the negative-trapezoid default shape
- * PULS <s0> <s1> ... <sN>    -> set the spike pulse to N (<=32) signed samples
- *   (decimal counts or 0x hex), full-range s16; nbeats auto = ceil(N/4). */
+/* PULS default                  -> reload the original 7 ns trapezoid
+ * PULS <s0> <s1> ... <sN>        -> set a short pulse from text (<=32 samples)
+ * PULS bin <count> + LE s16 data -> set a long pulse (<=4096 samples)
+ *   Samples are full-range signed s16; nbeats auto = ceil(N/4). */
 static void cmd_puls(void)
 {
     char *p = &cmd[4];
-    s16 samples[SPIKE_MAX_SAMPLES];
+    s16 samples[SPIKE_TEXT_MAX_SAMPLES];
     u32 count = 0u;
     s32 v;
 
@@ -1313,10 +1383,30 @@ static void cmd_puls(void)
         send_str("PULS default (original 7 ns trapezoid, 7 samples)\r\n");
         return;
     }
-    while (count < SPIKE_MAX_SAMPLES && parse_s32_arg(&p, &v))
+    if (token_eq_ci(p, "bin") || token_eq_ci(p, "binary")) {
+        u32 rx_count, stored;
+        advance_token(&p);
+        if (!parse_u32_arg(&p, &rx_count) || rx_count == 0u) {
+            send_str("ERR PULS bin <count>, then <count> little-endian s16 samples\r\n");
+            return;
+        }
+        send_str("PBRD count=");
+        send_uint(rx_count);
+        send_str("\r\n");
+        stored = spike_shape_recv_binary(rx_count);
+        send_str("PULS loaded ");
+        send_uint(stored);
+        send_str(" samples, nbeats=");
+        send_uint((stored + 3u) >> 2);
+        if (stored < rx_count)
+            send_str(" (truncated)");
+        send_str("\r\n");
+        return;
+    }
+    while (count < SPIKE_TEXT_MAX_SAMPLES && parse_s32_arg(&p, &v))
         samples[count++] = (s16)v;
     if (count == 0u) {
-        send_str("ERR PULS [default | s0 s1 ... up to 32 signed samples]\r\n");
+        send_str("ERR PULS [default | bin <count> | s0 s1 ... up to 32 signed samples]\r\n");
         return;
     }
     spike_shape_write(samples, count);
@@ -2513,7 +2603,7 @@ static void cmd_help(void)
 #if HAS_BRAM_DATAPLANE
     send_str("  CURP off | <cps> <last> <amp_q16>  current player: triangle into i_external; f=50MHz/(cps*(last+1))\r\n");
     send_str("  CURW <cps> <count> [hold]  current player: load host LE Q16.16 samples; optional hold plays once then holds last\r\n");
-    send_str("  PULS default | <s0..sN>  spike pulse shape: up to 32 signed samples (full s16); default=7ns trapezoid\r\n");
+    send_str("  PULS default | bin <count> | <s0..sN>  spike pulse: binary up to 4096 signed s16 samples; text up to 32\r\n");
 #endif
     send_str("  NEUR ch param value  set IZH Q16.16 param on ch=0..3 or all (writes config-bank BRAM)\r\n");
     send_str("                 params: a,b,c,d,i/current,iconst/bias (per-neuron); dt,period (global); reset,default\r\n");
