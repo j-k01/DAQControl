@@ -11,7 +11,7 @@ Flow (all MB-controlled, capture and readout decoupled):
 
 Each chip region is 2 channels x int16; frame = 8 int16 (4 even-ch + 4 odd-ch),
 so the decode matches the streaming path. The Ethernet drain is the slow part
-(~1.1 s for 128 MB over 1 GbE); the capture itself is the fast part.
+(~0.55 s for 64 MB over 1 GbE); the capture itself is the fast part.
 
   python scripts/burst_capture.py --mb 64
   python scripts/burst_capture.py --mb 64 --plot
@@ -31,7 +31,7 @@ import serial
 HDR = struct.Struct("<IHHIIIIII")   # magic ver hdr seq chip off bytes drops decim
 MAGIC = 0x53514144
 VOLTS_PER_COUNT = 1.9 / 65536.0
-MAX_MB_PER_CHIP = 128
+MAX_MB_PER_CHIP = 64
 
 
 class Reassembler:
@@ -195,7 +195,7 @@ def main():
     args = ap.parse_args()
     if args.mb < 1 or args.mb > MAX_MB_PER_CHIP:
         raise SystemExit(f"--mb must be 1..{MAX_MB_PER_CHIP}; "
-                         "the current firmware maps burst buffers below 1 GB DDR")
+                         "the current firmware maps burst buffers below the DDR_LOW limit")
 
     bytes_per_chip = args.mb * (1 << 20)
     s = serial.Serial(args.port, args.baud, timeout=5, write_timeout=5)
