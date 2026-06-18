@@ -102,7 +102,7 @@ def main() -> None:
     parser.add_argument(
         "--expect-build-id",
         type=combo.parse_int,
-        help="Fail unless selector 3 reports this build ID (current gateware: 0xDA01003C).",
+        help="Fail unless selector 3 reports this build ID (current gateware: 0xDA01003D).",
     )
     parser.add_argument("--verify-upload-words", type=int, default=4)
     parser.add_argument("--outdir", default="captures")

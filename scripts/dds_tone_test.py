@@ -29,23 +29,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from burst_capture import Reassembler, uart_cmd, decode_chip  # noqa: E402
 
 FS = 1.0e9                      # ADC sample rate (capture domain)
-DDS_ACC_BITS = 24               # phase accumulator width feeding rw_reg3[31:8]
+DDS_ACC_BITS = 24               # phase accumulator width feeding reg19[23:0]
 
 
 def set_dds_freq(s, freq_hz):
-    """rw_reg3[31:8] = phase increment (DDS step) with program-enable cleared.
-    Preserve the low byte the source-select left in place."""
+    """reg19[23:0] = phase increment (DDS step); 0 selects HDL default."""
     inc = int(round(freq_hz / FS * (1 << DDS_ACC_BITS))) & 0xFFFFFF
-    rw3 = uart_cmd(s, "RDRW 3", ("RW3", "0x"), timeout=2)
-    low = 0
-    # RDRW prints e.g. "RW3 = 0x........"; fall back to 0 low byte if unparsed.
-    try:
-        cur = int(rw3.split("0x")[1][:8], 16)
-        low = cur & 0xFF
-    except Exception:
-        low = 0x10                       # [5:4]=01 dds as a safe default
-    val = (inc << 8) | low
-    uart_cmd(s, f"WRTE 3 0x{val:08X}", ("OK", "RW3"), timeout=2)
+    uart_cmd(s, f"DDSI 0x{inc:06X}", ("DDS inc", "ERR"), timeout=2)
     return inc
 
 

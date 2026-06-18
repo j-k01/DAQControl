@@ -76,7 +76,7 @@ Knobs:
 | `--coupling ac\|dc` | `ac` | ADC IN1 input coupling (DC only with known-safe amplitude) |
 | `--frames` | 4096 | capture length, 4 IN1 samples per frame |
 | `--reinit-adc` | off | pulse ADS54J60 auto-init restart first |
-| `--expect-build-id 0xDA01003C` | off | fail fast on gateware mismatch |
+| `--expect-build-id 0xDA01003D` | off | fail fast on gateware mismatch |
 
 Pure sine + capture: `python scripts/sine_dac0_adc_in1_uart.py --port COMx --frequency-mhz 10`
 (frequency quantized to a seamless BRAM loop; programmed value is printed).

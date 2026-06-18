@@ -6,12 +6,16 @@ module clk_wiz_0 (
     output reg  clk_out1,
     output reg  clk_out2,
     output reg  clk_out3,
+    output reg  clk_out4,
+    output reg  clk_out5,
     output reg  locked
 );
     initial begin
         clk_out1 = 1'b0;
         clk_out2 = 1'b0;
         clk_out3 = 1'b0;
+        clk_out4 = 1'b0;
+        clk_out5 = 1'b0;
         locked = 1'b0;
         #100 locked = 1'b1;
     end
@@ -19,6 +23,8 @@ module clk_wiz_0 (
     always #2.5 clk_out1 = ~clk_out1;
     always #5.0 clk_out2 = ~clk_out2;
     always #4.0 clk_out3 = ~clk_out3;
+    always #10.0 clk_out4 = ~clk_out4;
+    always #1.667 clk_out5 = ~clk_out5;
 
     wire unused = clk_in1_p ^ clk_in1_n;
 endmodule
@@ -28,6 +34,10 @@ module microblaze_bd_wrapper (
     input  wire        reset,
     output wire        rs232_uart_txd,
     input  wire        rs232_uart_rxd,
+    output reg  [1535:0] REG_0,
+    input  wire [1535:0] REG_IN_0,
+    input  wire [47:0] REG_WE_0,
+    output wire [47:0] REG_RDINT_0,
     output reg  [31:0] RW_REG0_0,
     output reg  [31:0] RW_REG1_0,
     output reg  [31:0] RW_REG2_0,
@@ -101,9 +111,35 @@ module microblaze_bd_wrapper (
     input  wire [31:0] ADC1_AXI_BRAM_PORTA_dout,
     output wire        ADC1_AXI_BRAM_PORTA_en,
     output wire        ADC1_AXI_BRAM_PORTA_rst,
-    output wire [3:0]  ADC1_AXI_BRAM_PORTA_we
+    output wire [3:0]  ADC1_AXI_BRAM_PORTA_we,
+    output wire [31:0] NEURON_CFG_AXI_BRAM_PORTA_addr,
+    output wire        NEURON_CFG_AXI_BRAM_PORTA_clk,
+    output wire [31:0] NEURON_CFG_AXI_BRAM_PORTA_din,
+    input  wire [31:0] NEURON_CFG_AXI_BRAM_PORTA_dout,
+    output wire        NEURON_CFG_AXI_BRAM_PORTA_en,
+    output wire        NEURON_CFG_AXI_BRAM_PORTA_rst,
+    output wire [3:0]  NEURON_CFG_AXI_BRAM_PORTA_we,
+    output wire [31:0] CUR_WAVE_AXI_BRAM_PORTA_addr,
+    output wire        CUR_WAVE_AXI_BRAM_PORTA_clk,
+    output wire [31:0] CUR_WAVE_AXI_BRAM_PORTA_din,
+    input  wire [31:0] CUR_WAVE_AXI_BRAM_PORTA_dout,
+    output wire        CUR_WAVE_AXI_BRAM_PORTA_en,
+    output wire        CUR_WAVE_AXI_BRAM_PORTA_rst,
+    output wire [3:0]  CUR_WAVE_AXI_BRAM_PORTA_we,
+    output wire [31:0] SPIKE_SHAPE_AXI_BRAM_PORTA_addr,
+    output wire        SPIKE_SHAPE_AXI_BRAM_PORTA_clk,
+    output wire [31:0] SPIKE_SHAPE_AXI_BRAM_PORTA_din,
+    input  wire [31:0] SPIKE_SHAPE_AXI_BRAM_PORTA_dout,
+    output wire        SPIKE_SHAPE_AXI_BRAM_PORTA_en,
+    output wire        SPIKE_SHAPE_AXI_BRAM_PORTA_rst,
+    output wire [3:0]  SPIKE_SHAPE_AXI_BRAM_PORTA_we
 );
     initial begin
+        REG_0 = 1536'd0;
+        REG_0[0*32 +: 32] = 32'h0009_0000;
+        REG_0[17*32 +: 32] = 32'h0000_1111;
+        REG_0[18*32 +: 32] = 32'd40;
+        REG_0[19*32 +: 32] = 32'd0;
         RW_REG0_0 = 32'h0009_0000;
         RW_REG1_0 = 32'd0;
         RW_REG2_0 = 32'd0;
@@ -118,6 +154,7 @@ module microblaze_bd_wrapper (
     end
 
     assign rs232_uart_txd = 1'b1;
+    assign REG_RDINT_0 = 48'd0;
     assign RO_REG0_RDINT_0 = 1'b0;
     assign RO_REG1_RDINT_0 = 1'b0;
     assign RO_REG2_RDINT_0 = 1'b0;
@@ -162,15 +199,36 @@ module microblaze_bd_wrapper (
     assign ADC1_AXI_BRAM_PORTA_en = 1'b0;
     assign ADC1_AXI_BRAM_PORTA_rst = 1'b0;
     assign ADC1_AXI_BRAM_PORTA_we = 4'd0;
+    assign NEURON_CFG_AXI_BRAM_PORTA_addr = 32'd0;
+    assign NEURON_CFG_AXI_BRAM_PORTA_clk = Clk;
+    assign NEURON_CFG_AXI_BRAM_PORTA_din = 32'd0;
+    assign NEURON_CFG_AXI_BRAM_PORTA_en = 1'b0;
+    assign NEURON_CFG_AXI_BRAM_PORTA_rst = 1'b0;
+    assign NEURON_CFG_AXI_BRAM_PORTA_we = 4'd0;
+    assign CUR_WAVE_AXI_BRAM_PORTA_addr = 32'd0;
+    assign CUR_WAVE_AXI_BRAM_PORTA_clk = Clk;
+    assign CUR_WAVE_AXI_BRAM_PORTA_din = 32'd0;
+    assign CUR_WAVE_AXI_BRAM_PORTA_en = 1'b0;
+    assign CUR_WAVE_AXI_BRAM_PORTA_rst = 1'b0;
+    assign CUR_WAVE_AXI_BRAM_PORTA_we = 4'd0;
+    assign SPIKE_SHAPE_AXI_BRAM_PORTA_addr = 32'd0;
+    assign SPIKE_SHAPE_AXI_BRAM_PORTA_clk = Clk;
+    assign SPIKE_SHAPE_AXI_BRAM_PORTA_din = 32'd0;
+    assign SPIKE_SHAPE_AXI_BRAM_PORTA_en = 1'b0;
+    assign SPIKE_SHAPE_AXI_BRAM_PORTA_rst = 1'b0;
+    assign SPIKE_SHAPE_AXI_BRAM_PORTA_we = 4'd0;
 
     wire unused = Clk ^ reset ^ rs232_uart_rxd ^ RO_REG0_WE_0 ^ RO_REG1_WE_0 ^
                   RO_REG2_WE_0 ^ RO_REG3_WE_0 ^ RO_REG4_WE_0 ^ RO_REG5_WE_0 ^
                   RO_REG6_WE_0 ^ RO_REG7_WE_0 ^ ^RO_REG0_IN_0 ^
                   ^RO_REG1_IN_0 ^ ^RO_REG2_IN_0 ^ ^RO_REG3_IN_0 ^
                   ^RO_REG4_IN_0 ^ ^RO_REG5_IN_0 ^ ^RO_REG6_IN_0 ^ ^RO_REG7_IN_0 ^
+                  ^REG_IN_0 ^ ^REG_WE_0 ^
                   ^DAC0_AXI_BRAM_PORTA_dout ^ ^DAC1_AXI_BRAM_PORTA_dout ^
                   ^DAC2_AXI_BRAM_PORTA_dout ^ ^DAC3_AXI_BRAM_PORTA_dout ^
-                  ^ADC0_AXI_BRAM_PORTA_dout ^ ^ADC1_AXI_BRAM_PORTA_dout;
+                  ^ADC0_AXI_BRAM_PORTA_dout ^ ^ADC1_AXI_BRAM_PORTA_dout ^
+                  ^NEURON_CFG_AXI_BRAM_PORTA_dout ^ ^CUR_WAVE_AXI_BRAM_PORTA_dout ^
+                  ^SPIKE_SHAPE_AXI_BRAM_PORTA_dout;
 endmodule
 
 `define DAC_PROGRAM_BRAM_STUB(module_name) \

@@ -6,7 +6,7 @@ channel gets its own pure sine frequency, so each ADC input must show a
 clean FFT peak at its own tone; a peak at a different channel's tone means
 the cables are crossed.
 
-The DDS source cannot do this (all channels share one RW3 phase-increment
+The DDS source cannot do this (all channels share one reg19 phase-increment
 field), so each tone is rendered into that channel's program BRAM instead.
 All four programs are 8192 u32 words = 16384 samples at 1 GSPS (one shared
 RW3 frame count), and each requested frequency is snapped to an integer

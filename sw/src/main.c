@@ -154,6 +154,7 @@
  * the GT clock domain; independent of the neuron config bank.  The select reset
  * value is 0 (all DACs off), so NSRC must run to route anything. */
 #define DAC_XBAR_SEL_REG   (REG_BASE + 0x44)   /* reg17 */
+#define DDS_PHASE_INC_REG  (REG_BASE + 19u*4u) /* reg19[23:0], 0 = HDL default */
 #define XSRC_OFF     0u
 #define XSRC_DDS     1u    /* broadcast sine (single entry, any DAC) */
 #define XSRC_BRAM0   2u    /* +ch : BRAM channel 0..3   */
@@ -490,6 +491,11 @@ static u32 ro_addr(unsigned int idx)
     return RO_REG0 + (idx & 7u) * 4u;
 }
 
+static u32 regf_addr(unsigned int idx)
+{
+    return REG_BASE + (idx * 4u);
+}
+
 static int is_hex_alpha(char c)
 {
     return (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
@@ -542,6 +548,15 @@ static void print_reg(const char *name, unsigned int idx, u32 val)
 {
     send_str(name);
     send_byte('0' + (u8)(idx & 7u));
+    send_str(" = ");
+    send_hex(val);
+    send_str("\r\n");
+}
+
+static void print_reg_idx(const char *name, unsigned int idx, u32 val)
+{
+    send_str(name);
+    send_uint(idx);
     send_str(" = ");
     send_hex(val);
     send_str("\r\n");
@@ -1105,6 +1120,27 @@ static void cmd_nsrc(void)
         send_str(" = ");
         send_uint((sel >> XSRC_NIBBLE(channel)) & 0xFu);
     }
+    send_str("\r\n");
+}
+
+static void cmd_ddsi(void)
+{
+    char *p = &cmd[4];
+    u32 inc;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (token_eq_ci(p, "default") || token_eq_ci(p, "auto")) {
+        inc = 0u;
+    } else if (!parse_u32_arg(&p, &inc) || inc > 0x00FFFFFFu) {
+        send_str("ERR DDSI expects default|0..0xFFFFFF (phase increment; 0 = HDL default)\r\n");
+        return;
+    }
+
+    Xil_Out32(DDS_PHASE_INC_REG, inc & 0x00FFFFFFu);
+    send_str("DDS inc=");
+    send_hex(Xil_In32(DDS_PHASE_INC_REG) & 0x00FFFFFFu);
     send_str("\r\n");
 }
 
@@ -2600,6 +2636,7 @@ static void cmd_help(void)
     send_str("  ADCT [all|adc0|adc1] mode  ADS54J60 test mode: off,d21,k28,ila,rpat,transport\r\n");
     send_str("  COUP [all|1..4] [ac|dc] ADC input coupling; default/safe state is AC\r\n");
     send_str("  NSRC [ch|all] src  DAC crossbar (reg17): off,dds,bram[0-3],spike[0-3],mon[0-3],current,tag,0..15\r\n");
+    send_str("  DDSI default|step  DDS phase increment reg19[23:0]; 0/default uses HDL 0x19999A\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("  CURP off | <cps> <last> <amp_q16>  current player: triangle into i_external; f=50MHz/(cps*(last+1))\r\n");
     send_str("  CURW <cps> <count> [hold]  current player: load host LE Q16.16 samples; optional hold plays once then holds last\r\n");
@@ -2610,8 +2647,8 @@ static void cmd_help(void)
     send_str("  NEUR [ch|all] profile name  profiles: regular/rs, bursting/ib, chattering/ch, fast/fs, lts, tc, resonator/rz, rebound/rb\r\n");
     send_str("  NEUR profiles       list built-in neuron profiles\r\n");
     send_str("  RDRO n           read RO register 0..7\r\n");
-    send_str("  RDRW n           read RW register 0..7\r\n");
-    send_str("  WRTE n value     write RW register 0..7; use 0x prefix for hex masks\r\n");
+    send_str("  RDRW n           read register-file index 0..47\r\n");
+    send_str("  WRTE n value     write register-file index 0..47; use 0x prefix for hex masks\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("  PROG ch [n]      upload even n little-endian u32 words to DAC channel ch=0..3\r\n");
     send_str("  DPWR ch start n  write n little-endian u32 words to DAC BRAM 32-bit word addresses\r\n");
@@ -2677,10 +2714,9 @@ static void cmd_help(void)
 #if HAS_BRAM_DATAPLANE
     send_str("    [3] ADC BRAM capture/DAC program restart pulse\r\n");
     send_str("    [6] DAC program BRAM mode enable; PCAP sets this, CAPT clears it\r\n");
-    send_str("    [31:8] DAC BRAM loop frame count when [6]=1; 0 loops full 4096-frame BRAM\r\n");
-    send_str("           DDS channels mixed with BRAM use the hardware default sine step\r\n");
+    send_str("    [31:8] DAC BRAM loop frame count; 0 loops full 4096-frame BRAM\r\n");
 #endif
-    send_str("    [31:8] DAC sine DDS step when [6]=0; 0 uses hardware default 0x19999A\r\n");
+    send_str("REG19 DDS phase increment: [23:0], 0 uses hardware default 0x19999A\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("ADC capture frame words: ch0 low/high, ch1 low/high, ch2 low/high, ch3 low/high; max 4096 frames\r\n");
 #endif
@@ -2730,6 +2766,8 @@ static void cmd_status(void)
     send_hex((rw2 & RW2_DAC_TX_POL_MASK) >> RW2_DAC_TX_POL_SHIFT);
     send_str(" dac_xbar=");
     send_hex(Xil_In32(DAC_XBAR_SEL_REG) & 0xFFFFu);
+    send_str(" dds_inc=");
+    send_hex(Xil_In32(DDS_PHASE_INC_REG) & 0x00FFFFFFu);
     send_str("\r\n");
     send_str("adc_diag: rw5=");
     send_hex(Xil_In32(RW_REG5));
@@ -2752,6 +2790,7 @@ static void launch_defaults(void)
     Xil_Out32(RW_REG0, ctrl);
     /* Default crossbar: DDS (broadcast sine, code 1) on all four DACs. */
     Xil_Out32(DAC_XBAR_SEL_REG, 0x00001111u);
+    Xil_Out32(DDS_PHASE_INC_REG, 0u);
     restart_dac_tx_path();
 }
 
@@ -2776,6 +2815,8 @@ static void process_cmd(void)
         cmd_coup();
     } else if (strncmp(cmd, "NSRC", 4) == 0) {
         cmd_nsrc();
+    } else if (strncmp(cmd, "DDSI", 4) == 0) {
+        cmd_ddsi();
 #if HAS_BRAM_DATAPLANE
     } else if (strncmp(cmd, "CURP", 4) == 0) {
         cmd_curp();
@@ -2797,24 +2838,27 @@ static void process_cmd(void)
     } else if (strncmp(cmd, "RDRW", 4) == 0) {
         char *p = &cmd[5];
         u32 idx;
-        if (!parse_u32_arg(&p, &idx) || idx > 7u) {
-            send_str("ERR RDRW expects register 0..7\r\n");
+        if (!parse_u32_arg(&p, &idx) || idx >= 48u) {
+            send_str("ERR RDRW expects register-file index 0..47\r\n");
             return;
         }
-        print_reg("RW", idx, Xil_In32(rw_addr(idx)));
+        if (idx < 8u)
+            print_reg("RW", idx, Xil_In32(rw_addr(idx)));
+        else
+            print_reg_idx("REG", idx, Xil_In32(regf_addr(idx)));
     } else if (strncmp(cmd, "WRTE", 4) == 0) {
         char *p = &cmd[5];
         u32 idx;
         u32 val;
-        if (!parse_u32_arg(&p, &idx) || idx > 7u) {
-            send_str("ERR WRTE expects register 0..7 and value\r\n");
+        if (!parse_u32_arg(&p, &idx) || idx >= 48u) {
+            send_str("ERR WRTE expects register-file index 0..47 and value\r\n");
             return;
         }
         if (!parse_u32_arg(&p, &val)) {
-            send_str("ERR WRTE expects register 0..7 and value\r\n");
+            send_str("ERR WRTE expects register-file index 0..47 and value\r\n");
             return;
         }
-        Xil_Out32(rw_addr(idx), val);
+        Xil_Out32(regf_addr(idx), val);
         send_str("OK\r\n");
 #if HAS_BRAM_DATAPLANE
     } else if (strncmp(cmd, "PROG", 4) == 0) {

@@ -143,19 +143,23 @@ NEURON_PROFILE_VALUES = {
 # Current sources are UNIPOLAR: they can NEVER go negative. We map physical
 # milliamps to the neuron model's Q16.16 current unit 1:1 -- i.e. 1 mA == 1.0
 # Izhikevich "I" unit -- so 10 mA equals the drive the built-in profiles use to
-# spike (iconst~10). Full-scale is configurable here.
-CUR_MAX_MA = 30.0              # full-scale current-source amplitude (mA)
+# spike (iconst~10). The only host-side ceiling is the positive signed Q16.16
+# range; larger values would wrap into negative current in the HDL.
 MA_TO_Q16 = 65536.0            # 1 mA -> Q16.16 LSBs (1 mA == 1.0 I-unit)
+CUR_Q16_POS_MAX = 0x7FFFFFFF
+CUR_MAX_MA = CUR_Q16_POS_MAX / MA_TO_Q16
 CUR_PLAYER_CLK_HZ = 50.0e6     # the player advances in the 50 MHz neuron clock
 CUR_WAVE_MAX = 1024            # cur_wave BRAM depth (firmware CUR_WAVE_DEPTH)
-CUR_SOURCE_MIN_HZ = 2.0e3      # experiment-facing current-source range
-CUR_SOURCE_MAX_HZ = 100.0e3
 CUR_SINE_SAMPLES = CUR_WAVE_MAX  # use the whole current BRAM when it helps
 CUR_SINE_SAMPLES_MIN = 16      # min samples (keeps a high-freq sine recognizable)
+CUR_FREQ_REQUEST_MIN_HZ = 1.0e-3
+CUR_FREQ_REQUEST_MAX_HZ = CUR_PLAYER_CLK_HZ
+CUR_SINE_HW_MIN_HZ = CUR_PLAYER_CLK_HZ / (65535.0 * CUR_SINE_SAMPLES)
+CUR_SINE_HW_MAX_HZ = CUR_PLAYER_CLK_HZ / CUR_SINE_SAMPLES_MIN
 CUR_SOURCE_PRESETS = ["Sine", "Constant current", "Step 0 -> constant"]
 # Some DAC->ADC loopback setups are AC-coupled with a high-pass corner near this
 # value. The injected current still drives the neurons below it; use a DC-coupled
-# readout path if the analog loopback attenuates the 2 kHz..100 kHz band.
+# readout path if the analog loopback attenuates low-frequency current readback.
 CUR_LOOPBACK_AC_CORNER_HZ = 200e3
 
 # --- programmable spike pulse shape (izh_spike_shaper, firmware PULS) ----------
@@ -166,9 +170,21 @@ PULSE_DEFAULT = [0x1800, 0x3000, 0x6000, 0x6000, 0x6000, 0x3000, 0x1800]
 
 def ma_to_q16_u32(ma):
     """Physical milliamps -> Q16.16 as a 32-bit word; clamped non-negative
-    (current sources can never go negative)."""
+    and to positive signed Q16.16 (current sources can never go negative)."""
     ma = max(0.0, float(ma))
-    return int(round(ma * MA_TO_Q16)) & 0xFFFFFFFF
+    q = int(round(ma * MA_TO_Q16))
+    q = max(0, min(CUR_Q16_POS_MAX, q))
+    return q & 0xFFFFFFFF
+
+
+def format_rate(freq_hz):
+    if freq_hz <= 0:
+        return "DC/one-shot"
+    if freq_hz < 1.0e3:
+        return f"{freq_hz:.3g} Hz"
+    if freq_hz < 1.0e6:
+        return f"{freq_hz/1.0e3:.3g} kHz"
+    return f"{freq_hz/1.0e6:.3g} MHz"
 
 
 def choose_current_timing(freq_hz, n_max=CUR_SINE_SAMPLES,
@@ -179,7 +195,9 @@ def choose_current_timing(freq_hz, n_max=CUR_SINE_SAMPLES,
     legal current-BRAM sizes and choose the closest frequency, preferring more
     waveform samples when the error ties.
     """
-    freq_hz = max(CUR_SOURCE_MIN_HZ, min(CUR_SOURCE_MAX_HZ, float(freq_hz)))
+    freq_hz = float(freq_hz)
+    if not math.isfinite(freq_hz) or freq_hz <= 0.0:
+        freq_hz = CUR_SINE_HW_MIN_HZ
     target_ticks = CUR_PLAYER_CLK_HZ / freq_hz
     max_n = int(max(n_min, min(n_max, round(target_ticks))))
     best = None
@@ -816,8 +834,8 @@ class CurrentSourceWindow(QtWidgets.QWidget):
         grid.addWidget(self.amp_spin, 1, 1)
         grid.addWidget(QtWidgets.QLabel("frequency"), 2, 0)
         self.freq_spin = QtWidgets.QDoubleSpinBox()
-        self.freq_spin.setRange(CUR_SOURCE_MIN_HZ, CUR_SOURCE_MAX_HZ)
-        self.freq_spin.setDecimals(1)
+        self.freq_spin.setRange(CUR_FREQ_REQUEST_MIN_HZ, CUR_FREQ_REQUEST_MAX_HZ)
+        self.freq_spin.setDecimals(3)
         self.freq_spin.setSingleStep(100.0)
         self.freq_spin.setValue(5000.0)
         self.freq_spin.setSuffix(" Hz")
@@ -864,13 +882,12 @@ class CurrentSourceWindow(QtWidgets.QWidget):
             t = np.arange(plot_ys.size) * dt
         # plot in Amps (mA * 1e-3) so the axis SI-prefixes to mA cleanly
         self.curve.setData(t, plot_ys * 1e-3)
-        self.plot.setYRange(-0.05 * CUR_MAX_MA * 1e-3,
-                            max(0.5, amp * 1.15) * 1e-3)
-        # The injected-current source sine mode is intentionally 2 kHz..100 kHz.
-        # If the physical DAC->ADC loopback is AC-coupled, it may attenuate this
-        # band even though the neuron input and DAC source are correct.
+        ymax_ma = max(0.5, float(ys.max()) * 1.15)
+        self.plot.setYRange(-0.05 * ymax_ma * 1e-3, ymax_ma * 1e-3)
+        # If the physical DAC->ADC loopback is AC-coupled, it may attenuate low
+        # frequencies even though the neuron input and DAC source are correct.
         if kind.startswith("Sine") and actual < CUR_LOOPBACK_AC_CORNER_HZ:
-            tail = (f"  ⚠ {actual/1e3:.1f} kHz is below the ~"
+            tail = (f"  Note: {format_rate(actual)} is below the ~"
                     f"{CUR_LOOPBACK_AC_CORNER_HZ/1e3:.0f} kHz loopback AC corner; "
                     f"use the Current source DAC route or a DC-coupled readout "
                     f"to inspect it cleanly.")
@@ -880,7 +897,10 @@ class CurrentSourceWindow(QtWidgets.QWidget):
             tail = "  Programs a one-sample loop, so the injected current is DC."
         else:
             tail = "  Route Current source on a DAC to view the injected waveform."
-        rate_text = "DC/one-shot" if actual <= 0 else f"loop {actual/1e3:.2f} kHz"
+        rate_text = format_rate(actual)
+        if actual > 0 and (actual <= CUR_SINE_HW_MIN_HZ * 1.001 or
+                           actual >= CUR_SINE_HW_MAX_HZ * 0.999):
+            rate_text += " (nearest hardware rate)"
         self.info.setText(
             f"{kind}: {n} samples, cps={cps} -> {rate_text}, "
             f"peak {ys.max():.3f} mA (1 mA = 1.0 I-unit, unipolar 0+).{tail}")
@@ -1330,7 +1350,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.cur_preview.setYRange(-0.05 * ymax, ymax)
         state = "programmed" if programmed else "staged"
         freq = "one-shot hold" if kind.startswith("Step") else (
-            "DC" if actual <= 0 else f"{actual/1e3:.2f} kHz")
+            "DC" if actual <= 0 else format_rate(actual))
         self.cur_preview_info.setText(
             f"{state}: {kind}, {ys.size} samples, cps={int(cps)}, "
             f"{freq}, peak {float(ys.max()):.3f} mA")

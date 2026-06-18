@@ -98,9 +98,8 @@ class DacControl:
     def setup(self, decim, dds_step, amplitude, freqs_mhz):
         print("Readying DAC sources (this takes a few seconds)...")
         self.cmd("WRTE 2 0x01000018")
-        # DDS phase-inc lives in RW3[31:8]; this same field is the BRAM frame
-        # count, and 0x..00 there => full-loop. Set it once, then only NSRC.
-        self.cmd(f"WRTE 3 0x{(dds_step & 0xFFFFFF) << 8:08X}")
+        # DDS phase-inc lives in reg19[23:0]; RW3[31:8] is BRAM frame count.
+        self.cmd(f"DDSI 0x{dds_step & 0xFFFFFF:06X}")
         for ch, f in enumerate(freqs_mhz):
             self.prog(ch, sine_words(f, amplitude))
             print(f"   BRAM ch{ch}: {f:.3f} MHz programmed")

@@ -96,7 +96,7 @@ module top #(
     // drive the fabric-sourced ("read-only") registers; regf_rdint pulses for
     // one cycle on a CPU read. Add new control/status regs by slicing regf_value
     // / driving regf_in[idx] -- all contiguous at byte offset idx*4.
-    localparam integer REGF_NUM = 48;   // 0-17 ctrl/status, 18 spike nbeats, 32-47 spare legacy pulse regs
+    localparam integer REGF_NUM = 48;   // 0-17 ctrl/status, 18 spike nbeats, 19 DDS step, 32-47 spare legacy pulse regs
     wire [REGF_NUM*32-1:0] regf_value;
     wire [REGF_NUM*32-1:0] regf_in;
     wire [REGF_NUM-1:0]    regf_we;
@@ -258,6 +258,8 @@ module top #(
     wire [31:0] status_reg;
     wire [31:0] clk_fmc_count;
     wire [31:0] sysref_count;
+    wire [5:0]  neuron_cfg_fabric_addr;
+    wire [31:0] neuron_cfg_fabric_dout;
     wire [10:0] spike_nbeats_tx;    // spike pulse length in beats (reg18[10:0], 1..1024) in GT domain
     wire [9:0]  spike_shape_addr_tx0, spike_shape_addr_tx1;
     wire [9:0]  spike_shape_addr_tx2, spike_shape_addr_tx3;
@@ -1039,10 +1041,6 @@ module top #(
     // Either edge of the firmware-toggled bit fires one prog_start pulse.
     wire izh_prog_start = izh_prog_toggle_sync[2] ^ izh_prog_toggle_sync[1];
 
-    // Config BRAM port B (read-only, clk_50 neuron domain).
-    wire [5:0]  neuron_cfg_fabric_addr;
-    wire [31:0] neuron_cfg_fabric_dout;
-
     // ---- Programmable current source (clk_50) -------------------------------
     // Plays the cur_wave BRAM into every neuron's I at a register-controlled
     // rate, with register start/stop/reset.  Control register = regf_value index
@@ -1160,14 +1158,26 @@ module top #(
 
     assign litejesd_active_async = ~litejesd_reset;
 
-    wire [23:0] dac_sine_phase_inc_tx;
+    wire [23:0] dac_bram_frame_count_tx;
     cdc_vector_sync #(
         .WIDTH (24)
-    ) u_dac_sine_phase_inc_sync (
+    ) u_dac_bram_frame_count_sync (
         .dest_clk (gth_tx_usrclk2),
         .dest_rst (litejesd_reset),
         .src      (rw_reg3[31:8]),
-        .dest     (dac_sine_phase_inc_tx)
+        .dest     (dac_bram_frame_count_tx)
+    );
+
+    // DDS phase increment is intentionally independent of the BRAM playback
+    // frame count.  Reg19[23:0] = 0 selects the DDS module's hardware default.
+    wire [23:0] dac_dds_phase_inc_tx;
+    cdc_vector_sync #(
+        .WIDTH (24)
+    ) u_dac_dds_phase_inc_sync (
+        .dest_clk (gth_tx_usrclk2),
+        .dest_rst (litejesd_reset),
+        .src      (regf_value[19*32 +: 24]),
+        .dest     (dac_dds_phase_inc_tx)
     );
 
     // Keep DAC control out of RW2[15:8]. Those bits drive GTH TX polarity.
@@ -1309,9 +1319,6 @@ module top #(
 
     wire dac_program_restart = dac_program_req_sync[2] ^ dac_program_req_sync[1];
     wire dac_program_enable = dac_program_enable_sync[1];
-    wire [23:0] dac_bram_frame_count_tx = dac_sine_phase_inc_tx;
-    wire [23:0] dac_dds_phase_inc_tx = dac_program_enable ? 24'd0 : dac_sine_phase_inc_tx;
-
     wire [31:0] dac_program_status0_async;
     wire [31:0] dac_program_status1_async;
     wire [31:0] dac_program_status2_async;
@@ -1407,7 +1414,6 @@ module top #(
 `else
     wire dac_program_enable = 1'b0;
     wire dac_program_restart = 1'b0;
-    wire [23:0] dac_dds_phase_inc_tx = dac_sine_phase_inc_tx;
     assign dac_program_word0_async = 64'd0;
     assign dac_program_word1_async = 64'd0;
     assign dac_program_word2_async = 64'd0;
@@ -2355,7 +2361,7 @@ module top #(
         fmc_present
     };
 
-    wire [31:0] build_id = 32'hDA01_003C;
+    wire [31:0] build_id = 32'hDA01_003D;
     wire [31:0] litejesd_wave_word = {
         litejesd_sine_word[15:0],
         litejesd_triangle_word[15:0]

@@ -6,7 +6,7 @@ fed from one of these sources, selected at runtime:
 
 | Source | NSRC name | What it is |
 |---|---|---|
-| DDS | `dds` | Hardware sine generator. **One frequency for all channels** (single RW3[31:8] phase-increment field). |
+| DDS | `dds` | Hardware sine generator. **One frequency for all channels** (single reg19[23:0] phase-increment field; `DDSI` sets it). |
 | BRAM | `bram` | Per-channel arbitrary waveform played from a program BRAM. Distinct content per channel. |
 | IZH | `izh` | Per-channel Izhikevich neuron spike → trapezoid pulse shaper. |
 | vout | `vout` | Direct neuron membrane voltage. |
@@ -20,12 +20,11 @@ four chronological 16-bit samples.
 
 ## THE RULES (these are the mistakes that cost a full debugging session)
 
-1. **Select sources only with `NSRC`. NEVER hand-poke RW3.** Post-merge, RW3 is
-   heavily overloaded and shares bits with the CSTP/IZH config:
+1. **Select sources only with `NSRC`. Do not hand-poke RW3 for source changes.**
+   RW3 carries restart/capture bits plus the BRAM frame count:
    - `[1]` dac restart, `[2]` adc restart, **`[3]` = ADC capture trigger**,
-     `[5:4]` = DAC source mask, `[6]` = program_enable, `[7]` = IZH config
-     strobe, `[11:8]` = IZH param, `[13:12]` = IZH channel, `[14]` = IZH all,
-     `[31:8]` = DDS phase-inc / BRAM frame-count.
+     `[5:4]` = DAC debug select, `[6]` = program_enable,
+     `[31:8]` = BRAM frame-count.
    - Writing a "restart" value like `0x68` quietly fires an **ADC capture** and
      corrupts state. `NSRC bram` already sets both the source mask AND
      `program_enable` for you. Trust it.
@@ -74,8 +73,9 @@ NSRC all bram              # selects BRAM source + enables the player (no RW3 po
 # capture the loopback to verify
 ```
 
-For DDS: `NSRC all dds` (optionally set frequency via the DDS step / RW3[31:8],
-but prefer `switch_dac_source_uart.py dds --step N`).
+For DDS: `NSRC all dds` (optionally set frequency via `DDSI <step>`, where
+`DDSI default`/`DDSI 0` selects the HDL default; `switch_dac_source_uart.py dds
+--step N` wraps this).
 For neurons: `NEUR <ch> <profile>`, `NEUR all dt 0x8000`, `NEUR all period 1`,
 then `NSRC all izh`.
 

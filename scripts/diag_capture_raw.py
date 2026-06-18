@@ -13,7 +13,7 @@ BRAM_F, DDS_F, FS = 0.916, 0.244, 1e9/128.0
 def main():
     dac = d.DacControl("COM10")
     dac.cmd("WRTE 2 0x01000018")
-    dac.cmd("WRTE 3 0x%08X" % ((4096 & 0xFFFFFF) << 8))
+    dac.cmd("DDSI 0x%06X" % (4096 & 0xFFFFFF))
     dac.prog(0, d.sine_words(BRAM_F, 0x5000))
     print(dac.cmd("STRM 128", ok=("OK STRM", "ERR")))
     dac.set_source(0, "BRAM")

@@ -206,7 +206,7 @@ def main():
 
     dac = DacControl(args.port)
     dac.cmd("WRTE 2 0x01000018")
-    dac.cmd("WRTE 3 0x%08X" % ((DDS_STEP & 0xFFFFFF) << 8))
+    dac.cmd("DDSI 0x%06X" % (DDS_STEP & 0xFFFFFF))
     dac.prog(0, sine_words(BRAM_F, 0x5000))
     resp = dac.cmd(f"STRM {args.decim}", ok=("OK STRM", "ERR"))
     print(resp or "(no STRM response from board UART)")

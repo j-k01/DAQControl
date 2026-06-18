@@ -37,8 +37,10 @@ set common_sources [list \
     ../../src/adc_bram_capture.v \
     ../../src/izh_current_player.v \
     ../../src/izh_spike_trapezoid.v \
+    ../../src/izh_spike_shaper.v \
     ../../src/izh_dac_channel.v \
     ../../src/izh_dac_bank.sv \
+    ../../src/spike_shape_bram_bank.sv \
     ../../src/jesd/dac39j84_sample_remap.v \
     ../../src/jesd/dac39j84_physical_mapper.v \
     ../../src/jesd/dac_channel_source_mux.v \
@@ -58,6 +60,10 @@ proc run_compile {work_dir snapshot extra_defines sources} {
     file mkdir $work_dir
     cd $work_dir
 
+    if {![info exists ::env(XILINX_VIVADO)]} {
+        error "XILINX_VIVADO is not set; cannot locate glbl.v for XPM simulation"
+    }
+
     set xvlog_cmd [list xvlog.bat -sv -d DAQ_WITH_GTH -d DAQ_WITH_LITEJESD]
     foreach define $extra_defines {
         lappend xvlog_cmd -d $define
@@ -65,9 +71,10 @@ proc run_compile {work_dir snapshot extra_defines sources} {
     foreach source $sources {
         lappend xvlog_cmd $source
     }
+    lappend xvlog_cmd [file join $::env(XILINX_VIVADO) data verilog src glbl.v]
 
     exec {*}$xvlog_cmd
-    exec xelab.bat top -snapshot $snapshot
+    exec xelab.bat -L xpm top glbl -snapshot $snapshot
 }
 
 run_compile sim/work_litejesd top_litejesd_compile {} $common_sources

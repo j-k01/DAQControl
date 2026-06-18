@@ -377,8 +377,9 @@ proc create_microblaze_bd {bd_name include_bram_dataplane include_ps_ddr_dma} {
     # Unified register bank: flattened buses (NUM_REG = 48 registers x 32 bits).
     # REG = each register's value (out); REG_IN/REG_WE = per-register fabric write
     # port (in); REG_RDINT = per-register CPU-read strobe (out).
-    # Regs 0-17 control/status, 18 = spike-pulse nbeats.  The pulse shape itself
-    # lives in SPIKE_SHAPE_AXI_BRAM_PORTA; regs 32-47 are spare legacy pulse regs.
+    # Regs 0-17 control/status, 18 = spike-pulse nbeats, 19 = DDS phase step.
+    # The pulse shape itself lives in SPIKE_SHAPE_AXI_BRAM_PORTA; regs 32-47 are
+    # spare legacy pulse regs.
     # IP defaults (NUM_REG=48, addr width 8) match.
     set reg_file_num_reg 48
     create_bd_port -dir O -from [expr {$reg_file_num_reg*32 - 1}] -to 0 REG_0
