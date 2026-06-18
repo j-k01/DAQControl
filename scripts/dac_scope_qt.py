@@ -166,6 +166,40 @@ CUR_LOOPBACK_AC_CORNER_HZ = 200e3
 PULSE_MAX_SAMPLES = 4096       # firmware SPIKE_MAX_SAMPLES
 # original 7 ns trapezoid boot default (firmware spike_shape_init_default)
 PULSE_DEFAULT = [0x1800, 0x3000, 0x6000, 0x6000, 0x6000, 0x3000, 0x1800]
+PULSE_DEFAULT_PEAK = max(PULSE_DEFAULT)
+
+
+def build_trapezoid_pulse(n_samples, peak_counts=PULSE_DEFAULT_PEAK,
+                          ramp_samples=None):
+    """Build a positive spike pulse: ramp up, hold steady, ramp down."""
+    n = max(1, min(PULSE_MAX_SAMPLES, int(n_samples)))
+    peak = max(0, min(DAC_FULLSCALE, int(round(peak_counts))))
+    if n == 1:
+        return [peak]
+    if ramp_samples is None:
+        ramp = max(1, n // 4)
+    else:
+        ramp = max(1, int(ramp_samples))
+    ramp = min(ramp, max(1, n // 2))
+    hold = max(0, n - 2 * ramp)
+    if hold == 0 and n > 2:
+        ramp = max(1, (n - 1) // 2)
+        hold = n - 2 * ramp
+
+    ys = []
+    # Use non-zero ramp endpoints, matching the historical 7-sample default:
+    # ramp=2, peak=0x6000 -> 0x1800, 0x3000, then the flat top.
+    denom = ramp + 2
+    for i in range(ramp):
+        ys.append(round(peak * (i + 1) / denom))
+    ys.extend([peak] * hold)
+    for i in range(ramp):
+        ys.append(round(peak * (ramp - i) / denom))
+
+    if len(ys) < n:
+        insert_at = min(ramp, len(ys))
+        ys[insert_at:insert_at] = [peak] * (n - len(ys))
+    return [clamp_s16(v) for v in ys[:n]]
 
 
 def ma_to_q16_u32(ma):
@@ -728,7 +762,25 @@ class PulseShapeWindow(QtWidgets.QWidget):
         self.len_spin.setValue(len(PULSE_DEFAULT))
         self.len_spin.valueChanged.connect(self._on_len)
         ctl.addWidget(self.len_spin)
-        self.default_btn = QtWidgets.QPushButton("Load trapezoid")
+
+        ctl.addWidget(QtWidgets.QLabel("ramp"))
+        self.ramp_spin = QtWidgets.QSpinBox()
+        self.ramp_spin.setRange(1, max(1, len(PULSE_DEFAULT) // 2))
+        self.ramp_spin.setValue(2)
+        self.ramp_spin.valueChanged.connect(self._info)
+        ctl.addWidget(self.ramp_spin)
+
+        ctl.addWidget(QtWidgets.QLabel("peak"))
+        self.peak_spin = QtWidgets.QSpinBox()
+        self.peak_spin.setRange(0, DAC_FULLSCALE)
+        self.peak_spin.setValue(PULSE_DEFAULT_PEAK)
+        self.peak_spin.valueChanged.connect(self._info)
+        ctl.addWidget(self.peak_spin)
+
+        self.trap_btn = QtWidgets.QPushButton("Build trapezoid")
+        self.trap_btn.clicked.connect(self._on_trapezoid)
+        ctl.addWidget(self.trap_btn)
+        self.default_btn = QtWidgets.QPushButton("Load 7 ns default")
         self.default_btn.clicked.connect(self._on_default)
         ctl.addWidget(self.default_btn)
         self.zero_btn = QtWidgets.QPushButton("Flatten to 0")
@@ -746,12 +798,29 @@ class PulseShapeWindow(QtWidgets.QWidget):
         lay.addWidget(self.info)
 
         self.done.connect(self._on_done)
+        self._sync_trapezoid_controls(len(PULSE_DEFAULT))
         self.editor.set_values(PULSE_DEFAULT)
         self._info()
+
+    def _sync_trapezoid_controls(self, n):
+        ramp_max = max(1, int(n) // 2)
+        self.ramp_spin.blockSignals(True)
+        self.ramp_spin.setMaximum(ramp_max)
+        if self.ramp_spin.value() > ramp_max:
+            self.ramp_spin.setValue(ramp_max)
+        self.ramp_spin.blockSignals(False)
 
     def _on_len(self, n):
         ys = list(self.editor.ys)
         ys = ys[:n] if n <= len(ys) else ys + [0.0] * (n - len(ys))
+        self._sync_trapezoid_controls(n)
+        self.editor.set_values(ys)
+        self._info()
+
+    def _on_trapezoid(self):
+        ys = build_trapezoid_pulse(self.len_spin.value(),
+                                   self.peak_spin.value(),
+                                   self.ramp_spin.value())
         self.editor.set_values(ys)
         self._info()
 
@@ -759,6 +828,9 @@ class PulseShapeWindow(QtWidgets.QWidget):
         self.len_spin.blockSignals(True)
         self.len_spin.setValue(len(PULSE_DEFAULT))
         self.len_spin.blockSignals(False)
+        self._sync_trapezoid_controls(len(PULSE_DEFAULT))
+        self.ramp_spin.setValue(2)
+        self.peak_spin.setValue(PULSE_DEFAULT_PEAK)
         self.editor.set_values(PULSE_DEFAULT)
         self._info()
 
@@ -770,9 +842,12 @@ class PulseShapeWindow(QtWidgets.QWidget):
         ys = self.editor.values()
         nb = (len(ys) + 3) // 4
         pk = max((abs(v) for v in ys), default=0)
+        ramp = min(self.ramp_spin.value(), max(1, len(ys) // 2))
+        hold = max(0, len(ys) - 2 * ramp)
         self.info.setText(
             f"{len(ys)} samples ({len(ys)} ns), nbeats={nb}, peak |{pk}| counts "
-            f"({pk * VOLTS_PER_COUNT:.3f} V).  Drag points up/down to edit; "
+            f"({pk * VOLTS_PER_COUNT:.3f} V), trapezoid ramp/hold/ramp = "
+            f"{ramp}/{hold}/{ramp}.  Drag points up/down to edit; "
             f"route a Spike source on a DAC to emit this pulse.")
 
     def _on_prog(self):
