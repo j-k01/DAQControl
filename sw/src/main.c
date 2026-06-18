@@ -279,11 +279,6 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
 #define BURST_DDR_BASE0   0x18000000u    /* chip0 capture region (16 MB max)  */
 #define BURST_DDR_BASE1   0x19000000u    /* chip1 capture region (16 MB max)  */
 #define BURST_MAX_BYTES   0x01000000u    /* 16 MB/chip, below stream rings     */
-/* Per-descriptor byte count. MUST fit the SG buffer-length field, which is 26
- * bits (c_sg_length_width=26) -> max 0x03FFFFFF. 0x04000000 (64 MB) is 2^26,
- * one too many: it masks to length 0 -> zero-length descriptor -> DMAIntErr.
- * 32 MB chunks leave headroom; the current 16 MB burst window uses one desc. */
-#define BURST_DESC_BYTES  0x02000000u    /* 32 MB/descriptor (fits 26-bit len) */
 #define BURST_MAGIC       0x42435054u    /* mailbox magic: burst armed        */
 /* burst mailbox layout (at STRM_MAILBOX): 00=magic 04=bytes/chip 08=base0
  * 0C=base1 10=readout_req(MB++) 14=readout_done(A53 echo) 18=beats */
@@ -2210,41 +2205,6 @@ static void set_adc_capture_beats(u32 beats)
     short_delay();
 }
 
-/* Arm a one-shot SG chain spanning total_bytes into a contiguous DDR region.
- * total_bytes is split across 32 MB descriptors (below the SG 26-bit limit);
- * the PL asserts tlast at the end so the transfer self-terminates. The chain
- * reuses the per-chip descriptor ring region (strm_desc_base). */
-static void dma_arm_burst(u32 chip, u32 base, u32 total_bytes)
-{
-    u32 dmabase = adc_dma_base[chip];
-    u32 desc_base = strm_desc_base[chip];
-    u32 n = (total_bytes + BURST_DESC_BYTES - 1u) / BURST_DESC_BYTES;
-    u32 i;
-    u32 off = 0u;
-
-    if (n == 0u) {
-        n = 1u;
-    }
-    dma_reset(chip);
-    for (i = 0u; i < n; i++) {
-        u32 desc = desc_base + i * STRM_DESC_STRIDE;
-        u32 next = desc_base + ((i + 1u) % n) * STRM_DESC_STRIDE;
-        u32 chunk = total_bytes - off;
-
-        if (chunk > BURST_DESC_BYTES) {
-            chunk = BURST_DESC_BYTES;
-        }
-        dma_write_desc(desc, next, base + off, chunk);
-        off += chunk;
-    }
-    Xil_Out32(dmabase + DMA_S2MM_DMASR, DMA_DMASR_IRQ_MASK | DMA_DMASR_ERR_MASK);
-    Xil_Out32(dmabase + DMA_S2MM_CURDESC, desc_base);
-    Xil_Out32(dmabase + DMA_S2MM_CURDESC_MSB, 0u);
-    Xil_Out32(dmabase + DMA_S2MM_DMACR, DMA_DMACR_RS);
-    Xil_Out32(dmabase + DMA_S2MM_TAILDESC, desc_base + (n - 1u) * STRM_DESC_STRIDE);
-    Xil_Out32(dmabase + DMA_S2MM_TAILDESC_MSB, 0u);
-}
-
 static int wait_dma_done(u32 *s0, u32 *s1)
 {
     u32 timeout;
@@ -2440,8 +2400,11 @@ static void cmd_burst(char *args)
     }
 
     set_adc_capture_beats(beats);           /* PL capture length (both chips) */
-    dma_arm_burst(0u, burst_ddr_base[0], bytes);
-    dma_arm_burst(1u, burst_ddr_base[1], bytes);
+    /* Small one-shot bursts use the same proven self-terminating SG descriptor
+     * path as DMAC; the only difference is the destination window and A53
+     * mailbox readout. */
+    dma_arm_s2mm(0u, burst_ddr_base[0], bytes);
+    dma_arm_s2mm(1u, burst_ddr_base[1], bytes);
 
     /* publish region info for the A53 readout. readout_req (0x10) stays
      * monotonic across captures -- the A53 drains on any change -- so we do not
