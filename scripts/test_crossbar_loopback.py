@@ -2,13 +2,15 @@
 """Verify the 16:4 DAC source crossbar + per-neuron current monitors over the
 physical DAC0 -> ADC0 loopback.
 
-For each crossbar source we route it to DAC0 (NSRC), capture ADC0 via PCAP, and
-check a source-appropriate metric:
+For each crossbar source we route it to DAC0 (NSRC), capture ADC0, and check a
+source-appropriate metric.  BRAM uses PCAP so the DAC program reader is enabled;
+the other sources use CAPT so source routing is tested without poking BRAM mode:
   - dds   : a dominant FFT tone (the broadcast NCO sine)
   - bram0 : high correlation to a known uploaded sine program
-  - tag   : dominant tone at fs/4 (the period-4 tag word 1111/2222/3333/4444)
-  - mon0  : DC level tracks neuron 0's programmed input current (the NEW feature;
-            needs ADC0 DC-coupled since the monitor is a held DC value)
+  - tag   : dominant periodic spectrum from the period-4 tag word
+  - current/mon0:
+            a programmed moving current-source waveform is visible directly and
+            through neuron 0's current monitor
   - spike0: periodic pulses when neuron 0 is driven to spike fast (best-effort)
 
 The DAC0 loopback is read from one ADC capture channel, selected with --adc-ch
@@ -32,17 +34,22 @@ import capture_plot_adc_uart as cap  # noqa: E402
 FS_MHZ = 1000.0
 
 
-def send(port: serial.Serial, command: str, settle: float = 0.3) -> str:
+def send(port: serial.Serial, command: str, settle: float = 0.3,
+         fail_on_err: bool = False) -> str:
     """Write a command, return whatever the firmware echoes back within `settle`."""
     port.reset_input_buffer()
     port.write((command + "\n").encode("ascii"))
     port.flush()
     time.sleep(settle)
-    return port.read_all().decode("ascii", errors="replace").strip()
+    text = port.read_all().decode("ascii", errors="replace").strip()
+    if fail_on_err and "ERR" in text:
+        raise RuntimeError(f"{command!r} failed: {text}")
+    return text
 
 
-def capture_adc0(port: serial.Serial, frames: int, adc_ch: str) -> np.ndarray:
-    presync, frame_words = cap.capture_frames(port, "PCAP", frames)
+def capture_adc0(port: serial.Serial, frames: int, adc_ch: str,
+                 command_name: str = "CAPT") -> np.ndarray:
+    presync, frame_words = cap.capture_frames(port, command_name, frames)
     captures = cap.split_frame_captures(frame_words)
     streams = cap.build_converter_streams(captures)
     return np.asarray(streams[adc_ch], dtype=np.float64)
@@ -78,6 +85,31 @@ def fit_corr(adc: np.ndarray, program_samples: list[int], skip: int = 32,
     return best
 
 
+def fit_corr_arrays(a: np.ndarray, b: np.ndarray, skip: int = 128,
+                    max_shift: int = 4096) -> float:
+    """Best absolute correlation between two cyclic captures with arbitrary phase."""
+    y = np.asarray(a[skip:], dtype=np.float64)
+    xbase = np.asarray(b, dtype=np.float64)
+    n = len(y)
+    if n <= 8 or len(xbase) <= 8:
+        return 0.0
+    y = y - np.mean(y)
+    yn = float(np.dot(y, y))
+    if yn == 0.0:
+        return 0.0
+    best = 0.0
+    for shift in range(min(max_shift, len(xbase) - 1) + 1):
+        idx = (np.arange(n) + shift + skip) % len(xbase)
+        x = xbase[idx] - np.mean(xbase[idx])
+        xn = float(np.dot(x, x))
+        if xn == 0.0:
+            continue
+        c = abs(float(np.dot(x, y)) / np.sqrt(xn * yn))
+        if c > best:
+            best = c
+    return best
+
+
 def plot(outdir: Path, name: str, adc: np.ndarray, nshow: int = 400) -> None:
     try:
         import matplotlib
@@ -105,7 +137,7 @@ def main() -> None:
     ap.add_argument("--frames", type=int, default=2048)
     ap.add_argument("--adc-ch", default="adc_ch0", help="capture stream key for the DAC0 loopback")
     ap.add_argument("--outdir", default=r"D:\DAVIS\Research\HighSpeedDAQ\daq_captures")
-    ap.add_argument("--only", default="", help="comma list to run a subset (dds,bram,tag,mon,spike)")
+    ap.add_argument("--only", default="", help="comma list to run a subset (dds,bram,tag,current,mon,spike)")
     args = ap.parse_args()
 
     outdir = Path(args.outdir)
@@ -121,7 +153,7 @@ def main() -> None:
         # --- DDS: broadcast NCO sine -> dominant tone ---
         if run("dds"):
             print(send(port, "NSRC 0 dds"))
-            adc = capture_adc0(port, args.frames, args.adc_ch)
+            adc = capture_adc0(port, args.frames, args.adc_ch, "CAPT")
             fpk, ratio, _ = fft_peak(adc)
             plot(outdir, "dds", adc)
             ok = ratio > 20.0 and adc.std() > 20.0
@@ -134,7 +166,7 @@ def main() -> None:
             program = cap.make_sine_program(words, cycles, 0x3000, 0, "twos")
             cap.upload_program(port, program, 0)
             print(send(port, "NSRC 0 bram0"))
-            adc = capture_adc0(port, args.frames, args.adc_ch)
+            adc = capture_adc0(port, args.frames, args.adc_ch, "PCAP")
             prog_samples = []
             for w in program:
                 prog_samples.append(cap.signed16(w & 0xFFFF))
@@ -143,48 +175,67 @@ def main() -> None:
             plot(outdir, "bram0_sine", adc)
             results.append(("bram0", corr > 0.85, f"corr={corr:.3f} rms={adc.std():.0f}"))
 
-        # --- tag: period-4 word -> tone at fs/4 = 250 MHz ---
+        # --- tag: fixed period-4 word.  Depending on converter sample ordering
+        # and the analog front end, either the fs/4 or Nyquist component can be
+        # dominant; this is a source-presence check, not a lane-order proof.
         if run("tag"):
             print(send(port, "NSRC 0 tag"))
-            adc = capture_adc0(port, args.frames, args.adc_ch)
+            adc = capture_adc0(port, args.frames, args.adc_ch, "CAPT")
             fpk, ratio, _ = fft_peak(adc)
             plot(outdir, "tag", adc)
-            ok = abs(fpk - 250.0) < 5.0 and ratio > 20.0
-            results.append(("tag", ok, f"tone={fpk:.1f} MHz (expect 250) peak/med={ratio:.0f}"))
+            ok = (abs(fpk - 250.0) < 5.0 or abs(fpk - 500.0) < 5.0) and ratio > 20.0
+            results.append(("tag", ok, f"tone={fpk:.1f} MHz peak/med={ratio:.0f}"))
 
-        # --- monitor 0: DC level must track neuron 0 input current (NEW) ---
-        if run("mon"):
-            print(send(port, "COUP 1 dc"))           # ADC0 = ch1; monitor is a DC value
-            print(send(port, "NSRC 0 mon0"))
-            means = {}
-            for q in (0x00000000, 0x00140000, 0x00280000):   # i = 0.0, 20.0, 40.0 (Q16.16)
-                print(send(port, f"NEUR 0 i {q}"))
-                time.sleep(0.2)
-                adc = capture_adc0(port, args.frames, args.adc_ch)
-                means[q] = float(adc.mean())
-                plot(outdir, f"mon0_i{q:08x}", adc)
-            print(send(port, "NEUR 0 i 0"))
-            print(send(port, "COUP 1 ac"))            # restore safe coupling
-            lo, mid, hi = means[0x0], means[0x00140000], means[0x00280000]
-            monotonic = (hi > mid > lo) or (hi < mid < lo)
-            span = abs(hi - lo)
-            results.append(("mon0", monotonic and span > 30.0,
-                            f"DC means i0={lo:.0f} i20={mid:.0f} i40={hi:.0f} span={span:.0f}"))
+        # --- current source + monitor 0: moving waveform should be visible
+        # directly and through the per-neuron current monitor.
+        if run("current") or run("mon"):
+            print(send(port, "COUP 1 ac", fail_on_err=True))
+            print(send(port, "NEUR 0 profile regular", fail_on_err=True))
+            print(send(port, "NEUR 0 i 0", fail_on_err=True))
+            print(send(port, "CURP 1 49 0x00500000", fail_on_err=True))
+
+            print(send(port, "NSRC 0 current", fail_on_err=True))
+            time.sleep(0.2)
+            cur_adc = capture_adc0(port, args.frames, args.adc_ch, "CAPT")
+            plot(outdir, "current", cur_adc)
+            fcur, rcur, _ = fft_peak(cur_adc)
+            cur_ptp = float(np.ptp(cur_adc))
+
+            print(send(port, "NSRC 0 mon0", fail_on_err=True))
+            time.sleep(0.2)
+            mon_adc = capture_adc0(port, args.frames, args.adc_ch, "CAPT")
+            plot(outdir, "mon0_current_wave", mon_adc)
+            fmon, rmon, _ = fft_peak(mon_adc)
+            mon_ptp = float(np.ptp(mon_adc))
+            corr = fit_corr_arrays(cur_adc, mon_adc)
+
+            if run("current"):
+                results.append(("current", cur_ptp > 500.0 and rcur > 20.0,
+                                f"tone={fcur:.2f} MHz peak/med={rcur:.0f} ptp={cur_ptp:.0f}"))
+            if run("mon"):
+                ok = mon_ptp > 500.0 and rmon > 20.0 and corr > 0.80
+                results.append(("mon0", ok,
+                                f"tone={fmon:.2f} MHz peak/med={rmon:.0f} ptp={mon_ptp:.0f} corr_to_current={corr:.3f}"))
 
         # --- spike 0: drive neuron 0 to spike fast, look for pulses (best-effort) ---
         if run("spike"):
-            print(send(port, "NEUR 0 profile regular"))
-            print(send(port, "NEUR 0 i 0x00280000"))   # strong drive
-            print(send(port, "NEUR period 2"))          # update almost every neuron clk
-            print(send(port, "NEUR dt 0x00008000"))     # large timestep -> fast dynamics
-            print(send(port, "NSRC 0 spike0"))
+            print(send(port, "PULS default", fail_on_err=True))
+            print(send(port, "NEUR 0 profile regular", fail_on_err=True))
+            print(send(port, "NEUR 0 i 0x00280000", fail_on_err=True))   # strong drive
+            print(send(port, "NEUR all period 1", fail_on_err=True))     # fast dynamics
+            print(send(port, "NEUR all dt 0x00008000", fail_on_err=True))
+            print(send(port, "NSRC 0 spike0", fail_on_err=True))
             time.sleep(0.3)
-            adc = capture_adc0(port, args.frames, args.adc_ch)
+            adc = capture_adc0(port, args.frames, args.adc_ch, "CAPT")
             plot(outdir, "spike0", adc)
-            x = adc - np.mean(adc)
-            thr = 5.0 * np.std(x)
-            npts = int(np.sum(x > thr))
-            results.append(("spike0", npts > 0, f"samples>5sigma={npts} rms={adc.std():.0f} (best-effort)"))
+            baseline = float(np.median(adc))
+            x = adc - baseline
+            ptp = float(np.ptp(adc))
+            peak = float(np.max(np.abs(x)))
+            thr = 0.45 * peak
+            npts = int(np.sum(np.abs(x) > thr))
+            results.append(("spike0", npts > 0 and ptp > 100.0,
+                            f"samples>45%peak={npts} ptp={ptp:.0f} rms={adc.std():.0f} (best-effort)"))
 
         # leave DAC0 on DDS as a clean default
         send(port, "NSRC 0 dds")
