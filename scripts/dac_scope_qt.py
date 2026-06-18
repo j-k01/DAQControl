@@ -103,7 +103,6 @@ COLLECT_SIZE_OPTIONS = [
     (1 << 20,     "1 MB (256k/ch)"),
     (4 << 20,     "4 MB (1M/ch)"),
     (16 << 20,    "16 MB (4M/ch)"),
-    (64 << 20,    "64 MB (16M/ch)"),
 ]
 COLLECT_SIZE_DEFAULT_IDX = 0   # 64 KB/chip
 # Auto-Sample: repeated one-shot bursts at a fixed cadence (not the cyclic UDP

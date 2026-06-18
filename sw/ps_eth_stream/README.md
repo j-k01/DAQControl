@@ -5,11 +5,11 @@ after the MicroBlaze firmware has captured them:
 
 - app DDR window: `0x01000000` through `0x0EFFFFFF`
 - debug mailbox: `0x0F000000`
-- burst mailbox: `0x0F001000`
+- burst/stream mailbox: `0x1003FF00`
 - chip0 burst buffer: `0x10040000`
-- chip1 burst buffer: `0x14040000`
-- continuous stream rings: `0x18080000` and `0x1A080000`
-- maximum burst size: 64 MB/chip on the current HP DDR_LOW map
+- chip1 burst buffer: `0x11040000`
+- continuous stream rings: `0x12080000` and `0x14080000`
+- maximum burst size: 16 MB/chip on the current HP DDR_LOW map
 
 The MicroBlaze firmware still owns capture control. The host registers its UDP
 destination with `BRST`, asks the firmware to run `BCAP <MB>`, then sends
@@ -88,7 +88,7 @@ Set the host Ethernet interface to the same subnet, for example
 `192.168.2.1/24`, then run:
 
 ```powershell
-python scripts\burst_capture.py --port COM10 --board-ip 192.168.2.10 --local-ip 192.168.2.1 --local-port 5005 --mb 64
+python scripts\burst_capture.py --port COM10 --board-ip 192.168.2.10 --local-ip 192.168.2.1 --local-port 5005 --mb 4
 ```
 
 The script writes a NumPy array with four decoded ADC channels:

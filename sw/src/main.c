@@ -276,20 +276,20 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
  * aligned (one trigger fires both, ADCs SYSREF-synced). RW6 carries the beat
  * count per chip (16 B/beat). The A53 reads the regions out over UDP on MB
  * request via the burst mailbox. */
-#define BURST_DDR_BASE0   0x10040000u    /* chip0 capture region (64 MB max)  */
-#define BURST_DDR_BASE1   0x14040000u    /* chip1 capture region (64 MB max)  */
-#define BURST_MAX_BYTES   0x04000000u    /* 64 MB/chip, below stream rings     */
+#define BURST_DDR_BASE0   0x10040000u    /* chip0 capture region (16 MB max)  */
+#define BURST_DDR_BASE1   0x11040000u    /* chip1 capture region (16 MB max)  */
+#define BURST_MAX_BYTES   0x01000000u    /* 16 MB/chip, below stream rings     */
 /* Per-descriptor byte count. MUST fit the SG buffer-length field, which is 26
  * bits (c_sg_length_width=26) -> max 0x03FFFFFF. 0x04000000 (64 MB) is 2^26,
  * one too many: it masks to length 0 -> zero-length descriptor -> DMAIntErr.
- * 32 MB chunks leave headroom and split the 64 MB burst window in two. */
+ * 32 MB chunks leave headroom; the current 16 MB burst window uses one desc. */
 #define BURST_DESC_BYTES  0x02000000u    /* 32 MB/descriptor (fits 26-bit len) */
 #define BURST_MAGIC       0x42435054u    /* mailbox magic: burst armed        */
 /* burst mailbox layout (at STRM_MAILBOX): 00=magic 04=bytes/chip 08=base0
  * 0C=base1 10=readout_req(MB++) 14=readout_done(A53 echo) 18=beats */
 
 static const u32 strm_desc_base[ADC_DMA_CHIPS] = { 0x10030000u, 0x10034000u };
-static const u32 strm_ring_base[ADC_DMA_CHIPS] = { 0x18080000u, 0x1A080000u };
+static const u32 strm_ring_base[ADC_DMA_CHIPS] = { 0x12080000u, 0x14080000u };
 
 static u32 stream_active = 0;
 static u32 stream_decim = 0;
@@ -2326,7 +2326,7 @@ static u32 burst_bytes = BURST_MAX_BYTES;
 /* BCAP [N[k|m]] -- full-rate, un-decimated, sample-aligned burst capture of all
  * 4 ADC channels into two low-DDR regions. N defaults to MB ('m' optional,
  * back-compatible with BCAP <MB>); a 'k' suffix means KB for small grabs
- * (e.g. BCAP 64k = 64 KB/chip = 16384 samples/ch). Default 64 MB/chip. */
+ * (e.g. BCAP 64k = 64 KB/chip = 16384 samples/ch). Default 16 MB/chip. */
 static void cmd_burst(char *args)
 {
     char *p = args;
@@ -2671,7 +2671,7 @@ static void cmd_help(void)
 #endif
 #if HAS_PS_DDR_DMA
     send_str("  DMAC [frames]    arm ADC0/ADC1 S2MM DMA to PS DDR, then pulse ADC capture\r\n");
-    send_str("  BCAP [MB]        full-rate un-decimated burst capture of all 4 ADC ch (default/max 64 MB/chip)\r\n");
+    send_str("  BCAP [MB]        full-rate un-decimated burst capture of all 4 ADC ch (default/max 16 MB/chip)\r\n");
     send_str("  BRDO             ask the A53 to read the last BCAP regions out over UDP\r\n");
     send_str("  STRM [decim [cic]]|STOP|STAT  continuous decimated stream into DDR rings (cyclic SG)\r\n");
     send_str("  STRM CIC on|off  live A/B toggle: chip1 ch2/3 CIC anti-alias (D=128) vs keep-1-of-D\r\n");

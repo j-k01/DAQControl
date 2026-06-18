@@ -10,11 +10,11 @@ Flow (all MB-controlled, capture and readout decoupled):
   4. reassemble by (chip, byte-offset), decode to 4 channels, report loss
 
 Each chip region is 2 channels x int16; frame = 8 int16 (4 even-ch + 4 odd-ch),
-so the decode matches the streaming path. The Ethernet drain is the slow part
-(~0.55 s for 64 MB over 1 GbE); the capture itself is the fast part.
+so the decode matches the streaming path. The Ethernet drain is the slow part;
+small captures are enough for waveform/source checks.
 
-  python scripts/burst_capture.py --mb 64
-  python scripts/burst_capture.py --mb 64 --plot
+  python scripts/burst_capture.py --mb 4
+  python scripts/burst_capture.py --mb 4 --plot
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ import serial
 HDR = struct.Struct("<IHHIIIIII")   # magic ver hdr seq chip off bytes drops decim
 MAGIC = 0x53514144
 VOLTS_PER_COUNT = 1.9 / 65536.0
-MAX_MB_PER_CHIP = 64
+MAX_MB_PER_CHIP = 16
 
 
 class Reassembler:
@@ -187,7 +187,7 @@ def main():
     ap.add_argument("--cmd-port", type=int, default=5006)
     ap.add_argument("--local-ip", default="192.168.2.1")
     ap.add_argument("--local-port", type=int, default=5005)
-    ap.add_argument("--mb", type=int, default=64,
+    ap.add_argument("--mb", type=int, default=4,
                     help=f"MB/chip to capture, 1..{MAX_MB_PER_CHIP}")
     ap.add_argument("--drain-timeout", type=float, default=60.0)
     ap.add_argument("--out", default="captures/burst.npy")
