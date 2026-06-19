@@ -251,6 +251,23 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
 #define DMA_DMASR_IDLE       (1u << 1)
 #define DMA_DMASR_ERR_MASK   ((1u << 4) | (1u << 5) | (1u << 6))
 #define DMA_DMASR_IRQ_MASK   ((1u << 12) | (1u << 13) | (1u << 14))
+/* One-shot (non-cyclic) S2MM tail-descriptor slack. The PL burst engine ends
+ * the packet with tlast after exactly `bytes`. If the descriptor buffer is
+ * sized EXACTLY to the packet, buffer-full and tlast land on the same final
+ * beat; on the tail descriptor (no successor) that tie resolves
+ * nondeterministically and leaves S2MM stuck non-idle (no error) on a per-chip
+ * coin flip. Sizing the buffer a few beats larger makes tlast (RXEOF) always
+ * terminate the transfer first; the DMA stops at tlast so the slack is never
+ * written. (Cyclic streaming never hits this -- every chunk descriptor has a
+ * successor in the ring.) */
+#define DMA_S2MM_LEN_SLACK   0x1000u     /* tail headroom (>= DMA max burst): lets the
+                                          * final tlast/RXEOF flush fully and beat the
+                                          * buffer-full race; never written to DDR */
+#define BURST_CHUNK_BYTES    0x10000u    /* 64 KB = FIFO_DEPTH*16 = one FIFO-resident
+                                          * chunk. Captures larger than this drain
+                                          * continuously and MUST span a chain of
+                                          * descriptors (like the cyclic stream ring);
+                                          * a lone self-sized descriptor strands S2MM. */
 
 /* Continuous decimated streaming: the PL decimator (RW6) feeds each DMA a
  * tlast-delimited 128 KB chunk stream; a cyclic SG descriptor ring makes the
@@ -276,9 +293,16 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
  * aligned (one trigger fires both, ADCs SYSREF-synced). RW6 carries the beat
  * count per chip (16 B/beat). The A53 reads the regions out over UDP on MB
  * request via the burst mailbox. */
-#define BURST_DDR_BASE0   0x18000000u    /* chip0 capture region (16 MB max)  */
-#define BURST_DDR_BASE1   0x19000000u    /* chip1 capture region (16 MB max)  */
-#define BURST_MAX_BYTES   0x01000000u    /* 16 MB/chip, below stream rings     */
+#define BURST_DDR_BASE0   0x18000000u    /* chip0 capture region               */
+#define BURST_DDR_BASE1   0x19000000u    /* chip1 capture region               */
+/* One extra ring chunk captured past the read-out window so the last WANTED
+ * chunk completes on buffer-full (flushed to DDR) instead of on the burst's
+ * final tlast (which strands the chunk's tail in the DMA -> stale capture
+ * tail). Captured but never read out. */
+#define BURST_FLUSH_GUARD BURST_CHUNK_BYTES
+/* Read-out ceiling per chip. The captured size is bytes + BURST_FLUSH_GUARD, so
+ * keep the ceiling a guard below the 16 MB chip0->chip1 gap. */
+#define BURST_MAX_BYTES   0x00FE0000u    /* ~15.9 MB/chip + 64 KB guard < 16 MB */
 #define BURST_MAGIC       0x42435054u    /* mailbox magic: burst armed        */
 /* burst mailbox layout (at STRM_MAILBOX): 00=magic 04=bytes/chip 08=base0
  * 0C=base1 10=readout_req(MB++) 14=readout_done(A53 echo) 18=beats */
@@ -2166,22 +2190,106 @@ static void dma_write_desc(u32 desc, u32 next, u32 buf, u32 bytes)
     Xil_Out32(desc + 0x1Cu, 0u);
 }
 
-/* The DMA is built with scatter-gather (for cyclic streaming), which removes
- * the simple-mode DA/LENGTH registers, so the one-shot burst capture is a
- * single self-terminating descriptor: tail == head stops after one chunk. */
+/* Arm S2MM for a one-shot burst of `bytes` into a contiguous DDR window.
+ *
+ * The capture is one continuous tlast-delimited packet. It is usually larger
+ * than the 64 KB PL FIFO, so it must drain continuously while the ADC fills --
+ * and a lone self-sized descriptor strands S2MM in that regime: when the final
+ * beat makes buffer-full and tlast land on the same beat of the TAIL descriptor
+ * (no successor), completion resolves nondeterministically and the channel
+ * hangs (idle never sets, no error) on a per-chip coin flip.
+ *
+ * Fix: chain BURST_CHUNK_BYTES descriptors exactly like the proven cyclic
+ * stream ring. Every leading 64 KB chunk completes on buffer-full and hands off
+ * to its successor (the normal multi-descriptor packet-spanning path, lossless
+ * in the stream ring), and a slightly oversized TAIL descriptor catches the
+ * final tlast as RXEOF before it fills -- so the transfer always terminates on
+ * end-of-packet, never on the tail-buffer-full tie. Reuses the stream
+ * descriptor region (burst and streaming are mutually exclusive). */
 static void dma_arm_s2mm(u32 chip, u32 dest_addr, u32 bytes)
 {
     u32 base = adc_dma_base[chip];
-    u32 desc = (chip == 0u) ? STRM_ONESHOT_DESC0 : STRM_ONESHOT_DESC1;
+    u32 desc_base = strm_desc_base[chip];
+    u32 leading = (bytes > BURST_CHUNK_BYTES)
+                      ? ((bytes - 1u) / BURST_CHUNK_BYTES) : 0u;
+    u32 tail = desc_base + leading * STRM_DESC_STRIDE;
+    /* Tail completion strategy (ILA-confirmed): on a continuous >64 KB drain the
+     * S2MM holds tready=1 and completes the TAIL on BUFFER-FULL, not on tlast --
+     * any slack leaves it waiting forever for bytes that never arrive. So size a
+     * chain tail to the EXACT remaining bytes (fills -> buffer-full -> done; also
+     * a deterministic backstop if the final tlast/EOF is intermittently missed).
+     * A lone descriptor (<=64 KB) still needs slack: it completes via tlast/RXEOF
+     * and an exact size hits the buffer-full/tlast tie. */
+    u32 tail_len = bytes - leading * BURST_CHUNK_BYTES
+                 + ((leading == 0u) ? DMA_S2MM_LEN_SLACK : 0u);
+    u32 i;
 
     dma_reset(chip);
-    dma_write_desc(desc, desc, dest_addr, bytes);
+    for (i = 0u; i < leading; i++) {
+        u32 desc = desc_base + i * STRM_DESC_STRIDE;
+        dma_write_desc(desc, desc + STRM_DESC_STRIDE,
+                       dest_addr + i * BURST_CHUNK_BYTES, BURST_CHUNK_BYTES);
+    }
+    /* tail descriptor: remainder + slack, self-linked (it is the tail, so the
+     * engine stops here once it is processed). */
+    dma_write_desc(tail, tail, dest_addr + leading * BURST_CHUNK_BYTES, tail_len);
+
     Xil_Out32(base + DMA_S2MM_DMASR, DMA_DMASR_IRQ_MASK | DMA_DMASR_ERR_MASK);
-    Xil_Out32(base + DMA_S2MM_CURDESC, desc);
+    Xil_Out32(base + DMA_S2MM_CURDESC, desc_base);
     Xil_Out32(base + DMA_S2MM_CURDESC_MSB, 0u);
     Xil_Out32(base + DMA_S2MM_DMACR, DMA_DMACR_RS);
-    Xil_Out32(base + DMA_S2MM_TAILDESC, desc);
+    Xil_Out32(base + DMA_S2MM_TAILDESC, tail);
     Xil_Out32(base + DMA_S2MM_TAILDESC_MSB, 0u);
+}
+
+/* Arm S2MM as a CYCLIC ring sized to `bytes` (rounded up to BURST_CHUNK_BYTES
+ * chunks), exactly like the proven streaming ring. Cyclic mode has NO tail
+ * descriptor to strand, so a continuous >64 KB drain never deadlocks -- the
+ * capture engine's single tlast is just a chunk boundary the ring rolls past.
+ * The caller polls the capture engine's `done`, lets the DMA flush, then halts
+ * the ring (dma_reset); the data is already in DDR. Reuses the stream
+ * descriptor region (burst and streaming are mutually exclusive). */
+static void dma_arm_cyclic_burst(u32 chip, u32 dest_addr, u32 bytes)
+{
+    u32 base = adc_dma_base[chip];
+    u32 desc_base = strm_desc_base[chip];
+    u32 nchunks = (bytes + BURST_CHUNK_BYTES - 1u) / BURST_CHUNK_BYTES;
+    u32 i;
+
+    if (nchunks < 2u) {
+        nchunks = 2u;                       /* cyclic ring needs >=2 descriptors */
+    }
+    dma_reset(chip);
+    for (i = 0u; i < nchunks; i++) {
+        u32 desc = desc_base + i * STRM_DESC_STRIDE;
+        u32 next = desc_base + ((i + 1u) % nchunks) * STRM_DESC_STRIDE;
+        dma_write_desc(desc, next, dest_addr + i * BURST_CHUNK_BYTES,
+                       BURST_CHUNK_BYTES);
+    }
+    Xil_Out32(base + DMA_S2MM_DMASR, DMA_DMASR_IRQ_MASK | DMA_DMASR_ERR_MASK);
+    Xil_Out32(base + DMA_S2MM_CURDESC, desc_base);
+    Xil_Out32(base + DMA_S2MM_CURDESC_MSB, 0u);
+    Xil_Out32(base + DMA_S2MM_DMACR, DMA_DMACR_RS | DMA_DMACR_CYCLIC);
+    Xil_Out32(base + DMA_S2MM_TAILDESC, 0x50u);   /* sentinel: ring never halts */
+    Xil_Out32(base + DMA_S2MM_TAILDESC_MSB, 0u);
+}
+
+/* Poll both capture engines' status (ADCS selector 8) until done. The status
+ * word is {8'hBC, done, running, overflow, ...}: magic[31:24]=0xBC, done=bit23,
+ * overflow=bit21. */
+static int wait_burst_done(u32 *s0, u32 *s1)
+{
+    u32 timeout;
+
+    for (timeout = 0; timeout < 20000000u; timeout++) {
+        *s0 = read_adc_debug(0u, 8u);
+        *s1 = read_adc_debug(1u, 8u);
+        if (((*s0 >> 24) == 0xBCu) && ((*s1 >> 24) == 0xBCu) &&
+            (((*s0 >> 23) & 1u) != 0u) && (((*s1 >> 23) & 1u) != 0u)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* Pulse the ADC capture trigger (RW3[3] rising edge) WITHOUT disturbing the
@@ -2399,12 +2507,18 @@ static void cmd_burst(char *args)
         stream_stop();                       /* burst capture owns both DMAs */
     }
 
-    set_adc_capture_beats(beats);           /* PL capture length (both chips) */
-    /* Small one-shot bursts use the same proven self-terminating SG descriptor
-     * path as DMAC; the only difference is the destination window and A53
-     * mailbox readout. */
-    dma_arm_s2mm(0u, burst_ddr_base[0], bytes);
-    dma_arm_s2mm(1u, burst_ddr_base[1], bytes);
+    /* Always use the proven CYCLIC ring (no tail descriptor to strand S2MM).
+     * Capture BURST_FLUSH_GUARD extra bytes beyond the read-out window so the
+     * last WANTED chunk completes on buffer-full (flushed) rather than on the
+     * burst's final tlast -- a tlast-terminated last chunk leaves its tail in
+     * the DMA unflushed and dma_reset discards it, leaving a STALE capture tail
+     * (e.g. old data persisting in the later half). The guard is captured but
+     * never read out. */
+    u32 cap_bytes = bytes + BURST_FLUSH_GUARD;
+    u32 cyclic = 1u;
+    set_adc_capture_beats(cap_bytes >> 4);  /* wanted + guard beats */
+    dma_arm_cyclic_burst(0u, burst_ddr_base[0], cap_bytes);
+    dma_arm_cyclic_burst(1u, burst_ddr_base[1], cap_bytes);
 
     /* publish region info for the A53 readout. readout_req (0x10) stays
      * monotonic across captures -- the A53 drains on any change -- so we do not
@@ -2417,7 +2531,32 @@ static void cmd_burst(char *args)
 
     pulse_adc_capture();                    /* fire both chips together */
 
-    if (!wait_dma_done(&s0, &s1)) {
+    if (cyclic) {
+        u32 d;
+        u32 ok = wait_burst_done(&s0, &s1) ? 1u : 0u;
+        /* let each DMA flush its last in-flight burst into DDR, then halt the
+         * cyclic ring (the data is already written). */
+        for (d = 0u; d < 8000u; d++) {
+            (void)dma_status(0u);
+        }
+        dma_reset(0u);
+        dma_reset(1u);
+        if (!ok) {
+            send_str("ERR BCAP timeout (engine) ");
+            print_named_hex("st0", s0);
+            send_str(" ");
+            print_named_hex("st1", s1);
+            send_str("\r\n");
+            return;
+        }
+        if ((((s0 >> 21) | (s1 >> 21)) & 1u) != 0u) {
+            send_str("WARN BCAP overflow -- capture lossy ");
+            print_named_hex("st0", s0);
+            send_str(" ");
+            print_named_hex("st1", s1);
+            send_str("\r\n");
+        }
+    } else if (!wait_dma_done(&s0, &s1)) {
         send_str("ERR BCAP timeout ");
         print_named_hex("dma0", s0);
         send_str(" ");
