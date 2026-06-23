@@ -189,15 +189,21 @@ def main():
     ap.add_argument("--local-port", type=int, default=5005)
     ap.add_argument("--mb", type=int, default=4,
                     help=f"MB/chip to capture, 1..{MAX_MB_PER_CHIP}")
+    ap.add_argument("--kb", type=int, default=0,
+                    help="KB/chip to capture (overrides --mb; matches the GUI's BCAP <KB>k)")
     ap.add_argument("--drain-timeout", type=float, default=60.0)
     ap.add_argument("--out", default="captures/burst.npy")
     ap.add_argument("--plot", action="store_true")
     args = ap.parse_args()
-    if args.mb < 1 or args.mb > MAX_MB_PER_CHIP:
-        raise SystemExit(f"--mb must be 1..{MAX_MB_PER_CHIP}; "
-                         "the current firmware maps burst buffers below the DDR_LOW limit")
-
-    bytes_per_chip = args.mb * (1 << 20)
+    if args.kb > 0:
+        bytes_per_chip = args.kb * 1024
+        bcap_arg = f"{args.kb}k"
+    else:
+        if args.mb < 1 or args.mb > MAX_MB_PER_CHIP:
+            raise SystemExit(f"--mb must be 1..{MAX_MB_PER_CHIP}; "
+                             "the current firmware maps burst buffers below the DDR_LOW limit")
+        bytes_per_chip = args.mb * (1 << 20)
+        bcap_arg = f"{args.mb}"
     s = serial.Serial(args.port, args.baud, timeout=5, write_timeout=5)
     time.sleep(0.2)
 
@@ -208,9 +214,9 @@ def main():
               file=sys.stderr)
         time.sleep(0.3)
 
-    print(f"BCAP {args.mb} MB/chip ...")
+    print(f"BCAP {bcap_arg}/chip ...")
     t0 = time.time()
-    resp = uart_cmd(s, f"BCAP {args.mb}", ("OK BCAP", "ERR"), timeout=30.0)
+    resp = uart_cmd(s, f"BCAP {bcap_arg}", ("OK BCAP", "ERR"), timeout=30.0)
     print(" ", resp or "(no BCAP response)")
     if not resp.startswith("OK BCAP"):
         asm.close(); s.close(); sys.exit("capture failed")

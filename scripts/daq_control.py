@@ -30,6 +30,24 @@ DEFAULT_REMOTE_REPO = "/home/jkincaid/DAQControl"
 DEFAULT_BRANCH = "merge-stream-neuron"
 DEFAULT_XILINX_WRAPPER = "/home/jkincaid/bin/with_xilinx_2024_1"
 
+# Ethernet data plane (A53 PS-eth): one-shot burst capture + UDP readout.
+DEFAULT_BOARD_IP = "192.168.2.10"
+DEFAULT_CMD_PORT = 5006
+DEFAULT_LOCAL_IP = "192.168.2.1"
+DEFAULT_LOCAL_PORT = 5005
+DEFAULT_CAPTURE_DIR = REPO_ROOT / "captures"
+
+VOLTS_PER_COUNT = 1.9 / 65536.0
+ADC_SAMPLE_RATE_HZ = 1.0e9          # full-rate ADC / DAC sample clock
+DDS_SAMPLE_RATE_HZ = 1.0e9
+DDS_PHASE_BITS = 24                  # freq = inc / 2**24 * 1 GS/s
+
+# Firmware NEUR surface: built-in profiles + the two param classes. Physical
+# params are converted to Q16.16; dt/period/reset pass through as raw integers.
+NEURON_PROFILES = ("regular", "bursting", "chattering", "fast")
+NEURON_PHYS_PARAMS = ("a", "b", "c", "d", "i", "iconst")
+NEURON_RAW_PARAMS = ("dt", "period", "reset")
+
 GENERATED_REMOTE_PATHS = (
     "ip_repo/AXI4_register_file_1_0/component.xml",
     "project/DAQ_LAUNCH.runs/impl_1/top.bit",
@@ -305,6 +323,475 @@ def program_board_via_capitolpeak(
     if not ok:
         raise DaqControlError("capitolpeak program_board failed:\n" + completed.stdout)
     return result
+
+
+# --------------------------------------------------------------- DDS frequency
+def izh_to_q16(value: float) -> int:
+    """Physical Izhikevich value -> signed Q16.16 packed as a 32-bit word."""
+    return int(round(float(value) * 65536.0)) & 0xFFFFFFFF
+
+
+def dds_freq_to_inc(freq_hz: float) -> int:
+    """DDS frequency (Hz) -> 24-bit phase increment, clamped to 0..0xFFFFFF."""
+    inc = int(round(float(freq_hz) / DDS_SAMPLE_RATE_HZ * (1 << DDS_PHASE_BITS)))
+    return max(0, min(0x00FFFFFF, inc))
+
+
+def dds_inc_to_freq(inc: int) -> float:
+    return (int(inc) & 0x00FFFFFF) / float(1 << DDS_PHASE_BITS) * DDS_SAMPLE_RATE_HZ
+
+
+def set_dds(
+    freq_hz: Optional[float] = None,
+    inc: Optional[int] = None,
+    port_name: str = DEFAULT_PORT,
+    baud: int = DEFAULT_BAUD,
+    timeout: float = DEFAULT_UART_TIMEOUT,
+) -> Dict[str, Any]:
+    """Set the DDS phase increment via DDSI.
+
+    Provide either ``freq_hz`` (converted to a phase increment) or a raw ``inc``
+    (0..0xFFFFFF; 0 selects the HDL default).  freq = inc / 2**24 * 1 GS/s, so
+    0x100000 -> 62.5 MHz.  Route a DAC to ``dds`` to emit the tone.
+    """
+    if inc is None:
+        if freq_hz is None:
+            raise DaqControlError("set_dds requires freq_hz or inc")
+        inc = dds_freq_to_inc(freq_hz)
+    inc = int(inc)
+    if inc < 0 or inc > 0x00FFFFFF:
+        raise DaqControlError("DDS inc must be 0..0xFFFFFF (0 = HDL default)")
+    command = f"DDSI 0x{inc:06X}"
+    responses = send_uart_commands(
+        [command], port_name, baud, timeout, expected={command: ("DDS inc=",)}
+    )
+    return {
+        "command": command,
+        "inc": f"0x{inc:06X}",
+        "requested_freq_hz": freq_hz,
+        "actual_freq_hz": dds_inc_to_freq(inc),
+        "responses": responses,
+    }
+
+
+# ------------------------------------------------------------------- neurons
+def _normalize_neuron_target(target: Any) -> str:
+    if isinstance(target, str) and target.strip().lower() == "all":
+        return "all"
+    try:
+        channel = int(target)
+    except (TypeError, ValueError):
+        raise DaqControlError(f"neuron target must be 0..3 or 'all', got {target!r}")
+    if channel < 0 or channel > 3:
+        raise DaqControlError("neuron target must be 0..3 or 'all'")
+    return str(channel)
+
+
+def program_neuron(
+    target: Any = "all",
+    profile: Optional[str] = None,
+    params: Optional[Mapping[str, float]] = None,
+    port_name: str = DEFAULT_PORT,
+    baud: int = DEFAULT_BAUD,
+    timeout: float = DEFAULT_UART_TIMEOUT,
+) -> Dict[str, Any]:
+    """Program a neuron (channel 0..3 or 'all') with a built-in profile and/or
+    explicit parameters.
+
+    ``profile`` is one of NEURON_PROFILES.  ``params`` maps firmware NEUR params
+    to values: a/b/c/d/i/iconst are PHYSICAL Izhikevich units (converted to
+    Q16.16); dt/period/reset are raw integers.  Each NEUR write resets + reloads
+    the target so it runs fresh with exactly these values.
+    """
+    tgt = _normalize_neuron_target(target)
+    commands: List[str] = []
+    expected: Dict[str, Tuple[str, ...]] = {}
+    applied: Dict[str, Any] = {}
+
+    if profile is not None:
+        prof = str(profile).strip().lower()
+        if prof not in NEURON_PROFILES:
+            valid = ", ".join(NEURON_PROFILES)
+            raise DaqControlError(f"unknown profile {profile!r}; valid: {valid}")
+        command = f"NEUR {tgt} {prof}"
+        commands.append(command)
+        expected[command] = ("OK NEUR",)
+        applied["profile"] = prof
+
+    for name, value in dict(params or {}).items():
+        key = str(name).strip().lower()
+        if key in NEURON_PHYS_PARAMS:
+            q16 = izh_to_q16(value)
+            command = f"NEUR {tgt} {key} 0x{q16:08X}"
+            applied[key] = {"physical": float(value), "q16": f"0x{q16:08X}"}
+        elif key in NEURON_RAW_PARAMS:
+            raw = int(value)
+            command = f"NEUR {tgt} {key} {raw}"
+            applied[key] = {"raw": raw}
+        else:
+            raise DaqControlError(
+                f"unknown neuron param {name!r}; physical={NEURON_PHYS_PARAMS}, "
+                f"raw={NEURON_RAW_PARAMS}"
+            )
+        commands.append(command)
+        expected[command] = ("OK NEUR",)
+
+    if not commands:
+        raise DaqControlError("program_neuron requires a profile or params")
+    responses = send_uart_commands(commands, port_name, baud, timeout, expected)
+    return {"target": tgt, "applied": applied, "responses": responses}
+
+
+# ------------------------------------------------------------------- streaming
+def start_stream(
+    decim: int = 128,
+    cic: bool = False,
+    port_name: str = DEFAULT_PORT,
+    baud: int = DEFAULT_BAUD,
+    timeout: float = DEFAULT_UART_TIMEOUT,
+) -> Dict[str, Any]:
+    """Start the cyclic UDP ADC stream (STRM <decim> [cic]).  decim must be a
+    multiple of 4 in 4..65532; sample rate per channel = 1 GS/s / decim."""
+    decim = int(decim)
+    if decim < 4 or decim > 65532 or decim % 4 != 0:
+        raise DaqControlError("decim must be a multiple of 4 in 4..65532")
+    command = f"STRM {decim}{' cic' if cic else ''}"
+    responses = send_uart_commands(
+        [command], port_name, baud, timeout, expected={command: ("OK STRM",)}
+    )
+    return {
+        "command": command,
+        "decim": decim,
+        "cic": bool(cic),
+        "sample_rate_hz": ADC_SAMPLE_RATE_HZ / decim,
+        "responses": responses,
+    }
+
+
+def stop_stream(
+    port_name: str = DEFAULT_PORT,
+    baud: int = DEFAULT_BAUD,
+    timeout: float = DEFAULT_UART_TIMEOUT,
+) -> Dict[str, Any]:
+    """Stop the cyclic UDP stream (STRM STOP)."""
+    responses = send_uart_commands(
+        ["STRM STOP"], port_name, baud, timeout, expected={"STRM STOP": ("OK STRM",)}
+    )
+    return {"responses": responses}
+
+
+def set_cic(
+    on: bool,
+    port_name: str = DEFAULT_PORT,
+    baud: int = DEFAULT_BAUD,
+    timeout: float = DEFAULT_UART_TIMEOUT,
+) -> Dict[str, Any]:
+    """Toggle the chip-1 (ch2/3) CIC anti-alias filter (STRM CIC on|off).
+    The firmware applies this to the running stream, so start a stream first."""
+    command = f"STRM CIC {'on' if on else 'off'}"
+    responses = send_uart_commands(
+        [command], port_name, baud, timeout, expected={command: ("OK STRM",)}
+    )
+    return {"command": command, "cic": bool(on), "responses": responses}
+
+
+# ------------------------------------------------------------------- ethernet
+def ping_board(
+    ip: str = DEFAULT_BOARD_IP,
+    count: int = 3,
+    timeout: float = 10.0,
+) -> Dict[str, Any]:
+    """ICMP-ping the board's A53 ethernet interface to confirm the PS-eth app
+    is up (UART works even when the A53/ethernet is down, so this is a useful
+    independent check)."""
+    count = max(1, int(count))
+    if os.name == "nt":
+        argv = ["ping", "-n", str(count), ip]
+    else:
+        argv = ["ping", "-c", str(count), ip]
+    completed = subprocess.run(
+        argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        timeout=timeout, check=False,
+    )
+    out = completed.stdout or ""
+    reachable = completed.returncode == 0 and "ttl=" in out.lower()
+    return {
+        "ip": ip,
+        "reachable": reachable,
+        "returncode": completed.returncode,
+        "output": out,
+    }
+
+
+def _load_numpy():
+    try:
+        import numpy as np  # type: ignore
+    except ImportError as exc:
+        raise DaqControlError(
+            "numpy is required for captures; run `pip install -r requirements.txt`"
+        ) from exc
+    return np
+
+
+def _load_burst_module():
+    try:
+        import burst_capture  # type: ignore
+    except ImportError as exc:
+        raise DaqControlError(
+            "burst_capture not importable; run the server from the scripts/ dir"
+        ) from exc
+    return burst_capture
+
+
+def summarize_channels(
+    chans: Mapping[int, Any],
+    fs_hz: float = ADC_SAMPLE_RATE_HZ,
+    freq_floor_hz: float = 1.0e6,
+) -> List[Dict[str, Any]]:
+    """Per-channel stats (min/max/mean/rms, Vpp, dominant tone) for a captured
+    {ch: int16[]} set -- a compact summary instead of returning raw samples."""
+    np = _load_numpy()
+    out: List[Dict[str, Any]] = []
+    for ch in range(4):
+        x = np.asarray(chans[ch]).astype(np.float64)
+        item: Dict[str, Any] = {"ch": ch, "samples": int(x.size)}
+        if x.size:
+            mean = float(x.mean())
+            item.update(
+                min=float(x.min()), max=float(x.max()), mean=mean,
+                rms_counts=float(np.sqrt(np.mean((x - mean) ** 2))),
+                vpp=float((x.max() - x.min()) * VOLTS_PER_COUNT),
+            )
+            if x.size >= 16:
+                v = (x - mean) * np.hanning(x.size)
+                spec = np.abs(np.fft.rfft(v))
+                freqs = np.fft.rfftfreq(x.size, 1.0 / fs_hz)
+                lo = int(np.searchsorted(freqs, freq_floor_hz))
+                if lo < spec.size:
+                    k = lo + int(np.argmax(spec[lo:]))
+                    item["dominant_freq_mhz"] = float(freqs[k] / 1e6)
+        out.append(item)
+    return out
+
+
+def _save_capture_npz(capture_dir: Path, label: str, chans: Mapping[int, Any],
+                      fs_hz: float, **meta: Any) -> Optional[Path]:
+    np = _load_numpy()
+    try:
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        stem = f"cap_{time.strftime('%Y%m%d_%H%M%S')}_{label}"
+        arrays = {f"ch{ch}": np.asarray(chans[ch], dtype=np.int16) for ch in range(4)}
+        path = capture_dir / (stem + ".npz")
+        np.savez_compressed(
+            path, fs_hz=np.float64(fs_hz),
+            **arrays, **{k: np.asarray(v) for k, v in meta.items()},
+        )
+        return path
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def collect_ethernet_burst(
+    kb: int = 64,
+    port_name: str = DEFAULT_PORT,
+    baud: int = DEFAULT_BAUD,
+    board_ip: str = DEFAULT_BOARD_IP,
+    cmd_port: int = DEFAULT_CMD_PORT,
+    local_ip: str = DEFAULT_LOCAL_IP,
+    local_port: int = DEFAULT_LOCAL_PORT,
+    drain_timeout: Optional[float] = None,
+    save: bool = True,
+    capture_dir: Optional[str] = None,
+    label: str = "mcp",
+    retries: int = 1,
+    uart_timeout: float = DEFAULT_UART_TIMEOUT,
+) -> Dict[str, Any]:
+    """One-shot full-rate burst capture over Ethernet (BCAP + BRDO + UDP drain).
+
+    Captures ``kb`` KB/chip (both chips, sample-aligned: chip0=ch0/1, chip1=
+    ch2/3), reassembles the UDP readout, and returns a per-channel summary plus
+    coverage.  The raw int16 channels are saved to a .npz under ``capture_dir``
+    (default <repo>/captures) unless ``save`` is false.  This is the reliable way
+    for an agent to actually SEE the ADC, far better than the cyclic stream.
+    """
+    serial = _load_serial_module()
+    burst = _load_burst_module()
+    kb = int(kb)
+    if kb < 1:
+        raise DaqControlError("kb must be >= 1")
+    bytes_per_chip = kb * 1024
+    if drain_timeout is None:
+        drain_timeout = max(8.0, (2.0 * bytes_per_chip / 70.0e6) + 4.0)
+
+    attempts = 1 + max(0, int(retries))
+    asm = None
+    ser = None
+    best: Optional[Tuple[float, bool, float, float, Dict[int, Any]]] = None
+    used = 0
+    try:
+        ser = serial.Serial(port_name, baud, timeout=5, write_timeout=5)
+        time.sleep(0.2)
+        asm = burst.Reassembler(board_ip, cmd_port, local_ip, local_port,
+                                bytes_per_chip)
+        # a cyclic stream and a one-shot burst can't share the DMA; stop it first
+        # (STRM STOP always acks, even when idle).
+        burst.uart_cmd(ser, "STRM STOP", ("OK STRM", "ERR"), timeout=uart_timeout)
+        # Each attempt is a fresh BCAP+BRDO; retry only if the UDP drain dropped
+        # packets (the data is in DDR, the loss is in readout). Breaks on the
+        # first 100%-coverage capture, so the common case costs one pass.
+        for attempt in range(attempts):
+            used = attempt + 1
+            if not asm.register(timeout=2.0):
+                raise DaqControlError("BRST registration timed out (no BRST_READY from A53)")
+            bcap = burst.uart_cmd(ser, f"BCAP {kb}k", ("OK BCAP", "ERR"), timeout=30.0)
+            if not bcap.startswith("OK BCAP"):
+                raise DaqControlError(f"BCAP failed: {bcap or '(no UART reply)'}")
+            brdo = burst.uart_cmd(ser, "BRDO", ("OK BRDO", "ERR"), timeout=10.0)
+            req = burst.parse_brdo_request(brdo)
+            if not brdo.startswith("OK BRDO") or req is None:
+                raise DaqControlError(f"BRDO failed: {brdo or '(no UART reply)'}")
+            asm.set_request_id(req)            # clears the buffers for this request
+            deadline = time.time() + drain_timeout
+            while time.time() < deadline and not asm.complete():
+                time.sleep(0.05)
+            cov0, cov1 = asm.coverage(0), asm.coverage(1)
+            complete = asm.complete()
+            chans = {}
+            chans.update(burst.decode_chip(asm.buf[0], 0))
+            chans.update(burst.decode_chip(asm.buf[1], 2))
+            mincov = min(cov0, cov1)
+            if best is None or mincov > best[0]:
+                best = (mincov, complete, cov0, cov1, chans)
+            if complete:
+                break
+    finally:
+        if asm is not None:
+            asm.close()
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    _, complete, cov0, cov1, chans = best  # type: ignore[misc]
+    result: Dict[str, Any] = {
+        "kb_per_chip": kb,
+        "bytes_per_chip": bytes_per_chip,
+        "complete": bool(complete),
+        "attempts": used,
+        "coverage": {"chip0": round(cov0, 4), "chip1": round(cov1, 4)},
+        "channels": summarize_channels(chans, ADC_SAMPLE_RATE_HZ),
+    }
+    if save:
+        cap_dir = Path(capture_dir) if capture_dir else DEFAULT_CAPTURE_DIR
+        path = _save_capture_npz(
+            cap_dir, label, chans, ADC_SAMPLE_RATE_HZ,
+            coverage=min(cov0, cov1), bytes_per_chip=bytes_per_chip,
+        )
+        result["saved"] = str(path) if path else None
+    if not complete:
+        result["warning"] = (
+            "UDP drain incomplete; the capture is in DDR but readout lost packets"
+        )
+    return result
+
+
+def uart_capture_snapshot(
+    frames: int = 512,
+    port_name: str = DEFAULT_PORT,
+    baud: int = DEFAULT_BAUD,
+    timeout: float = DEFAULT_UART_TIMEOUT,
+    save: bool = True,
+    capture_dir: Optional[str] = None,
+    label: str = "uart",
+) -> Dict[str, Any]:
+    """Grab a 4-channel ADC snapshot over UART (PCAP) -- no Ethernet needed.
+    Each frame is 4 samples/channel, so samples/ch = frames * 4 (frames 1..4096).
+    Returns a per-channel summary and saves the raw int16 channels to a .npz."""
+    np = _load_numpy()
+    serial = _load_serial_module()
+    frames = int(frames)
+    if frames < 1 or frames > 4096:
+        raise DaqControlError("frames must be 1..4096")
+    sync = b"\xFE\x10\xCA\xFE"
+    need = frames * 8 * 4
+    data = bytearray()
+    with serial.Serial(port_name, baud, timeout=2, write_timeout=timeout) as ser:
+        time.sleep(0.2)
+        ser.reset_input_buffer()
+        ser.write((f"PCAP {frames}\n").encode("ascii"))
+        ser.flush()
+        win = bytearray()
+        deadline = time.time() + max(15.0, float(timeout))
+        synced = False
+        while time.time() < deadline:
+            b = ser.read(1)
+            if not b:
+                continue
+            win += b
+            if len(win) > 4:
+                del win[0]
+            if bytes(win) == sync:
+                synced = True
+                break
+        if not synced:
+            raise DaqControlError("PCAP: no FE10CAFE sync (timeout)")
+        while len(data) < need:
+            chunk = ser.read(need - len(data))
+            if not chunk:
+                break
+            data += chunk
+    if len(data) < need:
+        raise DaqControlError(f"PCAP: short read {len(data)}/{need} bytes")
+    arr = np.frombuffer(bytes(data), dtype="<u4").reshape(-1, 8)
+    chans: Dict[int, Any] = {}
+    for ch in range(4):
+        w0, w1 = arr[:, 2 * ch], arr[:, 2 * ch + 1]
+        s = np.empty(len(arr) * 4, dtype=np.int16)
+        s[0::4] = (w0 & 0xFFFF).astype(np.int16)
+        s[1::4] = ((w0 >> 16) & 0xFFFF).astype(np.int16)
+        s[2::4] = (w1 & 0xFFFF).astype(np.int16)
+        s[3::4] = ((w1 >> 16) & 0xFFFF).astype(np.int16)
+        chans[ch] = s
+    result: Dict[str, Any] = {
+        "frames": frames,
+        "samples_per_ch": int(frames * 4),
+        "channels": summarize_channels(chans, ADC_SAMPLE_RATE_HZ),
+    }
+    if save:
+        cap_dir = Path(capture_dir) if capture_dir else DEFAULT_CAPTURE_DIR
+        path = _save_capture_npz(cap_dir, label, chans, ADC_SAMPLE_RATE_HZ)
+        result["saved"] = str(path) if path else None
+    return result
+
+
+def describe() -> Dict[str, Any]:
+    """Static capability/defaults summary for discovery (no board I/O)."""
+    return {
+        "server": "daq-launch-control",
+        "uart": {"default_port": DEFAULT_PORT, "baud": DEFAULT_BAUD},
+        "ethernet": {
+            "board_ip": DEFAULT_BOARD_IP, "cmd_port": DEFAULT_CMD_PORT,
+            "local_ip": DEFAULT_LOCAL_IP, "local_port": DEFAULT_LOCAL_PORT,
+        },
+        "dac_sources": sorted(DAC_SOURCES),
+        "source_aliases": dict(SOURCE_ALIASES),
+        "neuron_profiles": list(NEURON_PROFILES),
+        "neuron_params": {
+            "physical_q16": list(NEURON_PHYS_PARAMS),
+            "raw_int": list(NEURON_RAW_PARAMS),
+        },
+        "dds": {
+            "sample_rate_hz": DDS_SAMPLE_RATE_HZ,
+            "phase_bits": DDS_PHASE_BITS,
+            "example": "inc 0x100000 -> 62.5 MHz",
+        },
+        "remote": {
+            "host": DEFAULT_REMOTE_HOST, "user": DEFAULT_REMOTE_USER,
+            "repo": DEFAULT_REMOTE_REPO, "branch": DEFAULT_BRANCH,
+        },
+        "capture_dir": str(DEFAULT_CAPTURE_DIR),
+    }
 
 
 def json_dumps(value: Any) -> str:

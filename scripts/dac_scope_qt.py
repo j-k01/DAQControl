@@ -12,16 +12,22 @@ on connect -- acquisition is opt-in:
   - Connection: pick the UART COM port and connect/reconnect (no streaming).
   - Per channel (DAC0..3): pick any crossbar source -- Off / DDS / BRAM 0-3 /
     Spike 0-3 / Monitor 0-3 (per-neuron current) / Current source / Tag -- from the source
-    dropdown (+ a neuron-profile dropdown), then hit "Program DACn" to commit:
-    the dropdowns only stage a choice; the button sends NSRC (+ NEUR when the
-    source is a Spike/Monitor of a neuron) and the per-DAC status line confirms
-    "OK — <source>" once the board is reconfigured.
+    dropdown (+ a neuron-profile dropdown), then hit "Confirm route" to commit:
+    the dropdowns only stage a choice; the button sends NSRC (+ the neuron
+    profile when the source is a Spike/Monitor) and the per-DAC status line
+    confirms "OK — <source>" once the board is reconfigured. The XBAR tab draws
+    the 16:4 crossbar as lines from each source to its DAC; a route is drawn
+    SOLID only once it is actually applied (a staged-but-unconfirmed pick shows
+    as a faint dashed line), so the picture never claims a switch the board
+    hasn't taken.
   - Neuron params: a/b/c/d/I spinboxes (physical Izhikevich units). Set them
-    (or "load profile" to stage a built-in profile), then hit the per-neuron
-    "Prog 0..3" button (or "Prog all") to apply to that target -- each NEUR
+    (or "load profile" to stage a built-in OR custom profile), then hit the
+    per-neuron "0..3" button (or "all") to apply to that target -- each NEUR
     write resets + reloads the target, so it runs fresh with exactly these
-    values. A status line reports OK / ERR after each program. Collect Ethernet
-    (or Auto-Sample) to verify the dynamics.
+    values. "Save…" stores the current a/b/c/d/I as a named CUSTOM profile
+    (persisted to ~/.daq_neuron_profiles.json) that then appears in every
+    profile dropdown. The Per-neuron profiles box shows each neuron's running
+    profile ("▶ <name>"). Collect Ethernet (or Auto-Sample) to verify dynamics.
   - Captures are saved automatically whichever transport you use: each grab
     writes cap_<timestamp>_<src>.npz (+ per-channel CSVs) into --capture-dir
     (default <repo>/captures), where <src> = "uart" (UART Capture) or "eth"
@@ -40,7 +46,9 @@ on connect -- acquisition is opt-in:
         shaped pulse is one crossbar input -- route a Spike source to emit it.
   - CIC anti-alias (chip 1) toggle, autoscale, rising-edge trigger, Time/FFT.
   - UART Capture: grab an ADC snapshot over UART (PCAP) and pop up the 4
-    channels -- works without the Ethernet path.
+    channels -- works without the Ethernet path. UART Capture, Collect Ethernet
+    and Auto-Sample sit in an always-visible Capture bar below the tabs, so they
+    are reachable no matter which tab is selected.
 
 Prereqs: board programmed + A53 PS-eth app running; UART (default COM10); NIC at
 192.168.2.1/24. See notes/dac_sources_howto.md.
@@ -50,6 +58,7 @@ Prereqs: board programmed + A53 PS-eth app running; UART (default COM10); NIC at
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import socket
@@ -61,7 +70,7 @@ import numpy as np
 import serial
 import serial.tools.list_ports as list_ports
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 HDR = struct.Struct("<IHHIIIIII")
 MAGIC = 0x53514144
@@ -137,6 +146,41 @@ NEURON_PROFILE_VALUES = {
     "chattering": dict(a=0.02, b=0.20, c=-50.0, d=2.0, iconst=10.0),
     "fast":       dict(a=0.10, b=0.20, c=-65.0, d=2.0, iconst=10.0),
 }
+
+# --- user-defined neuron profiles (persisted across sessions) -----------------
+# Custom a/b/c/d/I sets the user saves from the GUI. Stored as JSON in the home
+# directory so they survive restarts without polluting the repo. Built-in names
+# (NEURON_PROFILES) are reserved and cannot be shadowed by a custom profile.
+PROFILES_PATH = os.path.join(os.path.expanduser("~"), ".daq_neuron_profiles.json")
+PROFILE_KEYS = ("a", "b", "c", "d", "iconst")
+
+
+def load_custom_profiles():
+    """Return {name: {a,b,c,d,iconst}} from PROFILES_PATH (empty on any error)."""
+    try:
+        with open(PROFILES_PATH, "r") as f:
+            raw = json.load(f)
+    except Exception:  # noqa: BLE001
+        return {}
+    out = {}
+    if isinstance(raw, dict):
+        for name, v in raw.items():
+            if (isinstance(v, dict) and all(k in v for k in PROFILE_KEYS)
+                    and name not in NEURON_PROFILES):
+                try:
+                    out[str(name)] = {k: float(v[k]) for k in PROFILE_KEYS}
+                except (TypeError, ValueError):
+                    pass
+    return out
+
+
+def save_custom_profiles(profiles):
+    """Persist {name: {a,b,c,d,iconst}} to PROFILES_PATH (best effort)."""
+    try:
+        with open(PROFILES_PATH, "w") as f:
+            json.dump(profiles, f, indent=2)
+    except Exception:  # noqa: BLE001
+        pass
 
 # --- programmable current source (cur_wave player, firmware CURW) -------------
 # Current sources are UNIPOLAR: they can NEVER go negative. We map physical
@@ -1015,6 +1059,116 @@ class CurrentSourceWindow(QtWidgets.QWidget):
                 programmed=True)
 
 
+# ----------------------------------------------------- crossbar visualization
+class CrossbarView(QtWidgets.QWidget):
+    """Visual 16:4 DAC source crossbar.
+
+    The 16 crossbar sources are listed down the left edge and the 4 DAC outputs
+    down the right edge. A SOLID colored line is drawn from each DAC's *applied*
+    (live-on-the-board) source to that DAC; a staged-but-not-yet-applied pick is
+    drawn as a faint DASHED line. The solid routing therefore only changes once a
+    route is actually committed, so the picture never lies about the hardware."""
+
+    def __init__(self, source_labels, colors, parent=None):
+        super().__init__(parent)
+        self.sources = list(source_labels)
+        self.colors = list(colors)
+        self.applied = [None, None, None, None]   # live source idx per DAC
+        self.pending = [None, None, None, None]   # staged source idx per DAC
+        self.profiles = [None, None, None, None]  # spike/monitor profile note
+        self.setMinimumHeight(24 * len(self.sources) + 24)
+        self.setMinimumWidth(360)
+
+    def set_applied(self, ch, idx, profile=None):
+        self.applied[ch] = idx
+        self.profiles[ch] = profile
+        self.update()
+
+    def set_pending(self, ch, idx):
+        self.pending[ch] = idx
+        self.update()
+
+    def reset(self):
+        self.applied = [None, None, None, None]
+        self.pending = [None, None, None, None]
+        self.update()
+
+    def paintEvent(self, _ev):
+        qp = QtGui.QPainter(self)
+        qp.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        qp.fillRect(self.rect(), QtGui.QColor("#0d1116"))
+        W, H = self.width(), self.height()
+        n = len(self.sources)
+        top, bot = 16.0, H - 16.0
+        src_x = 122.0
+        dac_x = W - 74.0
+        span = max(1.0, bot - top)
+
+        def sy(i):
+            return top + span * (i / max(1, n - 1))
+
+        def dy(c):
+            return top + span * ((c + 0.5) / 4.0)
+
+        f = qp.font()
+        f.setPointSize(8)
+        qp.setFont(f)
+        live = {i for i in self.applied if i is not None}
+        staged = {self.pending[c] for c in range(4)
+                  if self.pending[c] is not None
+                  and self.pending[c] != self.applied[c]}
+
+        # staged (dashed, faint) lines first, beneath the solid ones
+        for c in range(4):
+            pi = self.pending[c]
+            if pi is None or pi == self.applied[c]:
+                continue
+            pen = QtGui.QPen(QtGui.QColor(150, 162, 176, 160))
+            pen.setStyle(QtCore.Qt.DashLine)
+            pen.setWidthF(1.4)
+            qp.setPen(pen)
+            qp.drawLine(QtCore.QPointF(src_x, sy(pi)),
+                        QtCore.QPointF(dac_x, dy(c)))
+        # applied (solid, colored) lines
+        for c in range(4):
+            ai = self.applied[c]
+            if ai is None:
+                continue
+            pen = QtGui.QPen(QtGui.QColor(self.colors[c]))
+            pen.setWidthF(2.6)
+            qp.setPen(pen)
+            qp.drawLine(QtCore.QPointF(src_x, sy(ai)),
+                        QtCore.QPointF(dac_x, dy(c)))
+
+        # source nodes + right-aligned labels
+        align_r = int(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        for i, name in enumerate(self.sources):
+            y = sy(i)
+            on, stg = i in live, i in staged
+            txt = "#e6eef6" if on else ("#aeb9c6" if stg else "#5f7185")
+            qp.setPen(QtGui.QColor(txt))
+            qp.drawText(QtCore.QRectF(2, y - 9, src_x - 14, 18), align_r, name)
+            qp.setPen(QtCore.Qt.NoPen)
+            qp.setBrush(QtGui.QColor("#4FC3F7") if on else QtGui.QColor("#33414d"))
+            qp.drawEllipse(QtCore.QPointF(src_x, y), 3.4, 3.4)
+
+        # DAC nodes + labels
+        align_l = int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        f.setBold(True)
+        qp.setFont(f)
+        for c in range(4):
+            y = dy(c)
+            qp.setPen(QtCore.Qt.NoPen)
+            qp.setBrush(QtGui.QColor(self.colors[c]))
+            qp.drawEllipse(QtCore.QPointF(dac_x, y), 5.0, 5.0)
+            qp.setPen(QtGui.QColor("#e6eef6"))
+            qp.drawText(QtCore.QRectF(dac_x + 10, y - 10, W - dac_x - 12, 20),
+                        align_l, f"DAC{c}")
+        f.setBold(False)
+        qp.setFont(f)
+        qp.end()
+
+
 # --------------------------------------------------------------- GUI
 class ScopeWindow(QtWidgets.QMainWindow):
     captured = QtCore.pyqtSignal(object)      # emits {ch: int16[]} from worker
@@ -1036,6 +1190,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._popup = None
         self._cur_win = None        # CurrentSourceWindow (lazily created)
         self._pulse_win = None      # PulseShapeWindow (lazily created)
+        # crossbar routing state: solid lines / summary reflect the APPLIED route
+        # (only updated once a route is committed), never the staged dropdown.
+        self.custom_profiles = load_custom_profiles()
+        self._applied_label = [None, None, None, None]    # live source per DAC
+        self._applied_profile = [None, None, None, None]  # live profile per DAC
+        self._dac_prog = [None, None, None, None]          # (label,prof,nidx) in flight
+        self._prog_profile_name = {}                       # target -> profile being set
+        self.neuron_applied_profile = {"0": None, "1": None, "2": None, "3": None}
         self.setWindowTitle("DAC scope + control (PyQtGraph)")
         self.resize(1360, 880)
 
@@ -1063,7 +1225,15 @@ class ScopeWindow(QtWidgets.QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         scroll.setFixedWidth(PANEL_W)
-        root.addWidget(scroll)
+        # right column: a scrollable area (connection + tabs) above an
+        # ALWAYS-VISIBLE strip (capture controls + status) that never scrolls
+        # off, whatever tab is selected or how the panel is scrolled.
+        rightw = QtWidgets.QWidget()
+        rightw.setFixedWidth(PANEL_W)
+        right_col = QtWidgets.QVBoxLayout(rightw)
+        right_col.setContentsMargins(0, 0, 0, 0)
+        right_col.addWidget(scroll, stretch=1)
+        root.addWidget(rightw)
         panel = QtWidgets.QWidget()
         scroll.setWidget(panel)
         outer = QtWidgets.QVBoxLayout(panel)
@@ -1104,7 +1274,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         wave_lay = QtWidgets.QVBoxLayout(wave_tab)
         self.tabs.addTab(neuron_tab, "Neuron")
         self.tabs.addTab(xbar_tab, "XBAR")
-        self.tabs.addTab(capture_tab, "Capture")
+        self.tabs.addTab(capture_tab, "Display")
         self.tabs.addTab(wave_tab, "Waveforms")
 
         left = xbar_lay
@@ -1170,24 +1340,19 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.dac_status.append(st)
             left.addWidget(box)
 
-        xprev = QtWidgets.QGroupBox("All DAC outputs")
-        xprev_lay = QtWidgets.QGridLayout(xprev)
-        self.xbar_preview = []
-        for ch in range(4):
-            src_lbl = QtWidgets.QLabel(initial)
-            src_lbl.setAlignment(QtCore.Qt.AlignCenter)
-            src_lbl.setStyleSheet("background:#1b242d; color:#d7e3ef; "
-                                  "border:1px solid #334657; padding:6px;")
-            arrow = QtWidgets.QLabel("=>")
-            arrow.setAlignment(QtCore.Qt.AlignCenter)
-            dac_lbl = QtWidgets.QLabel(f"DAC{ch}")
-            dac_lbl.setAlignment(QtCore.Qt.AlignCenter)
-            dac_lbl.setStyleSheet(f"background:{CH_COLORS[ch]}; color:#101418; "
-                                  "font-weight:bold; padding:6px;")
-            xprev_lay.addWidget(src_lbl, ch, 0)
-            xprev_lay.addWidget(arrow, ch, 1)
-            xprev_lay.addWidget(dac_lbl, ch, 2)
-            self.xbar_preview.append(src_lbl)
+        xprev = QtWidgets.QGroupBox("Crossbar routing (16 → 4)")
+        xprev_lay = QtWidgets.QVBoxLayout(xprev)
+        self.xbar_view = CrossbarView(SOURCE_LABELS, CH_COLORS)
+        xprev_lay.addWidget(self.xbar_view)
+        legend = QtWidgets.QLabel(
+            "solid line = live route · dashed = staged (press “Confirm route”)")
+        legend.setStyleSheet("color:#9fb3c8; font-size:10px;")
+        legend.setWordWrap(True)
+        xprev_lay.addWidget(legend)
+        self.xbar_summary = QtWidgets.QLabel()
+        self.xbar_summary.setStyleSheet("color:#cdd9e5; font-size:11px;")
+        self.xbar_summary.setWordWrap(True)
+        xprev_lay.addWidget(self.xbar_summary)
         left.addWidget(xprev)
         left.addStretch(1)
 
@@ -1237,7 +1402,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.np_loadprof = QtWidgets.QComboBox()
         self.np_loadprof.addItems(["load profile…"] + NEURON_PROFILES)
         self.np_loadprof.currentIndexChanged.connect(self._on_load_profile_values)
-        pg_.addWidget(self.np_loadprof, 0, 1, 1, 2)
+        pg_.addWidget(self.np_loadprof, 0, 1)
+        self.np_saveprof = QtWidgets.QPushButton("Save…")
+        self.np_saveprof.setToolTip("Save the current a/b/c/d/I values as a named "
+                                    "custom profile (persists across sessions)")
+        self.np_saveprof.clicked.connect(self._on_save_profile)
+        pg_.addWidget(self.np_saveprof, 0, 2)
         self.np_spins = {}
         for row, (param, label, lo, hi, dflt, step, dec) in enumerate(
                 NEURON_PARAM_SPECS, start=1):
@@ -1328,8 +1498,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         wg.addWidget(rng, 7, 0, 1, 2)
         wave_lay.addWidget(wf)
 
-        # display + capture options
-        opt = QtWidgets.QGroupBox("Display / capture")
+        # display options (capture buttons are relocated to an always-visible
+        # group outside the tabs, below)
+        opt = QtWidgets.QGroupBox("Display")
         og = QtWidgets.QGridLayout(opt)
         self.cic_chk = QtWidgets.QCheckBox("CIC anti-alias (ch2/3)")
         self.cic_chk.setChecked(args.cic)
@@ -1369,12 +1540,19 @@ class ScopeWindow(QtWidgets.QMainWindow):
         og.addWidget(self.rb_time, 2, 0)
         og.addWidget(self.rb_fft, 2, 1)
         og.addWidget(self.run_btn, 3, 0, 1, 2)
-        og.addWidget(self.capt_frames, 4, 0)
-        og.addWidget(self.capt_btn, 4, 1)
-        og.addWidget(self.collect_mb_cb, 5, 0)
-        og.addWidget(self.collect_btn, 5, 1)
-        og.addWidget(self.stream_btn, 6, 0, 1, 2)
         capture_lay.addWidget(opt)
+
+        # Acquisition controls live OUTSIDE the tabs (added to `outer`) so the
+        # UART Capture and Collect Ethernet buttons are ALWAYS visible, whatever
+        # tab is selected.
+        acq = QtWidgets.QGroupBox("Capture (always available)")
+        ag = QtWidgets.QGridLayout(acq)
+        ag.addWidget(self.capt_frames, 0, 0)
+        ag.addWidget(self.capt_btn, 0, 1)
+        ag.addWidget(self.collect_mb_cb, 1, 0)
+        ag.addWidget(self.collect_btn, 1, 1)
+        ag.addWidget(self.stream_btn, 2, 0, 1, 2)
+        right_col.addWidget(acq)        # outside the scroll area -> always visible
 
         left.addStretch(1)
         right.addStretch(1)
@@ -1383,10 +1561,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.status = QtWidgets.QLabel("Connect to a COM port to begin.")
         self.status.setWordWrap(True)
         self.status.setStyleSheet("color:#9fb3c8; font-size:11px;")
-        outer.addWidget(self.status)
+        right_col.addWidget(self.status)   # always-visible strip, not scrollable
 
+        self._refresh_profile_combos()
         self._refresh_xbar_profile_enable()
         self._refresh_xbar_preview()
+        self._refresh_xbar_summary()
         ys, cps, actual = gen_current_wave("Sine", 10.0, 5000.0)
         self._set_current_preview("Sine", ys, cps, actual, programmed=False)
         self._apply_view_ranges()
@@ -1440,14 +1620,113 @@ class ScopeWindow(QtWidgets.QMainWindow):
                            label.startswith("Monitor ")))
 
     def _refresh_xbar_preview(self, *_):
-        if not hasattr(self, "xbar_preview"):
+        """A dropdown change only STAGES a route -- draw it as a dashed pending
+        line. The solid (live) line is set separately, on apply, so the picture
+        never claims a route the board hasn't taken."""
+        if not hasattr(self, "xbar_view"):
             return
-        for ch, lbl in enumerate(self.xbar_preview):
-            src = self.src_cbs[ch].currentText()
-            prof = self.prof_cbs[ch].currentText()
-            if src.startswith("Spike ") or src.startswith("Monitor "):
-                src = f"{src}\n{prof}"
-            lbl.setText(src)
+        for ch in range(4):
+            label = self.src_cbs[ch].currentText()
+            idx = SOURCE_LABELS.index(label) if label in SOURCE_LABELS else None
+            self.xbar_view.set_pending(ch, idx)
+
+    def _set_applied_route(self, ch, label, profile=None):
+        """Record a route as live-on-the-board and redraw the solid line +
+        summary. Called only after the board confirms (NSRC OK)."""
+        self._applied_label[ch] = label
+        self._applied_profile[ch] = profile
+        idx = SOURCE_LABELS.index(label) if label in SOURCE_LABELS else None
+        if hasattr(self, "xbar_view"):
+            self.xbar_view.set_applied(ch, idx, profile)
+        self._refresh_xbar_summary()
+
+    def _refresh_xbar_summary(self):
+        if not hasattr(self, "xbar_summary"):
+            return
+        rows = []
+        for ch in range(4):
+            lbl = self._applied_label[ch]
+            if lbl is None:
+                rows.append(f"DAC{ch} ← (not applied)")
+            elif (self._applied_profile[ch]
+                  and (lbl.startswith("Spike ") or lbl.startswith("Monitor "))):
+                rows.append(f"DAC{ch} ← {lbl} [{self._applied_profile[ch]}]")
+            else:
+                rows.append(f"DAC{ch} ← {lbl}")
+        self.xbar_summary.setText("\n".join(rows))
+
+    def _set_neuron_running(self, target, profile):
+        """Show the profile a neuron is currently running (the 'show its
+        profile' display in the Per-neuron profiles box)."""
+        if target == "all":
+            for k in self.neuron_status:
+                self._set_neuron_running(k, profile)
+            return
+        self.neuron_applied_profile[target] = profile
+        st = self.neuron_status.get(target)
+        if st:
+            st.setText(f"▶ {profile}")
+            st.setStyleSheet("color:#81C784; font-size:10px;")
+
+    def _apply_profile_blocking(self, target, profile):
+        """Apply a profile to a neuron (UART, call from a worker thread). A
+        built-in name uses NEUR <profile>; a custom profile writes its saved
+        a/b/c/d/I params. Returns (ok, profile)."""
+        if profile in NEURON_PROFILES:
+            r = self.dac.set_neuron(target, profile)
+            return bool(r and not r.startswith("ERR")), profile
+        vals = self.custom_profiles.get(profile)
+        if not vals:
+            return False, profile
+        ok = True
+        for p in PROFILE_KEYS:
+            r = self.dac.set_neuron_param(target, p, izh_to_q16(vals[p]))
+            if not r or r.startswith("ERR"):
+                ok = False
+        return ok, profile
+
+    def _refresh_profile_combos(self):
+        """Rebuild every profile dropdown to include the built-ins plus any
+        saved custom profiles, preserving each combo's current selection."""
+        names = list(NEURON_PROFILES) + list(self.custom_profiles.keys())
+        combos = list(self.neuron_profile_cbs.values()) + list(self.prof_cbs)
+        for cb in combos:
+            cur = cb.currentText()
+            cb.blockSignals(True)
+            cb.clear()
+            cb.addItems(names)
+            i = cb.findText(cur)
+            cb.setCurrentIndex(i if i >= 0 else 0)
+            cb.blockSignals(False)
+        cur = self.np_loadprof.currentText()
+        self.np_loadprof.blockSignals(True)
+        self.np_loadprof.clear()
+        self.np_loadprof.addItems(["load profile…"] + names)
+        j = self.np_loadprof.findText(cur)
+        self.np_loadprof.setCurrentIndex(j if j > 0 else 0)
+        self.np_loadprof.blockSignals(False)
+        self._refresh_xbar_profile_enable()
+
+    def _on_save_profile(self):
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Save neuron profile", "Name for this a/b/c/d/I set:")
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        if name in NEURON_PROFILES:
+            self.np_status.setText(f"'{name}' is a built-in name — pick another")
+            self.np_status.setStyleSheet("color:#E57373; font-size:11px;")
+            return
+        vals = {p: float(self.np_spins[p].value()) for p in PROFILE_KEYS}
+        self.custom_profiles[name] = vals
+        save_custom_profiles(self.custom_profiles)
+        self._refresh_profile_combos()
+        self.np_status.setText(
+            f"saved profile '{name}'  (a={vals['a']:g} b={vals['b']:g} "
+            f"c={vals['c']:g} d={vals['d']:g} I={vals['iconst']:g})")
+        self.np_status.setStyleSheet("color:#81C784; font-size:11px;")
 
     # ---- connection ----
     def refresh_ports(self):
@@ -1466,6 +1745,15 @@ class ScopeWindow(QtWidgets.QMainWindow):
     def _on_connect(self):
         port = self.port_cb.currentText()
         self._set_controls_enabled(False)
+        # drop any previously-applied routes from the picture until the board
+        # re-confirms them (a failed/old connect must not show phantom live lines)
+        for ch in range(4):
+            self._applied_label[ch] = None
+            self._applied_profile[ch] = None
+        if hasattr(self, "xbar_view"):
+            self.xbar_view.reset()
+        self._refresh_xbar_preview()
+        self._refresh_xbar_summary()
         self.conn_lbl.setText(f"connecting {port}...")
         self.conn_lbl.setStyleSheet("color:#FFB74D;")
         QtWidgets.QApplication.processEvents()
@@ -1495,10 +1783,15 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return
         self.connect_btn.setText("Reconnect")
         self._set_controls_enabled(True)
-        # reflect the source each DAC was set to on connect
+        # reflect the source each DAC was set to on connect -- these are now the
+        # live routes (solid lines + summary), matching the NSRC sent above.
         for ch in range(4):
             self.dac_status[ch].setText(f"OK — {self.args.initial}")
             self.dac_status[ch].setStyleSheet("color:#81C784; font-size:11px;")
+            self._set_applied_route(ch, self.args.initial, None)
+        # base_setup() programmed neuron n with the n-th built-in profile
+        for n in range(4):
+            self._set_neuron_running(str(n), NEURON_PROFILES[n])
         # Acquisition is OPT-IN: nothing samples until the user presses
         # Auto-Sample. Use "Collect Ethernet" for a single saved snapshot.
         self.tap = None
@@ -1518,7 +1811,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._controls_enabled = on
         for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.collect_btn,
                   self.collect_mb_cb, self.stream_btn, self.dt_cb,
-                  self.np_loadprof, self.cur_preview_btn):
+                  self.np_loadprof, self.np_saveprof, self.cur_preview_btn):
             w.setEnabled(on)
         for b in self.np_btns.values():
             b.setEnabled(on)
@@ -1582,6 +1875,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         neuron_idx = None
         if label.startswith("Spike ") or label.startswith("Monitor "):
             neuron_idx = int(label.split()[-1])
+        self._dac_prog[ch] = (label, profile, neuron_idx)
         self.dac_btns[ch].setEnabled(False)
         self.dac_status[ch].setText(f"programming {label}…")
         self.dac_status[ch].setStyleSheet("color:#FFB74D; font-size:11px;")
@@ -1593,8 +1887,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 ok = False
             detail = label
             if neuron_idx is not None:
-                r2 = self.dac.set_neuron(neuron_idx, profile)
-                if not r2 or r2.startswith("ERR"):
+                ok2, _ = self._apply_profile_blocking(neuron_idx, profile)
+                if not ok2:
                     ok = False
                 detail = f"{label} (neuron {neuron_idx}: {profile})"
             self.dac_done.emit(ch, ok, detail)
@@ -1605,6 +1899,15 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if ok:
             self.dac_status[ch].setText(f"OK — {detail}")
             self.dac_status[ch].setStyleSheet("color:#81C784; font-size:11px;")
+            # the route is now live: promote the staged pick to a solid line and
+            # reflect any neuron (re)program in the per-neuron profile display.
+            prog = self._dac_prog[ch]
+            if prog is not None:
+                label, profile, neuron_idx = prog
+                self._set_applied_route(
+                    ch, label, profile if neuron_idx is not None else None)
+                if neuron_idx is not None:
+                    self._set_neuron_running(str(neuron_idx), profile)
         else:
             self.dac_status[ch].setText(f"ERR — {detail} not set")
             self.dac_status[ch].setStyleSheet("color:#E57373; font-size:11px;")
@@ -1654,7 +1957,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if idx <= 0:
             return
         name = self.np_loadprof.itemText(idx)
-        vals = NEURON_PROFILE_VALUES.get(name)
+        vals = NEURON_PROFILE_VALUES.get(name) or self.custom_profiles.get(name)
         if not vals:
             return
         for p, sp in self.np_spins.items():
@@ -1662,7 +1965,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.np_loadprof.blockSignals(True)
         self.np_loadprof.setCurrentIndex(0)
         self.np_loadprof.blockSignals(False)
-        self.status.setText(f"staged profile '{name}' -- press Program neurons")
+        self.status.setText(
+            f"staged profile '{name}' -- press a Program button (0/1/2/3/all)")
 
     def _make_prog_neuron_cb(self, target):
         def cb():
@@ -1678,18 +1982,18 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if not self.dac:
             return
         profile = self.neuron_profile_cbs[target].currentText()
+        self._prog_profile_name[target] = profile
         btn = self.neuron_profile_btns.get(target)
         if btn:
             btn.setEnabled(False)
         st = self.neuron_status.get(target)
         if st:
-            st.setText("...")
+            st.setText("…")
             st.setStyleSheet("color:#FFB74D; font-size:10px;")
         self.status.setText(f"programming neuron {target} profile {profile}")
 
         def work():
-            r = self.dac.set_neuron(target, profile)
-            ok = bool(r and not r.startswith("ERR"))
+            ok, _ = self._apply_profile_blocking(target, profile)
             self.neuron_done.emit(target, ok)
         self._bg(work)
 
@@ -1698,6 +2002,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return
         vals = [(p, self.np_spins[p].value()) for p, *_ in NEURON_PARAM_SPECS]
         labels = ", ".join(f"{p}={v:g}" for p, v in vals)
+        self._prog_profile_name[target] = "custom"
         btn = self.np_btns.get(target)
         if btn:
             btn.setEnabled(False)
@@ -1721,17 +2026,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
         pbtn = self.neuron_profile_btns.get(target)
         if pbtn:
             pbtn.setEnabled(True)
-        if target == "all":
-            for label in self.neuron_status.values():
-                label.setText("OK" if ok else "ERR")
-                label.setStyleSheet(("color:#81C784;" if ok else "color:#E57373;") +
-                                    " font-size:10px;")
+        prof = self._prog_profile_name.get(target, "custom")
+        if ok:
+            self._set_neuron_running(target, prof)    # shows '▶ <profile>'
         else:
-            pst = self.neuron_status.get(target)
-            if pst:
-                pst.setText("OK" if ok else "ERR")
-                pst.setStyleSheet(("color:#81C784;" if ok else "color:#E57373;") +
-                                  " font-size:10px;")
+            targets = self.neuron_status.keys() if target == "all" else [target]
+            for k in targets:
+                st = self.neuron_status.get(k)
+                if st:
+                    st.setText("ERR")
+                    st.setStyleSheet("color:#E57373; font-size:10px;")
         if ok:
             self.np_status.setText(f"neuron {target}: OK — programmed")
             self.np_status.setStyleSheet("color:#81C784; font-size:11px;")
@@ -1811,12 +2115,28 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.status.setText(f"collecting {lbl} burst over Ethernet...")
         self._bg(lambda: self.collected.emit(self._burst_collect(nbytes)))
 
-    def _burst_collect(self, nbytes):
-        """One-shot BCAP+BRDO -> {ch: int16[], '_cov': fraction} or {'_err': str}.
-        Fires a fresh full-rate capture of `nbytes` bytes/chip (sent as
-        BCAP <KB>k) and drains it over UDP on the same local port the live
-        stream uses (now released). Reuses burst_capture.Reassembler for
-        offset-bitmap (dedup'd) coverage."""
+    def _burst_collect(self, nbytes, attempts=4):
+        """Fresh full-rate capture (BCAP+BRDO) drained over UDP, with automatic
+        retry. The readout occasionally drops a single packet (~6%, chip 1), so on
+        an incomplete drain we re-run the WHOLE cycle (fresh socket + BRST register
+        + BCAP + BRDO) up to `attempts` times -- exactly the manual re-press that
+        already works -- with a settle between tries so the rapid re-issue does not
+        race the A53 request handshake. Returns {ch.., '_cov', '_attempts'} or
+        {'_err': str}."""
+        last = {"_err": "no attempts ran"}
+        for attempt in range(max(1, attempts)):
+            if attempt > 0:
+                time.sleep(0.4)        # human-paced settle; fast re-issue races A53
+            last = self._burst_once(nbytes)
+            if not (isinstance(last, dict) and "_err" in last):
+                last["_attempts"] = attempt + 1
+                return last
+        return last
+
+    def _burst_once(self, nbytes):
+        """One fresh BCAP+BRDO+UDP drain (its own socket + BRST registration),
+        identical to a single manual Collect press. Returns {ch.., '_cov'} or
+        {'_err': str}."""
         try:
             from burst_capture import Reassembler, decode_chip, parse_brdo_request
         except Exception as exc:  # noqa: BLE001
@@ -1831,8 +2151,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return {"_err": (f"UDP bind failed on {self.args.local_ip}:"
                              f"{self.args.local_port}: {exc}")}
         try:
-            # ensure the DMA is free: a cyclic stream and a one-shot burst
-            # can't share the DMA, so stop streaming before BCAP (no-op if off).
+            # a cyclic stream and a one-shot burst can't share the DMA, so stop
+            # streaming before BCAP (no-op if off).
             self.dac.stop_stream()
             if not asm.register(timeout=2.0):
                 return {"_err": "BRST registration timed out (no BRST_READY from A53)"}
@@ -1845,26 +2165,27 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 return {"_err": f"BRDO failed: {brdo or '(no UART reply)'}"}
             asm.set_request_id(req)
             deadline = time.time() + max(8.0, (2.0 * bpc / 70.0e6) + 2.0)
-            while time.time() < deadline:
-                if asm.complete():
+            while time.time() < deadline and not asm.complete():
+                # fast-exit only on a genuine mid-drain stall (a dropped packet
+                # never arrives); never before the first packet.
+                started = asm.coverage(0) > 0.0 or asm.coverage(1) > 0.0
+                if started and asm.idle(0.6):
                     break
                 time.sleep(0.05)
             if not asm.complete():
-                return {
-                    "_err": (f"UDP drain timed out for request {req}: "
-                             f"chip0 {100 * asm.coverage(0):.1f}%, "
-                             f"chip1 {100 * asm.coverage(1):.1f}% coverage")
-                }
+                return {"_err": (f"UDP drain incomplete for request {req}: "
+                                 f"chip0 {100 * asm.coverage(0):.1f}%, "
+                                 f"chip1 {100 * asm.coverage(1):.1f}% coverage")}
             chans = {}
             chans.update(decode_chip(asm.buf[0], 0))
             chans.update(decode_chip(asm.buf[1], 2))
             chans["_cov"] = min(asm.coverage(0), asm.coverage(1))
+            return chans
         except Exception as exc:  # noqa: BLE001
             return {"_err": f"Ethernet collect exception: {exc}"}
         finally:
             if asm is not None:
                 asm.close()
-        return chans
 
     def _on_collected(self, chans):
         self.collect_btn.setEnabled(True)
@@ -1890,7 +2211,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.status.setText(f"Collect Ethernet failed: {chans['_err']}")
             return
         cov = chans.pop("_cov", 1.0)
-        self._show_burst(chans, cov)
+        tries = chans.pop("_attempts", 1)
+        self._show_burst(chans, cov, tries)
 
     # ---- auto-sample: a fresh one-shot burst every second, into the main
     #      plots, NOT saved (and NOT the cyclic UDP stream) ----
@@ -1928,12 +2250,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.status.setText(f"auto-sample: {chans['_err']} (retrying)")
             return
         cov = chans.pop("_cov", 1.0)
+        tries = chans.pop("_attempts", 1)
         # show a 4x-wider window than the default scope span (the burst holds
         # plenty of samples; this just displays more of them)
         self._render_main(chans, 1.0e9, span=4 * self.args.time_span)
+        retry_note = f"  ({tries} tries)" if tries > 1 else ""
         self.status.setText(
             f"auto-sample 1/s: {len(chans[0])} samples/ch @ 1 GS/s  "
-            f"coverage {100 * cov:.0f}%  (not saved)")
+            f"coverage {100 * cov:.0f}%{retry_note}  (not saved)")
 
     def _render_main(self, chans, fs, span=None):
         """Draw a captured {ch: int16[]} set into the 4 main plots, honoring
@@ -1961,7 +2285,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     m = max(0.02, np.abs(v).max() * 1.2)
                     self.plots[ch].setYRange(-m, m)
 
-    def _show_burst(self, chans, cov):
+    def _show_burst(self, chans, cov, tries=1):
         nbytes = getattr(self, "_last_collect_bytes", 1 << 20)
         size_lbl = (f"{nbytes >> 20} MB" if nbytes >= (1 << 20)
                     else f"{nbytes >> 10} KB")
@@ -1984,8 +2308,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         sub = save_capture(self.args.capture_dir, "eth", chans, 1.0e9,
                            coverage=cov, bytes_per_chip=nbytes)
         where = f"  -> {sub}" if sub else "  (save FAILED)"
+        retry_note = f"  ({tries} tries)" if tries > 1 else ""
         self.status.setText(f"Ethernet burst: {len(chans[0])} samples/ch, "
-                            f"coverage {100 * cov:.1f}%.{where}")
+                            f"coverage {100 * cov:.1f}%.{retry_note}{where}")
 
     # ---- display ----
     def _apply_view_ranges(self):

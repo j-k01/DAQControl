@@ -88,6 +88,80 @@ def cmd_program(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_params(items) -> Dict[str, float]:
+    params: Dict[str, float] = {}
+    for item in items or []:
+        if "=" not in item:
+            raise daq.DaqControlError(f"param must be NAME=VALUE, got {item!r}")
+        key, value = item.split("=", 1)
+        params[key.strip()] = float(value)
+    return params
+
+
+def cmd_describe(args: argparse.Namespace) -> int:
+    print_result(daq.describe(), args.json)
+    return 0
+
+
+def cmd_dds(args: argparse.Namespace) -> int:
+    result = daq.set_dds(freq_hz=args.freq, inc=args.inc,
+                         port_name=args.port, baud=args.baud, timeout=args.timeout)
+    print_result(result, args.json)
+    return 0
+
+
+def cmd_neuron(args: argparse.Namespace) -> int:
+    result = daq.program_neuron(
+        target=args.target, profile=args.profile,
+        params=_parse_params(args.param) or None,
+        port_name=args.port, baud=args.baud, timeout=args.timeout)
+    print_result(result, args.json)
+    return 0
+
+
+def cmd_stream(args: argparse.Namespace) -> int:
+    result = daq.start_stream(decim=args.decim, cic=args.cic,
+                              port_name=args.port, baud=args.baud, timeout=args.timeout)
+    print_result(result, args.json)
+    return 0
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    result = daq.stop_stream(port_name=args.port, baud=args.baud, timeout=args.timeout)
+    print_result(result, args.json)
+    return 0
+
+
+def cmd_cic(args: argparse.Namespace) -> int:
+    result = daq.set_cic(args.state == "on",
+                         port_name=args.port, baud=args.baud, timeout=args.timeout)
+    print_result(result, args.json)
+    return 0
+
+
+def cmd_ping(args: argparse.Namespace) -> int:
+    print_result(daq.ping_board(ip=args.ip, count=args.count, timeout=args.timeout), args.json)
+    return 0
+
+
+def cmd_collect(args: argparse.Namespace) -> int:
+    result = daq.collect_ethernet_burst(
+        kb=args.kb, port_name=args.port, baud=args.baud,
+        board_ip=args.board_ip, cmd_port=args.cmd_port,
+        local_ip=args.local_ip, local_port=args.local_port,
+        save=not args.no_save, label=args.label, retries=args.retries)
+    print_result(result, args.json)
+    return 0
+
+
+def cmd_capture(args: argparse.Namespace) -> int:
+    result = daq.uart_capture_snapshot(
+        frames=args.frames, port_name=args.port, baud=args.baud,
+        timeout=args.timeout, save=not args.no_save, label=args.label)
+    print_result(result, args.json)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -122,6 +196,66 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_program)
+
+    p = sub.add_parser("describe", help="print server defaults + capabilities")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_describe)
+
+    p = sub.add_parser("dds", help="set the DDS tone (DDSI)")
+    add_uart_args(p)
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--freq", type=float, help="DDS frequency in Hz (e.g. 62.5e6)")
+    g.add_argument("--inc", type=lambda x: int(x, 0), help="raw 24-bit phase increment")
+    p.set_defaults(func=cmd_dds)
+
+    p = sub.add_parser("neuron", help="program a neuron profile and/or params")
+    add_uart_args(p)
+    p.add_argument("--target", default="all", help="0..3 or 'all'")
+    p.add_argument("--profile", choices=list(daq.NEURON_PROFILES))
+    p.add_argument("--param", action="append", metavar="NAME=VALUE",
+                   help="repeatable; a/b/c/d/i/iconst physical, dt/period/reset raw")
+    p.set_defaults(func=cmd_neuron)
+
+    p = sub.add_parser("stream", help="start the cyclic UDP ADC stream")
+    add_uart_args(p)
+    p.add_argument("--decim", type=int, default=128, help="multiple of 4 in 4..65532")
+    p.add_argument("--cic", action="store_true")
+    p.set_defaults(func=cmd_stream)
+
+    p = sub.add_parser("stop", help="stop the cyclic UDP ADC stream")
+    add_uart_args(p)
+    p.set_defaults(func=cmd_stop)
+
+    p = sub.add_parser("cic", help="toggle ch2/3 CIC (needs an active stream)")
+    add_uart_args(p)
+    p.add_argument("state", choices=["on", "off"])
+    p.set_defaults(func=cmd_cic)
+
+    p = sub.add_parser("ping", help="ICMP-ping the board A53 ethernet IP")
+    p.add_argument("--ip", default=daq.DEFAULT_BOARD_IP)
+    p.add_argument("--count", type=int, default=3)
+    p.add_argument("--timeout", type=float, default=10.0)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_ping)
+
+    p = sub.add_parser("collect", help="one-shot burst capture over Ethernet")
+    add_uart_args(p)
+    p.add_argument("--kb", type=int, default=64, help="KB per chip (samples/ch = kb*256)")
+    p.add_argument("--board-ip", default=daq.DEFAULT_BOARD_IP)
+    p.add_argument("--cmd-port", type=int, default=daq.DEFAULT_CMD_PORT)
+    p.add_argument("--local-ip", default=daq.DEFAULT_LOCAL_IP)
+    p.add_argument("--local-port", type=int, default=daq.DEFAULT_LOCAL_PORT)
+    p.add_argument("--label", default="cli")
+    p.add_argument("--retries", type=int, default=1, help="extra attempts if UDP drain incomplete")
+    p.add_argument("--no-save", action="store_true")
+    p.set_defaults(func=cmd_collect)
+
+    p = sub.add_parser("capture", help="UART PCAP 4-channel snapshot")
+    add_uart_args(p)
+    p.add_argument("--frames", type=int, default=512, help="1..4096 (samples/ch = frames*4)")
+    p.add_argument("--label", default="uart")
+    p.add_argument("--no-save", action="store_true")
+    p.set_defaults(func=cmd_capture)
 
     return parser
 
