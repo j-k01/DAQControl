@@ -74,6 +74,56 @@ module izh_spike_shaper_tb;
         end
     endtask
 
+    task run_restart_check;
+        integer timeout;
+        integer restart0;
+        begin
+            restart0 = -1;
+            nbeats = 6'd6; @(negedge clk);
+            @(negedge clk); spike = 1'b1;
+            @(negedge clk); spike = 1'b0;
+
+            timeout = 0;
+            while ((dac_word !== shape_mem[0]) && (timeout < 16)) begin
+                @(negedge clk);
+                timeout = timeout + 1;
+            end
+
+            if (timeout >= 16) begin
+                errors = errors + 1;
+                $display("FAIL restart: first pulse beat 0 not found");
+            end else begin
+                @(negedge clk);
+                if (dac_word !== shape_mem[1]) begin
+                    errors = errors + 1;
+                    $display("FAIL restart: first pulse did not advance to beat1");
+                end
+
+                @(negedge clk);                 // still inside the first pulse
+                spike = 1'b1;
+                @(negedge clk);
+                spike = 1'b0;
+
+                for (k = 0; k < 16; k = k + 1) begin
+                    @(negedge clk);
+                    played[k] = dac_word;
+                    if ((restart0 < 0) && (dac_word === shape_mem[0]))
+                        restart0 = k;
+                end
+                if (restart0 < 0) begin
+                    errors = errors + 1;
+                    $display("FAIL restart: beat 0 not found after restart");
+                end else if (played[restart0 + 1] !== shape_mem[1]) begin
+                    errors = errors + 1;
+                    $display("FAIL restart: after restarted beat0 got next=%h expected=%h",
+                             played[restart0 + 1], shape_mem[1]);
+                end else begin
+                    $display("  restart: OK (restarted beat0 at offset %0d)",
+                             restart0);
+                end
+            end
+        end
+    endtask
     integer i;
     initial begin
         for (i = 0; i < NB; i = i + 1) shape_mem[i] = 64'd0;
@@ -102,6 +152,12 @@ module izh_spike_shaper_tb;
             shape_mem[i] = {16'(i*4 + 3), 16'(i*4 + 2), 16'(i*4 + 1), 16'(i*4)};
         nbeats = 6'd32; @(negedge clk);
         run_pulse(32);
+
+        // 5) A new spike while active restarts from beat 0.
+        for (i = 0; i < 6; i = i + 1)
+            shape_mem[i] = {16'(16'hA000 + i), 16'(16'h9000 + i),
+                            16'(16'h8000 + i), 16'(16'h7000 + i)};
+        run_restart_check();
 
         if (errors == 0) $display("TB_RESULT: PASS izh_spike_shaper (all checks)");
         else             $display("TB_RESULT: FAIL izh_spike_shaper errors=%0d", errors);

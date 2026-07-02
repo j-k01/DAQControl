@@ -96,7 +96,7 @@ module top #(
     // drive the fabric-sourced ("read-only") registers; regf_rdint pulses for
     // one cycle on a CPU read. Add new control/status regs by slicing regf_value
     // / driving regf_in[idx] -- all contiguous at byte offset idx*4.
-    localparam integer REGF_NUM = 48;   // 0-17 ctrl/status, 18 spike nbeats, 19 DDS step, 32-47 spare legacy pulse regs
+    localparam integer REGF_NUM = 48;   // 0-17 ctrl/status, 18 spike nbeats, 19 DDS step, 20 current DAC gain
     wire [REGF_NUM*32-1:0] regf_value;
     wire [REGF_NUM*32-1:0] regf_in;
     wire [REGF_NUM-1:0]    regf_we;
@@ -628,6 +628,7 @@ module top #(
     wire [3:0]  izh_spike_flags_neuron;
     wire [3:0]  izh_spike_flags_tx;
     wire [15:0]  dac_src_sel_tx;     // 4 bits/DAC crossbar select (reg17[15:0]) in GT domain
+    wire [15:0]  cur_dac_gain_q8_8_tx; // reg20[15:0], Q8.8 current-source DAC gain
     wire [255:0] mon_words_tx;       // 4 x 64-bit current-monitor DAC words in GT domain
     wire [63:0]  cur_source_word_tx; // pure injected-current DAC word in GT domain
     wire [31:0] dac_neuron_debug_async;
@@ -1230,13 +1231,24 @@ module top #(
         .dest     (spike_nbeats_tx)
     );
 
-    // Current monitors: bring each neuron's integrated input current (I+Ic) from
-    // the slow neuron domain into the DAC domain as ready-to-play 64-bit words,
-    // so any DAC can mirror exactly what a neuron is being fed.  Capture on each
-    // player update (sample_tick) for an immediate response to a new current
-    // value, plus a slow clk_50 heartbeat so static changes (a neuron reprogram
-    // while the player is stopped) also refresh.  Both rates sit far below the
-    // CDC's safe limit, and dst_clk >> src_clk keeps the held data stable.
+    cdc_vector_sync #(
+        .WIDTH (16)
+    ) u_cur_dac_gain_sync (
+        .dest_clk (gth_tx_usrclk2),
+        .dest_rst (litejesd_reset),
+        .src      (regf_value[20*32 +: 16]),
+        .dest     (cur_dac_gain_q8_8_tx)
+    );
+
+    // Unified current/spike observation CDC.  The current that drives neurons is
+    // still the unscaled clk_50 cur_i_current.  This packetized observation path
+    // only controls what the DAC crossbar can display: per-neuron monitors, the
+    // pure current source (with optional post-CDC DAC gain), and spike shaper
+    // start pulses that share the same CDC transport latency.
+    //
+    // Capture on each player update (sample_tick) for an immediate response to a
+    // new current value, plus a slow clk_50 heartbeat so static changes (a neuron
+    // reprogram while the player is stopped) also refresh.
     reg [7:0] cur_mon_hb = 8'd0;
     always @(posedge clk_50) begin
         if (neuron_rst) cur_mon_hb <= 8'd0;
@@ -1244,41 +1256,20 @@ module top #(
     end
     wire cur_mon_capture = cur_sample_tick | (cur_mon_hb == 8'd0);
 
-    cur_monitor_cdc #(
-        .N     (4),
+    izh_observation_cdc #(
         .SHIFT (8)
-    ) u_cur_monitor_cdc (
-        .src_clk   (clk_50),
-        .src_rst   (neuron_rst),
-        .i_mon     (izh_i_mon),
-        .capture   (cur_mon_capture),
-        .dst_clk   (gth_tx_usrclk2),
-        .mon_words (mon_words_tx)
-    );
-
-    cur_monitor_cdc #(
-        .N     (1),
-        .SHIFT (8)
-    ) u_cur_source_cdc (
-        .src_clk   (clk_50),
-        .src_rst   (neuron_rst),
-        .i_mon     (cur_i_current),
-        .capture   (cur_mon_capture),
-        .dst_clk   (gth_tx_usrclk2),
-        .mon_words (cur_source_word_tx)
-    );
-
-    // The neurons live in the slow clk_50 neuron domain.  Only their one-bit
-    // spike events cross into the JESD domain, where the DAC-rate pulse
-    // shapers live; the shaper edge-detects, and a one-clk_50-cycle spike
-    // pulse only widens through the 2FF sync, so no spikes are lost.
-    cdc_vector_sync #(
-        .WIDTH (4)
-    ) u_izh_spike_flags_sync (
-        .dest_clk (gth_tx_usrclk2),
-        .dest_rst (litejesd_reset),
-        .src      (izh_spike_flags_neuron),
-        .dest     (izh_spike_flags_tx)
+    ) u_izh_observation_cdc (
+        .src_clk          (clk_50),
+        .src_rst          (neuron_rst),
+        .pure_current_q16 (cur_i_current),
+        .monitor_q16      (izh_i_mon),
+        .spike_flags      (izh_spike_flags_neuron),
+        .capture          (cur_mon_capture),
+        .dst_clk          (gth_tx_usrclk2),
+        .pure_gain_q8_8   (cur_dac_gain_q8_8_tx),
+        .mon_words        (mon_words_tx),
+        .current_word     (cur_source_word_tx),
+        .spike_start      (izh_spike_flags_tx)
     );
 
     // Programmable spike-pulse shapers (one per neuron).  These live here -- NOT

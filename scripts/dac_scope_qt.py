@@ -37,10 +37,10 @@ on connect -- acquisition is opt-in:
     allowable range, default 0 V .. max), then program it to a channel.
   - Source editors (two pop-up windows):
       * Current source: shows the waveform programmed into the cur_wave current
-        RAM. Presets Sine (5 kHz default) / Constant current / Step (0 -> amp);
-        the amplitude is in mA and can NEVER go negative. "Program" loads it
-        via CURW; route Current source on a DAC to mirror the injected current
-        out.
+        RAM. Presets Sine (5 kHz default) / Constant current / Step; the
+        amplitude is in mA and can NEVER go negative. "Program" loads it via
+        CURW or CURS; route Current source on a DAC to mirror the injected
+        current out.
       * Pulse shape: shows the spike pulse (<=4096 signed DAC samples) and lets you
         drag individual points up/down; "Program pulse" sends it via PULS. The
         shaped pulse is one crossbar input -- route a Spike source to emit it.
@@ -199,7 +199,9 @@ CUR_FREQ_REQUEST_MIN_HZ = 1.0e-3
 CUR_FREQ_REQUEST_MAX_HZ = CUR_PLAYER_CLK_HZ
 CUR_SINE_HW_MIN_HZ = CUR_PLAYER_CLK_HZ / (65535.0 * CUR_SINE_SAMPLES)
 CUR_SINE_HW_MAX_HZ = CUR_PLAYER_CLK_HZ / CUR_SINE_SAMPLES_MIN
-CUR_SOURCE_PRESETS = ["Sine", "Constant current", "Step 0 -> constant"]
+CUR_SOURCE_PRESETS = ["Sine", "Constant current", "Step"]
+CUR_DAC_GAIN_Q8_8_ONE = 0x0100
+CUR_DAC_GAIN_MAX = 0xFFFF / 256.0
 # Some DAC->ADC loopback setups are AC-coupled with a high-pass corner near this
 # value. The injected current still drives the neurons below it; use a DC-coupled
 # readout path if the analog loopback attenuates low-frequency current readback.
@@ -254,6 +256,11 @@ def ma_to_q16_u32(ma):
     return q & 0xFFFFFFFF
 
 
+def gain_to_q8_8(gain):
+    gain = max(0.0, min(CUR_DAC_GAIN_MAX, float(gain)))
+    return max(0, min(0xFFFF, int(round(gain * 256.0))))
+
+
 def format_rate(freq_hz):
     if freq_hz <= 0:
         return "DC/one-shot"
@@ -290,7 +297,8 @@ def choose_current_timing(freq_hz, n_max=CUR_SINE_SAMPLES,
 
 
 def gen_current_wave(kind, amp_ma, freq_hz, n_max=CUR_SINE_SAMPLES,
-                     n_min=CUR_SINE_SAMPLES_MIN):
+                     n_min=CUR_SINE_SAMPLES_MIN, step_zero=16,
+                     step_high=48, step_cps=1):
     """Build a non-negative current waveform for the cur_wave player.
 
     Returns (samples_ma, cps, actual_hz): per-sample amplitudes in mA (all >= 0),
@@ -301,11 +309,14 @@ def gen_current_wave(kind, amp_ma, freq_hz, n_max=CUR_SINE_SAMPLES,
     if kind.startswith("Constant"):
         return np.asarray([amp_ma]), 1, 0.0
     if kind.startswith("Step"):
-        # Programmed with CURW hold mode: play the 0-to-amp edge once, then hold
-        # the final constant-current sample instead of wrapping into a square.
-        ys = np.zeros(64)
-        ys[16:] = amp_ma
-        return ys, 1, 0.0
+        # Hold mode plays the 0-to-amp edge once, then holds the final
+        # constant-current sample instead of wrapping into a square.
+        zc = max(0, min(CUR_WAVE_MAX, int(step_zero)))
+        hc = max(0, min(CUR_WAVE_MAX - zc, int(step_high)))
+        if zc + hc <= 0:
+            hc = 1
+        ys = np.concatenate((np.zeros(zc), np.full(hc, amp_ma)))
+        return ys, max(1, min(65535, int(step_cps))), 0.0
     n, cps, actual = choose_current_timing(freq_hz, n_max=n_max, n_min=n_min)
     i = np.arange(n)
     ys = 0.5 * amp_ma * (1.0 - np.cos(2.0 * np.pi * i / n))
@@ -534,6 +545,29 @@ class DacControl:
             self.s.write(struct.pack(f"<{n}I", *words))
             self.s.flush()
             return self._readuntil(("OK CURW", "ERR"))
+
+    def set_current_gain(self, gain):
+        """Set DAC-only current-source visibility gain (firmware CURG, Q8.8).
+
+        This does not change i_external into the neurons; it only scales the
+        pure current-source DAC mirror after the observation CDC."""
+        raw = gain_to_q8_8(gain)
+        return self.cmd(f"CURG 0x{raw:04X}", ok=("OK CURG", "ERR"))
+
+    def program_current_step(self, cps, zero_count, high_count, amp_ma,
+                             hold_last=True):
+        """Program a 0 -> amp step via firmware CURS using the existing current
+        BRAM/player. hold_last=False repeats the zero/high pattern."""
+        zc = max(0, min(CUR_WAVE_MAX, int(zero_count)))
+        hc = max(0, min(CUR_WAVE_MAX - zc, int(high_count)))
+        if zc + hc <= 0:
+            hc = 1
+        cps = max(1, min(65535, int(cps)))
+        amp_q16 = ma_to_q16_u32(amp_ma)
+        mode = "hold" if hold_last else "loop"
+        return self.cmd(
+            f"CURS {cps} {zc} {hc} 0x{amp_q16:08X} {mode}",
+            ok=("OK CURS", "ERR"))
 
     def stop_current(self):
         """Stop the current player (i_external held; CURP off)."""
@@ -913,8 +947,8 @@ class PulseShapeWindow(QtWidgets.QWidget):
 
 class CurrentSourceWindow(QtWidgets.QWidget):
     """Window showing the current-source waveform programmed into cur_wave RAM.
-    Presets: Sine (5 kHz default), Constant current, Step 0 -> constant.
-    Amplitude is in mA and can NEVER go negative. Programs the player via CURW;
+    Presets: Sine (5 kHz default), Constant current, Step.
+    Amplitude is in mA and can NEVER go negative. Programs the player via CURW/CURS;
     route Current source on a DAC to mirror the injected current out for the scope."""
     done = QtCore.pyqtSignal(bool, str)
 
@@ -950,7 +984,18 @@ class CurrentSourceWindow(QtWidgets.QWidget):
         self.amp_spin.setSuffix(" mA")
         self.amp_spin.valueChanged.connect(self._refresh)
         grid.addWidget(self.amp_spin, 1, 1)
-        grid.addWidget(QtWidgets.QLabel("frequency"), 2, 0)
+
+        grid.addWidget(QtWidgets.QLabel("DAC mirror gain"), 2, 0)
+        self.gain_spin = QtWidgets.QDoubleSpinBox()
+        self.gain_spin.setRange(0.0, CUR_DAC_GAIN_MAX)
+        self.gain_spin.setDecimals(3)
+        self.gain_spin.setSingleStep(0.25)
+        self.gain_spin.setValue(20.0)
+        self.gain_spin.setSuffix(" x")
+        self.gain_spin.valueChanged.connect(self._refresh)
+        grid.addWidget(self.gain_spin, 2, 1)
+
+        grid.addWidget(QtWidgets.QLabel("frequency"), 3, 0)
         self.freq_spin = QtWidgets.QDoubleSpinBox()
         self.freq_spin.setRange(CUR_FREQ_REQUEST_MIN_HZ, CUR_FREQ_REQUEST_MAX_HZ)
         self.freq_spin.setDecimals(3)
@@ -958,7 +1003,34 @@ class CurrentSourceWindow(QtWidgets.QWidget):
         self.freq_spin.setValue(5000.0)
         self.freq_spin.setSuffix(" Hz")
         self.freq_spin.valueChanged.connect(self._refresh)
-        grid.addWidget(self.freq_spin, 2, 1)
+        grid.addWidget(self.freq_spin, 3, 1)
+
+        grid.addWidget(QtWidgets.QLabel("step zero samples"), 4, 0)
+        self.step_zero_spin = QtWidgets.QSpinBox()
+        self.step_zero_spin.setRange(0, CUR_WAVE_MAX - 1)
+        self.step_zero_spin.setValue(16)
+        self.step_zero_spin.valueChanged.connect(self._refresh)
+        grid.addWidget(self.step_zero_spin, 4, 1)
+
+        grid.addWidget(QtWidgets.QLabel("step high samples"), 5, 0)
+        self.step_high_spin = QtWidgets.QSpinBox()
+        self.step_high_spin.setRange(0, CUR_WAVE_MAX)
+        self.step_high_spin.setValue(48)
+        self.step_high_spin.valueChanged.connect(self._refresh)
+        grid.addWidget(self.step_high_spin, 5, 1)
+
+        grid.addWidget(QtWidgets.QLabel("step cps"), 6, 0)
+        self.step_cps_spin = QtWidgets.QSpinBox()
+        self.step_cps_spin.setRange(1, 65535)
+        self.step_cps_spin.setValue(1)
+        self.step_cps_spin.valueChanged.connect(self._refresh)
+        grid.addWidget(self.step_cps_spin, 6, 1)
+
+        grid.addWidget(QtWidgets.QLabel("step mode"), 7, 0)
+        self.step_mode_cb = QtWidgets.QComboBox()
+        self.step_mode_cb.addItems(["hold last", "loop"])
+        self.step_mode_cb.currentIndexChanged.connect(self._refresh)
+        grid.addWidget(self.step_mode_cb, 7, 1)
         lay.addLayout(grid)
 
         row = QtWidgets.QHBoxLayout()
@@ -983,15 +1055,36 @@ class CurrentSourceWindow(QtWidgets.QWidget):
         kind = self.kind_cb.currentText()
         amp = self.amp_spin.value()
         freq = self.freq_spin.value()
+        is_step = kind.startswith("Step")
         # Frequency is meaningful only for periodic sine playback.
         self.freq_spin.setEnabled(kind.startswith("Sine"))
-        ys, cps, actual = gen_current_wave(kind, amp, freq)
+        for w in (self.step_zero_spin, self.step_high_spin, self.step_cps_spin,
+                  self.step_mode_cb):
+            w.setEnabled(is_step)
+        zc = self.step_zero_spin.value()
+        max_high = CUR_WAVE_MAX - zc
+        if self.step_high_spin.maximum() != max_high:
+            self.step_high_spin.blockSignals(True)
+            self.step_high_spin.setMaximum(max_high)
+            if self.step_high_spin.value() > max_high:
+                self.step_high_spin.setValue(max_high)
+            self.step_high_spin.blockSignals(False)
+        hc = self.step_high_spin.value()
+        step_cps = self.step_cps_spin.value()
+        step_loop = self.step_mode_cb.currentText().startswith("loop")
+        ys, cps, actual = gen_current_wave(
+            kind, amp, freq, step_zero=zc, step_high=hc, step_cps=step_cps)
+        if is_step and step_loop:
+            actual = CUR_PLAYER_CLK_HZ / (max(1, cps) * max(1, len(ys)))
         self._ys, self._cps = ys, cps
         self._kind = kind
         self._actual = actual
+        self._step_zero = zc
+        self._step_high = hc
+        self._step_loop = step_loop
         n = len(ys)
         dt = cps / CUR_PLAYER_CLK_HZ
-        if kind.startswith("Step"):
+        if kind.startswith("Step") and not step_loop:
             plot_ys = np.concatenate((ys, np.repeat(ys[-1], max(16, n))))
             t = np.arange(plot_ys.size) * dt
         else:
@@ -1010,18 +1103,22 @@ class CurrentSourceWindow(QtWidgets.QWidget):
                     f"use the Current source DAC route or a DC-coupled readout "
                     f"to inspect it cleanly.")
         elif kind.startswith("Step"):
-            tail = "  Programs once, then holds the final constant-current sample."
+            if step_loop:
+                tail = "  Loops the programmed zero/high pattern."
+            else:
+                tail = "  Programs once, then holds the final constant-current sample."
         elif kind.startswith("Constant"):
             tail = "  Programs a one-sample loop, so the injected current is DC."
         else:
             tail = "  Route Current source on a DAC to view the injected waveform."
-        rate_text = format_rate(actual)
+        rate_text = "one-shot hold" if (kind.startswith("Step") and not step_loop) else format_rate(actual)
         if actual > 0 and (actual <= CUR_SINE_HW_MIN_HZ * 1.001 or
                            actual >= CUR_SINE_HW_MAX_HZ * 0.999):
             rate_text += " (nearest hardware rate)"
         self.info.setText(
             f"{kind}: {n} samples, cps={cps} -> {rate_text}, "
-            f"peak {ys.max():.3f} mA (1 mA = 1.0 I-unit, unipolar 0+).{tail}")
+            f"peak {ys.max():.3f} mA (1 mA = 1.0 I-unit, unipolar 0+), "
+            f"DAC mirror gain {self.gain_spin.value():.3f}x.{tail}")
         self.scope._set_current_preview(kind, ys, cps, actual, programmed=False)
     def _on_prog(self):
         dac = self.scope.dac
@@ -1032,7 +1129,16 @@ class CurrentSourceWindow(QtWidgets.QWidget):
         self.prog_btn.setEnabled(False)
 
         def work():
-            r = dac.program_current(ys, cps, hold_last=self._kind.startswith("Step"))
+            r = dac.set_current_gain(self.gain_spin.value())
+            if not r or r.startswith("ERR"):
+                self.done.emit(False, r or "(no reply)")
+                return
+            if self._kind.startswith("Step"):
+                r = dac.program_current_step(
+                    cps, self._step_zero, self._step_high,
+                    self.amp_spin.value(), hold_last=not self._step_loop)
+            else:
+                r = dac.program_current(ys, cps, hold_last=False)
             self.done.emit(bool(r and r.startswith("OK")), r or "(no reply)")
         threading.Thread(target=work, daemon=True).start()
 
@@ -1593,7 +1699,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if ys.size == 0:
             ys = np.zeros(1)
         dt = max(1, int(cps)) / CUR_PLAYER_CLK_HZ
-        if kind.startswith("Step"):
+        if kind.startswith("Step") and actual <= 0:
             plot_ys = np.concatenate((ys, np.repeat(ys[-1], max(16, ys.size))))
         else:
             reps = 3 if ys.size > 1 else 16
@@ -1603,7 +1709,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         ymax = max(1.0, float(ys.max()) * 1.15)
         self.cur_preview.setYRange(-0.05 * ymax, ymax)
         state = "programmed" if programmed else "staged"
-        freq = "one-shot hold" if kind.startswith("Step") else (
+        freq = "one-shot hold" if (kind.startswith("Step") and actual <= 0) else (
             "DC" if actual <= 0 else format_rate(actual))
         self.cur_preview_info.setText(
             f"{state}: {kind}, {ys.size} samples, cps={int(cps)}, "

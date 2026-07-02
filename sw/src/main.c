@@ -155,6 +155,8 @@
  * value is 0 (all DACs off), so NSRC must run to route anything. */
 #define DAC_XBAR_SEL_REG   (REG_BASE + 0x44)   /* reg17 */
 #define DDS_PHASE_INC_REG  (REG_BASE + 19u*4u) /* reg19[23:0], 0 = HDL default */
+#define CUR_DAC_GAIN_REG   (REG_BASE + 20u*4u) /* reg20[15:0], Q8.8 DAC-only current gain */
+#define CUR_DAC_GAIN_ONE   0x0100u
 #define XSRC_OFF     0u
 #define XSRC_DDS     1u    /* broadcast sine (single entry, any DAC) */
 #define XSRC_BRAM0   2u    /* +ch : BRAM channel 0..3   */
@@ -1164,6 +1166,35 @@ static void cmd_ddsi(void)
     send_str("\r\n");
 }
 
+static void cmd_curg(void)
+{
+    char *p = &cmd[4];
+    u32 gain;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (*p == '\0') {
+        send_str("CURG gain_q8_8=");
+        send_hex(Xil_In32(CUR_DAC_GAIN_REG) & 0xFFFFu);
+        send_str(" (0x0100 = 1x, 0x1400 = 20x)\r\n");
+        return;
+    }
+
+    if (token_eq_ci(p, "default") || token_eq_ci(p, "one") ||
+        token_eq_ci(p, "unity")) {
+        gain = CUR_DAC_GAIN_ONE;
+    } else if (!parse_u32_arg(&p, &gain) || gain > 0xFFFFu) {
+        send_str("ERR CURG expects default|0..0xFFFF Q8.8 gain (0x0100=1x, 0x1400=20x)\r\n");
+        return;
+    }
+
+    Xil_Out32(CUR_DAC_GAIN_REG, gain & 0xFFFFu);
+    send_str("OK CURG gain_q8_8=");
+    send_hex(Xil_In32(CUR_DAC_GAIN_REG) & 0xFFFFu);
+    send_str("\r\n");
+}
+
 #if HAS_BRAM_DATAPLANE
 /* CURP off                       -> stop the current player (run=0)
  * CURP <cps> <last_index> <amp>  -> fill cur_wave[0..last_index] with a
@@ -1281,6 +1312,71 @@ static void cmd_curw(void)
     send_uint(count);
     send_str(" hold=");
     send_uint(hold_last);
+    send_str("\r\n");
+}
+
+/* CURS <cps> <zero_count> <high_count> <amp_q16> [hold|loop]
+ * Convenience wrapper for a programmable step using the existing cur_wave BRAM:
+ * write zero_count zero samples, then high_count amp samples, then run the
+ * player.  Default is hold-last, so it makes a single 0 -> amp step and stays
+ * high.  "loop" repeats the programmed pattern. */
+static void cmd_curs(void)
+{
+    char *p = &cmd[4];
+    u32 cps, zero_count, high_count, amp, count, i;
+    u32 hold_last = 1u;
+
+    if (!parse_u32_arg(&p, &cps) || !parse_u32_arg(&p, &zero_count) ||
+        !parse_u32_arg(&p, &high_count) || !parse_u32_arg(&p, &amp)) {
+        send_str("ERR CURS <cps> <zero_count> <high_count> <amp_q16> [hold|loop]\r\n");
+        return;
+    }
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (*p != '\0') {
+        if (token_eq_ci(p, "hold") || token_eq_ci(p, "once") ||
+            token_eq_ci(p, "step")) {
+            hold_last = 1u;
+        } else if (token_eq_ci(p, "loop")) {
+            hold_last = 0u;
+        } else {
+            send_str("ERR CURS mode must be hold/once/step or loop\r\n");
+            return;
+        }
+    }
+
+    if (zero_count > CUR_WAVE_DEPTH || high_count > CUR_WAVE_DEPTH ||
+        zero_count + high_count == 0u ||
+        zero_count + high_count > CUR_WAVE_DEPTH) {
+        send_str("ERR CURS zero_count + high_count must be 1..1024\r\n");
+        return;
+    }
+
+    count = zero_count + high_count;
+    for (i = 0u; i < zero_count; i++)
+        Xil_Out32(CUR_WAVE_BRAM_BASE + i * 4u, 0u);
+    for (; i < count; i++)
+        Xil_Out32(CUR_WAVE_BRAM_BASE + i * 4u, amp);
+
+    cur_player_restart_tog ^= 1u;
+    Xil_Out32(CUR_PLAYER_CTRL_REG,
+              ((cps & 0xFFFFu) << CUR_PLAYER_CPS_SHIFT) |
+              (((count - 1u) & 0x3FFu) << CUR_PLAYER_LAST_SHIFT) |
+              (hold_last ? CUR_PLAYER_HOLD_LAST : 0u) |
+              CUR_PLAYER_RUN |
+              (cur_player_restart_tog ? CUR_PLAYER_RESTART : 0u));
+
+    send_str("OK CURS cps=");
+    send_uint(cps);
+    send_str(" zero=");
+    send_uint(zero_count);
+    send_str(" high=");
+    send_uint(high_count);
+    send_str(" hold=");
+    send_uint(hold_last);
+    send_str(" amp=");
+    send_hex(amp);
     send_str("\r\n");
 }
 #endif
@@ -2822,9 +2918,11 @@ static void cmd_help(void)
     send_str("  COUP [all|1..4] [ac|dc] ADC input coupling; default/safe state is AC\r\n");
     send_str("  NSRC [ch|all] src  DAC crossbar (reg17): off,dds,bram[0-3],spike[0-3],mon[0-3],current,tag,0..15\r\n");
     send_str("  DDSI default|step  DDS phase increment reg19[23:0]; 0/default uses HDL 0x19999A\r\n");
+    send_str("  CURG [default|gain_q8_8]  pure current DAC-view gain only; 0x0100=1x, 0x1400=20x\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("  CURP off | <cps> <last> <amp_q16>  current player: triangle into i_external; f=50MHz/(cps*(last+1))\r\n");
     send_str("  CURW <cps> <count> [hold]  current player: load host LE Q16.16 samples; optional hold plays once then holds last\r\n");
+    send_str("  CURS <cps> <zero> <high> <amp_q16> [hold|loop]  current step via cur_wave BRAM/player\r\n");
     send_str("  PULS default | bin <count> | <s0..sN>  spike pulse: binary up to 4096 signed s16 samples; text up to 32\r\n");
 #endif
     send_str("  NEUR ch param value  set IZH Q16.16 param on ch=0..3 or all (writes config-bank BRAM)\r\n");
@@ -2903,6 +3001,7 @@ static void cmd_help(void)
     send_str("    [31:8] DAC BRAM loop frame count; 0 loops full 4096-frame BRAM\r\n");
 #endif
     send_str("REG19 DDS phase increment: [23:0], 0 uses hardware default 0x19999A\r\n");
+    send_str("REG20 current DAC gain: [15:0] Q8.8, applies only to source=current DAC mirror, not neuron input\r\n");
 #if HAS_BRAM_DATAPLANE
     send_str("ADC capture frame words: ch0 low/high, ch1 low/high, ch2 low/high, ch3 low/high; max 4096 frames\r\n");
 #endif
@@ -2954,6 +3053,8 @@ static void cmd_status(void)
     send_hex(Xil_In32(DAC_XBAR_SEL_REG) & 0xFFFFu);
     send_str(" dds_inc=");
     send_hex(Xil_In32(DDS_PHASE_INC_REG) & 0x00FFFFFFu);
+    send_str(" cur_gain=");
+    send_hex(Xil_In32(CUR_DAC_GAIN_REG) & 0xFFFFu);
     send_str("\r\n");
     send_str("adc_diag: rw5=");
     send_hex(Xil_In32(RW_REG5));
@@ -2977,6 +3078,7 @@ static void launch_defaults(void)
     /* Default crossbar: DDS (broadcast sine, code 1) on all four DACs. */
     Xil_Out32(DAC_XBAR_SEL_REG, 0x00001111u);
     Xil_Out32(DDS_PHASE_INC_REG, 0u);
+    Xil_Out32(CUR_DAC_GAIN_REG, CUR_DAC_GAIN_ONE);
     restart_dac_tx_path();
 }
 
@@ -3003,11 +3105,15 @@ static void process_cmd(void)
         cmd_nsrc();
     } else if (strncmp(cmd, "DDSI", 4) == 0) {
         cmd_ddsi();
+    } else if (strncmp(cmd, "CURG", 4) == 0) {
+        cmd_curg();
 #if HAS_BRAM_DATAPLANE
     } else if (strncmp(cmd, "CURP", 4) == 0) {
         cmd_curp();
     } else if (strncmp(cmd, "CURW", 4) == 0) {
         cmd_curw();
+    } else if (strncmp(cmd, "CURS", 4) == 0) {
+        cmd_curs();
 #endif
     } else if (strncmp(cmd, "PULS", 4) == 0) {
         cmd_puls();

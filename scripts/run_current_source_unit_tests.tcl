@@ -72,11 +72,18 @@ run_tb cur_monitor_cdc_tb [list \
     ../cur_monitor_cdc_tb.sv \
 ] {xpm}
 
+run_tb izh_observation_cdc_tb [list \
+    ../../src/jesd/izh_observation_cdc.v \
+    ../../src/izh_spike_shaper.v \
+    ../izh_observation_cdc_tb.sv \
+] {xpm}
+
 run_tb izh_monitor_integ_tb [list \
     $izh_neuron_file \
     ../../src/izh_current_player.v \
     ../../src/izh_dac_bank.sv \
-    ../../src/jesd/cur_monitor_cdc.v \
+    ../../src/jesd/izh_observation_cdc.v \
+    ../../src/izh_spike_shaper.v \
     ../izh_monitor_integ_tb.sv \
 ] {xpm}
 

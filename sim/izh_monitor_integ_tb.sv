@@ -4,8 +4,9 @@
 // minus the crossbar/JESD/DAC/ADC:
 //
 //   izh_current_player -> i_external -> izh_dac_bank.i_mon
-//       -> cur_monitor_cdc -> mon_words
-//       -> cur_monitor_cdc(N=1) -> pure current-source DAC word
+//       -> izh_observation_cdc -> monitor DAC words
+//       -> izh_observation_cdc -> pure current-source DAC word
+//       -> izh_observation_cdc spike packet -> izh_spike_shaper
 //
 // using the SAME capture logic as top.v (sample_tick | clk_50 heartbeat) and the
 // player driven exactly like firmware "CURP 1 49 0x500000" (cps=1 -> sample_tick
@@ -62,15 +63,41 @@ module izh_monitor_integ_tb;
     wire capture = sample_tick | (hb == 8'd0);
 
     wire [255:0] mon_words;
-    cur_monitor_cdc #(.N(4), .SHIFT(8)) u_cdc (
-        .src_clk(clk_50), .src_rst(neuron_rst), .i_mon(i_mon), .capture(capture),
-        .dst_clk(gt_clk), .mon_words(mon_words)
+    wire [63:0] cur_source_word;
+    wire [3:0] spike_start;
+    reg  [3:0] forced_spike_flags = 4'd0;
+    wire [3:0] obs_spike_flags = spike_flags | forced_spike_flags;
+    izh_observation_cdc #(.SHIFT(8)) u_obs (
+        .src_clk(clk_50),
+        .src_rst(neuron_rst),
+        .pure_current_q16(i_current),
+        .monitor_q16(i_mon),
+        .spike_flags(obs_spike_flags),
+        .capture(capture),
+        .dst_clk(gt_clk),
+        .pure_gain_q8_8(16'h0000),
+        .mon_words(mon_words),
+        .current_word(cur_source_word),
+        .spike_start(spike_start)
     );
 
-    wire [63:0] cur_source_word;
-    cur_monitor_cdc #(.N(1), .SHIFT(8)) u_cur_source_cdc (
-        .src_clk(clk_50), .src_rst(neuron_rst), .i_mon(i_current), .capture(capture),
-        .dst_clk(gt_clk), .mon_words(cur_source_word)
+    // A small programmed spike shape on the same DAC-domain path as top.v.
+    wire [3:0] shape_addr;
+    reg  [63:0] shape_mem [0:15];
+    reg  [63:0] shape_data = 64'd0;
+    wire [63:0] spike_dac_word;
+    wire        spike_active;
+    always @(posedge gt_clk) shape_data <= shape_mem[shape_addr];
+
+    izh_spike_shaper #(.ADDR_W(4)) u_shape (
+        .clk(gt_clk),
+        .reset(neuron_rst),
+        .spike(spike_start[0]),
+        .shape_addr(shape_addr),
+        .shape_data(shape_data),
+        .nbeats(5'd4),
+        .active(spike_active),
+        .dac_word(spike_dac_word)
     );
 
     function [15:0] scl(input [31:0] q);
@@ -87,9 +114,17 @@ module izh_monitor_integ_tb;
     reg signed [31:0] amp;
     reg signed [15:0] sw, cw, monmin, monmax, curmin, curmax;
     reg signed [31:0] imn, imonmin, imonmax;
+    integer spike_seen, spike_shape_seen;
 
     initial begin
         errors = 0;
+        spike_seen = 0;
+        spike_shape_seen = 0;
+        shape_mem[0] = {16'h4444, 16'h3333, 16'h2222, 16'h1111};
+        shape_mem[1] = {16'h8888, 16'h7777, 16'h6666, 16'h5555};
+        shape_mem[2] = {16'hCCCC, 16'hBBBB, 16'hAAAA, 16'h9999};
+        shape_mem[3] = {16'h1357, 16'h2468, 16'h369A, 16'h48AB};
+        for (i = 4; i < 16; i = i + 1) shape_mem[i] = 64'd0;
         // +/-80.0 (Q16.16) triangle over 50 samples, rest zero (like CURP 1 49 0x500000)
         amp = 32'sd5242880;
         for (i = 0; i < 1024; i = i + 1) begin
@@ -100,12 +135,14 @@ module izh_monitor_integ_tb;
 
         repeat (20) @(negedge clk_50);
         neuron_rst = 0;
-        wait (u_cdc.fifo_wr_rst_busy === 1'b0 && u_cdc.fifo_rd_rst_busy === 1'b0 &&
-              u_cur_source_cdc.fifo_wr_rst_busy === 1'b0 &&
-              u_cur_source_cdc.fifo_rd_rst_busy === 1'b0);
+        wait (u_obs.fifo_wr_rst_busy === 1'b0 && u_obs.fifo_rd_rst_busy === 1'b0);
         repeat (10) @(posedge gt_clk);
         @(negedge clk_50); run = 1; restart = 1;
         @(negedge clk_50); restart = 0;
+        repeat (20) @(negedge clk_50);
+        forced_spike_flags = 4'b0001;
+        @(negedge clk_50);
+        forced_spike_flags = 4'd0;
 
         // sample i_mon (neuron domain) and mon_words (DAC domain) over many cycles
         monmin = 16'sh7FFF; monmax = 16'sh8000;
@@ -122,6 +159,10 @@ module izh_monitor_integ_tb;
             imn = i_mon[31:0];
             if (imn > imonmax) imonmax = imn;
             if (imn < imonmin) imonmin = imn;
+            if (spike_start[0])
+                spike_seen = 1;
+            if (spike_dac_word == shape_mem[0])
+                spike_shape_seen = 1;
         end
 
         $display("i_mon[ch0]   swing: min=%0d max=%0d range=%0d", imonmin, imonmax, imonmax - imonmin);
@@ -145,9 +186,17 @@ module izh_monitor_integ_tb;
             errors = errors + 1;
             $display("FAIL: pure current should not include +I_const monitor offset");
         end
+        if (!spike_seen) begin
+            errors = errors + 1;
+            $display("FAIL: spike flags did not cross the observation CDC");
+        end
+        if (!spike_shape_seen) begin
+            errors = errors + 1;
+            $display("FAIL: spike_start did not play the programmed spike shape");
+        end
 
         if (errors == 0)
-            $display("TB_RESULT: PASS izh_monitor_integ (monitor and pure-current paths track injected current)");
+            $display("TB_RESULT: PASS izh_monitor_integ (monitor/current/spike-shape paths track injected current)");
         else
             $display("TB_RESULT: FAIL izh_monitor_integ (reproduces silence; bug is in this RTL chain)");
         $finish;

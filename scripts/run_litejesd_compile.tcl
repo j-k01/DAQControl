@@ -48,6 +48,7 @@ set common_sources [list \
     ../../src/jesd/dac_source_crossbar.v \
     ../../src/jesd/dac_source_to_converter_preimage.v \
     ../../src/jesd/cur_monitor_cdc.v \
+    ../../src/jesd/izh_observation_cdc.v \
     ../../src/jesd/litejesd_dac_tx.v \
     ../../src/jesd/daq_litejesd_dac_tx_path.v \
     ../../src/jesd/adc1_sundance_halfbeat.v \
