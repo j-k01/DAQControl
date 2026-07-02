@@ -120,6 +120,8 @@ COLLECT_SIZE_DEFAULT_IDX = 0   # 64 KB/chip
 AUTOSAMPLE_INTERVAL_MS = 1000   # one sample per second
 AUTOSAMPLE_BYTES = 64 * 1024    # bytes/chip per auto-sample (16k samples/ch)
 # Neuron integration timestep (Q16.16): larger dt -> faster simulation.
+# The hex is the per-step dt in Q16.16 ms, so dt_ms = value / 65536; "1x
+# normal" (0x8000) = 0.5 ms, the classic Izhikevich integration step.
 NEURON_DT_OPTIONS = [
     ("0.25x slow", 0x2000),
     ("0.5x", 0x4000),
@@ -129,6 +131,16 @@ NEURON_DT_OPTIONS = [
     ("8x faster", 0x40000),
 ]
 NEURON_DT_DEFAULT = 2   # index of "1x normal"
+
+
+def neuron_dt_ms(dt_hex):
+    """Q16.16 timestep -> integration dt in milliseconds."""
+    return dt_hex / 65536.0
+
+
+def neuron_dt_label(label, dt_hex):
+    """Dropdown text: speed label plus the actual integration dt in ms."""
+    return f"{label}  (dt = {neuron_dt_ms(dt_hex):.3g} ms)"
 
 # Real-time Izhikevich parameters (physical units; converted to Q16.16 for the
 # NEUR command). param name matches the firmware NEUR param keyword.
@@ -1493,7 +1505,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         nb = QtWidgets.QGroupBox("Neuron sim speed (all)")
         ng = QtWidgets.QHBoxLayout(nb)
         self.dt_cb = QtWidgets.QComboBox()
-        self.dt_cb.addItems([lbl for lbl, _ in NEURON_DT_OPTIONS])
+        self.dt_cb.addItems([neuron_dt_label(lbl, val)
+                             for lbl, val in NEURON_DT_OPTIONS])
         self.dt_cb.setCurrentIndex(NEURON_DT_DEFAULT)
         self.dt_cb.currentIndexChanged.connect(self._on_dt)
         ng.addWidget(QtWidgets.QLabel("dt"))
