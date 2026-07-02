@@ -8,8 +8,11 @@
 #
 # Note: the IZH neuron bank runs on clk_out4 (50 MHz).  The clk_out[0-9]+
 # regexp below already folds it into the fabric clock group, so its
-# crossings into the GT user clocks are cut here like the rest; the
-# clk_out1<->clk_out4 config crossings stay timed (same MMCM, related).
+# crossings into the GT user clocks are cut here like the rest.  The
+# clk_out1->clk_out4 config crossings are ALSO cut (the blanket ASYNC_REG
+# false-path below hits every synchronizer meta stage), so multi-bit config
+# words must cross through cdc_word_sync (word-coherent), not
+# cdc_vector_sync, wherever the consumer needs an atomic value.
 proc daq_get_clocks_by_regexp {pattern} {
     return [get_clocks -quiet -regexp $pattern]
 }
@@ -53,6 +56,15 @@ set async_reg_cells [get_cells -hier -quiet -filter {ASYNC_REG == TRUE}]
 set async_reg_d_pins [daq_get_cell_pins_by_ref_name $async_reg_cells D]
 if {[llength $async_reg_d_pins] > 0} {
     set_false_path -to $async_reg_d_pins
+}
+
+# Top-level reset synchronizers (fabric_rst_sync_r, litejesd_reset_sync_r,
+# adc_rx_reset_sync_r) assert through async PRE pins driven from other
+# domains; deassertion is synchronous through the flop chain.  Cut the
+# assert paths like the LiteJESD FDPE synchronizers below.
+set async_reg_pre_pins [daq_get_cell_pins_by_ref_name $async_reg_cells PRE]
+if {[llength $async_reg_pre_pins] > 0} {
+    set_false_path -to $async_reg_pre_pins
 }
 
 # The placed timing reports showed these first-stage CDC flops still being

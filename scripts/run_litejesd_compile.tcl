@@ -27,6 +27,7 @@ set common_sources [list \
     ../launch_stubs.v \
     $izh_neuron_file \
     ../../src/cdc_vector_sync.v \
+    ../../src/cdc_word_sync.v \
     ../../src/clock_activity_monitor.v \
     ../../src/signal_activity_monitor.v \
     ../../src/hmc7044_init.v \

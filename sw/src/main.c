@@ -1263,7 +1263,7 @@ static void cmd_curp(void)
 static void cmd_curw(void)
 {
     char *p = &cmd[4];
-    u32 cps, count, i;
+    u32 cps, count, store, i;
     u32 hold_last = 0u;
 
     if (!parse_u32_arg(&p, &cps) || !parse_u32_arg(&p, &count)) {
@@ -1274,8 +1274,11 @@ static void cmd_curw(void)
         send_str("ERR CURW count must be >= 1\r\n");
         return;
     }
-    if (count > CUR_WAVE_DEPTH)
-        count = CUR_WAVE_DEPTH;
+    /* Store at most CUR_WAVE_DEPTH samples, but ALWAYS receive every announced
+     * word: the host transmits <count> words regardless, and any undrained
+     * bytes would be parsed as UART commands (a stray CR/LF in sample data can
+     * form a WRTE). */
+    store = (count > CUR_WAVE_DEPTH) ? CUR_WAVE_DEPTH : count;
 
     while (*p == ' ' || *p == '\t')
         p++;
@@ -1295,13 +1298,16 @@ static void cmd_curw(void)
     send_uint(count);
     send_str("\r\n");
 
-    for (i = 0u; i < count; i++)
-        Xil_Out32(CUR_WAVE_BRAM_BASE + i * 4u, recv_le32_blocking());
+    for (i = 0u; i < count; i++) {
+        u32 w = recv_le32_blocking();
+        if (i < store)
+            Xil_Out32(CUR_WAVE_BRAM_BASE + i * 4u, w);
+    }
 
     cur_player_restart_tog ^= 1u;
     Xil_Out32(CUR_PLAYER_CTRL_REG,
               ((cps & 0xFFFFu) << CUR_PLAYER_CPS_SHIFT) |
-              (((count - 1u) & 0x3FFu) << CUR_PLAYER_LAST_SHIFT) |
+              (((store - 1u) & 0x3FFu) << CUR_PLAYER_LAST_SHIFT) |
               (hold_last ? CUR_PLAYER_HOLD_LAST : 0u) |
               CUR_PLAYER_RUN |
               (cur_player_restart_tog ? CUR_PLAYER_RESTART : 0u));
@@ -1309,7 +1315,7 @@ static void cmd_curw(void)
     send_str("OK CURW cps=");
     send_uint(cps);
     send_str(" count=");
-    send_uint(count);
+    send_uint(store);
     send_str(" hold=");
     send_uint(hold_last);
     send_str("\r\n");
@@ -2095,6 +2101,7 @@ static void trigger_capture(int use_dac_program)
 
 static void cmd_program(u32 channel, u32 words)
 {
+    u32 store;
     u32 i;
 
     if (channel >= DAC_PROGRAM_CHANNELS) {
@@ -2102,13 +2109,18 @@ static void cmd_program(u32 channel, u32 words)
         return;
     }
 
-    if (words == 0u || words > DAC_PROGRAM_WORDS_PER_CHANNEL) {
+    if (words == 0u) {
         words = DAC_PROGRAM_WORDS_PER_CHANNEL;
     }
     if ((words & 1u) != 0u) {
         send_str("ERR PROG word count must be even for 64-bit DAC frames\r\n");
         return;
     }
+    /* Store at most a full channel BRAM, but ALWAYS receive every announced
+     * word: the host transmits <words> words regardless, and any undrained
+     * bytes would be parsed as UART commands. */
+    store = (words > DAC_PROGRAM_WORDS_PER_CHANNEL)
+                ? DAC_PROGRAM_WORDS_PER_CHANNEL : words;
 
     send_str("PGRD ch=");
     send_uint(channel);
@@ -2117,13 +2129,16 @@ static void cmd_program(u32 channel, u32 words)
     send_str("\r\n");
 
     for (i = 0; i < words; i++) {
-        Xil_Out32(dac_program_bram_base[channel] + i * 4u, recv_le32_blocking());
+        u32 w = recv_le32_blocking();
+        if (i < store) {
+            Xil_Out32(dac_program_bram_base[channel] + i * 4u, w);
+        }
     }
 
     send_str("OK PROG ch=");
     send_uint(channel);
     send_str(" words=");
-    send_uint(words);
+    send_uint(store);
     send_str("\r\n");
 }
 
@@ -2500,25 +2515,39 @@ static int ranges_overlap(u32 a, u32 bytes_a, u32 b, u32 bytes_b)
 
 static int burst_map_is_valid(u32 base0, u32 base1)
 {
+    /* BCAP actually WRITES bytes + BURST_FLUSH_GUARD per chip (the guard is
+     * captured but never read out), so every check below must use the full
+     * capture footprint, not just the read-out ceiling. */
+    const u32 cap = BURST_MAX_BYTES + BURST_FLUSH_GUARD;
+    /* The DMAC scratch buffers, SG descriptor rings, and the stream/burst
+     * mailbox all live in 0x10000000..0x1003FFFF; a capture landing there
+     * corrupts its own descriptor chain mid-transfer. */
+    const u32 rsvd_base  = ADC_DMA0_DDR_BASE;
+    const u32 rsvd_bytes = (STRM_MAILBOX + 0x100u) - ADC_DMA0_DDR_BASE;
     u32 i;
 
     if (((base0 | base1) & 0x0Fu) != 0u) {
         send_str("ERR BMAP bases must be 16-byte aligned\r\n");
         return 0;
     }
-    if (base0 > (0x80000000u - BURST_MAX_BYTES) ||
-        base1 > (0x80000000u - BURST_MAX_BYTES)) {
-        send_str("ERR BMAP bases must fit in DDR_LOW below 0x80000000\r\n");
+    if (base0 > (0x80000000u - cap) ||
+        base1 > (0x80000000u - cap)) {
+        send_str("ERR BMAP bases + capture + flush guard must fit in DDR_LOW below 0x80000000\r\n");
         return 0;
     }
-    if (ranges_overlap(base0, BURST_MAX_BYTES, base1, BURST_MAX_BYTES)) {
-        send_str("ERR BMAP chip windows overlap\r\n");
+    if (ranges_overlap(base0, cap, base1, cap)) {
+        send_str("ERR BMAP chip windows overlap (incl flush guard)\r\n");
+        return 0;
+    }
+    if (ranges_overlap(base0, cap, rsvd_base, rsvd_bytes) ||
+        ranges_overlap(base1, cap, rsvd_base, rsvd_bytes)) {
+        send_str("ERR BMAP overlaps DMA descriptor/mailbox region\r\n");
         return 0;
     }
     for (i = 0; i < ADC_DMA_CHIPS; i++) {
-        if (ranges_overlap(base0, BURST_MAX_BYTES,
+        if (ranges_overlap(base0, cap,
                            strm_ring_base[i], STRM_RING_BYTES) ||
-            ranges_overlap(base1, BURST_MAX_BYTES,
+            ranges_overlap(base1, cap,
                            strm_ring_base[i], STRM_RING_BYTES)) {
             send_str("ERR BMAP overlaps stream ring\r\n");
             return 0;

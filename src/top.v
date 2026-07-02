@@ -79,7 +79,20 @@ module top #(
         .locked    (mmcm_locked)
     );
 
-    wire fabric_rst = CPU_RESET | ~mmcm_locked;
+    // Async-assert / sync-deassert fabric reset.  CPU_RESET and mmcm_locked
+    // are asynchronous to clk_200: releasing the raw OR directly into the
+    // fabric lets different FFs leave reset on different clock edges
+    // (recovery/removal is untimed).  Assert immediately, deassert through a
+    // two-flop synchronizer so the whole clk_200 domain starts on one edge.
+    wire fabric_rst_async = CPU_RESET | ~mmcm_locked;
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] fabric_rst_sync_r = 2'b11;
+    always @(posedge clk_200 or posedge fabric_rst_async) begin
+        if (fabric_rst_async)
+            fabric_rst_sync_r <= 2'b11;
+        else
+            fabric_rst_sync_r <= {fabric_rst_sync_r[0], 1'b0};
+    end
+    wire fabric_rst = fabric_rst_sync_r[1];
     wire microblaze_reset = 1'b0;
 
     wire [31:0] rw_reg0;
@@ -1054,10 +1067,13 @@ module top #(
     //   [30]    run                 (1 = play, 0 = hold/stop)
     //   [31]    restart             (TOGGLE this bit to reset to sample 0)
     wire [31:0] cur_ctrl = regf_value[16*32 +: 32];
-    // One CDC for the quasi-static control bits (cycles/sample, last index, run);
-    // restart is edge-detected from its own toggle just below.
+    // One word-coherent CDC for the control bits (cycles/sample, last index,
+    // hold_last, run): the player samples cps/last_index EVERY cycle, so the
+    // whole word must update atomically -- a per-bit sync could start playback
+    // with a torn cps or wrap early on a torn last_index.  restart is
+    // edge-detected from its own toggle just below.
     wire [30:0] cur_cfg_50;
-    cdc_vector_sync #(.WIDTH(31)) u_cur_cfg_sync (
+    cdc_word_sync #(.WIDTH(31)) u_cur_cfg_sync (
         .dest_clk (clk_50), .dest_rst (neuron_rst),
         .src (cur_ctrl[30:0]), .dest (cur_cfg_50));
     wire cur_run_50 = cur_cfg_50[30];
@@ -1142,8 +1158,23 @@ module top #(
     wire [255:0] dac_debug_remap_in_words;
     wire [255:0] dac_debug_remap_out_words;
     wire [255:0] dac_debug_jesd_converter_words;
-    wire         litejesd_reset = gth_reset_all | ~gth_reset_tx_done |
-                                  ~gth_tx_userclk_active;
+    // Async-assert / sync-deassert into gth_tx_usrclk2.  The raw OR mixes
+    // clk_200 registers and fabric_rst; consuming it directly as a synchronous
+    // reset in the TX user-clock domain leaves deassertion untimed (the clock
+    // groups are declared asynchronous), so e.g. dac_bram_player's read/output
+    // indices could leave reset one cycle apart and stay misaligned.  The
+    // deassert edge only propagates once gth_tx_usrclk2 is running, which the
+    // ~gth_tx_userclk_active reset term already guarantees.
+    wire         litejesd_reset_async = gth_reset_all | ~gth_reset_tx_done |
+                                        ~gth_tx_userclk_active;
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] litejesd_reset_sync_r = 2'b11;
+    always @(posedge gth_tx_usrclk2 or posedge litejesd_reset_async) begin
+        if (litejesd_reset_async)
+            litejesd_reset_sync_r <= 2'b11;
+        else
+            litejesd_reset_sync_r <= {litejesd_reset_sync_r[0], 1'b0};
+    end
+    wire         litejesd_reset = litejesd_reset_sync_r[1];
     wire [7:0]   litejesd_phy_tx_rst = {8{litejesd_reset}};
 
     (* ASYNC_REG = "TRUE" *) reg [2:0] litejesd_sync_pipe = 3'b111;
@@ -1161,8 +1192,11 @@ module top #(
 
     assign litejesd_active_async = ~litejesd_reset;
 
+    // Word-coherent: dac_bram_player compares read_index == frame_count-1
+    // while running, so a torn frame_count can miss the wrap compare and let
+    // the read pointer free-run through the whole BRAM.
     wire [23:0] dac_bram_frame_count_tx;
-    cdc_vector_sync #(
+    cdc_word_sync #(
         .WIDTH (24)
     ) u_dac_bram_frame_count_sync (
         .dest_clk (gth_tx_usrclk2),
@@ -1757,9 +1791,20 @@ module top #(
     };
 
 `ifdef DAQ_WITH_LITEJESD
-    wire adc_rx_reset = gth_reset_all | ~gth_reset_rx_done |
-                        ~gth_rx_userclk_active | ~gth_rx_clk_seen |
-                        ~adc_auto_done;
+    // Async-assert / sync-deassert into gth_rx_usrclk2 (same rationale as
+    // litejesd_reset: the OR terms come from clk_200 and the deassert edge
+    // must be retimed before fanning out to the RX capture/frontend logic).
+    wire adc_rx_reset_async = gth_reset_all | ~gth_reset_rx_done |
+                              ~gth_rx_userclk_active | ~gth_rx_clk_seen |
+                              ~adc_auto_done;
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] adc_rx_reset_sync_r = 2'b11;
+    always @(posedge gth_rx_usrclk2 or posedge adc_rx_reset_async) begin
+        if (adc_rx_reset_async)
+            adc_rx_reset_sync_r <= 2'b11;
+        else
+            adc_rx_reset_sync_r <= {adc_rx_reset_sync_r[0], 1'b0};
+    end
+    wire adc_rx_reset  = adc_rx_reset_sync_r[1];
     wire adc_rx_enable = ~adc_rx_reset;
 
     (* ASYNC_REG = "TRUE" *) reg [2:0] adc_rx_sysref_pipe = 3'b000;
