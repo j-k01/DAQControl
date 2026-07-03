@@ -109,59 +109,77 @@ module izh_observation_cdc #(
         end
     endfunction
 
-    function [15:0] q16_gain_to_s16;
-        input signed [31:0] q;
-        input [15:0] gain_q8_8;
-        reg [15:0] gain_eff;
-        reg signed [55:0] prod;
-        reg signed [47:0] v;
-        begin
-            gain_eff = (gain_q8_8 == 16'd0) ? 16'h0100 : gain_q8_8;
-            prod = q * $signed({1'b0, gain_eff});
-            v = prod >>> (8 + SHIFT);
-            if (v > 48'sd32767)
-                q16_gain_to_s16 = 16'h7FFF;
-            else if (v < -48'sd32768)
-                q16_gain_to_s16 = 16'h8000;
-            else
-                q16_gain_to_s16 = v[15:0];
-        end
-    endfunction
-
     wire signed [31:0] fifo_pure = $signed(fifo_dout[31:0]);
     wire [127:0] fifo_mon = fifo_dout[32 +: 128];
     wire [3:0] fifo_spike = fifo_dout[160 +: 4];
 
+    // Effective DAC-view gain; 0 selects the hardware default 1.0x.  Quasi-
+    // static (register write through a CDC), so it is safe to use directly
+    // in the stage-1 multiply below.
+    wire [15:0] gain_eff = (pure_gain_q8_8 == 16'd0) ? 16'h0100 : pure_gain_q8_8;
+
+    // ---- staged presentation pipeline ----------------------------------
+    // The Q16.16 x Q8.8 gain multiply is a DSP cascade and cannot also carry
+    // the shift/saturate cone to the presentation register in one 250 MHz
+    // cycle (it was the worst setup violation of the 457d227 build), so it
+    // is pipelined: the pop captures the raw packet (s0), the next cycle
+    // registers the DSP product (s1), and the cycle after saturates and
+    // presents.  spike_start fires at s1 -- one stage after the pop -- so
+    // the presented words still lag spike_start by exactly one DAC clock,
+    // the relationship izh_spike_shaper's synchronous BRAM read expects.
+    // Back-to-back FIFO pops stream through the stages one per cycle.
+    reg               s0_valid = 1'b0;
+    reg signed [31:0] s0_pure = 32'd0;
+    reg [127:0]       s0_mon = 128'd0;
+    reg [3:0]         s0_spike = 4'd0;
+
+    reg signed [48:0] s1_prod = 49'd0;       // 32b x 17b signed product
+    reg [255:0]       s1_mon_words = 256'd0;
+
     integer n;
-    reg [63:0]  current_word_next = 64'd0;
-    reg [255:0] mon_words_next = 256'd0;
     reg [15:0]  s;
+    reg [255:0] mon_words_next;
 
     always @(*) begin
-        current_word_next = 64'd0;
         mon_words_next = 256'd0;
-        s = q16_gain_to_s16(fifo_pure, pure_gain_q8_8);
-        current_word_next = {s, s, s, s};
         for (n = 0; n < 4; n = n + 1) begin
-            s = q16_to_s16($signed(fifo_mon[n*32 +: 32]));
+            s = q16_to_s16($signed(s0_mon[n*32 +: 32]));
             mon_words_next[n*64 +: 64] = {s, s, s, s};
         end
     end
 
-    // One DAC-clock presentation delay: spike_start fires on the FIFO pop, and
-    // izh_spike_shaper emits its first visible BRAM beat one clock later.  The
-    // delayed words therefore line up with that first visible spike beat.
-    reg [63:0]  current_word_delay = 64'd0;
-    reg [255:0] mon_words_delay = 256'd0;
+    wire signed [48:0] gain_shifted = s1_prod >>> (8 + SHIFT);
+    reg [15:0] cur_s;
+    always @(*) begin
+        if (gain_shifted > 49'sd32767)
+            cur_s = 16'h7FFF;
+        else if (gain_shifted < -49'sd32768)
+            cur_s = 16'h8000;
+        else
+            cur_s = gain_shifted[15:0];
+    end
 
     always @(posedge dst_clk) begin
-        spike_start <= 4'd0;
-        current_word <= current_word_delay;
-        mon_words <= mon_words_delay;
+        // stage 0: capture the popped packet
+        s0_valid <= fifo_rd_en;
         if (fifo_rd_en) begin
-            current_word_delay <= current_word_next;
-            mon_words_delay <= mon_words_next;
-            spike_start <= fifo_spike;
+            s0_pure  <= fifo_pure;
+            s0_mon   <= fifo_mon;
+            s0_spike <= fifo_spike;
         end
+
+        // stage 1: register the DSP product + converted monitors; spike fires
+        spike_start <= 4'd0;
+        if (s0_valid) begin
+            s1_prod      <= s0_pure * $signed({1'b0, gain_eff});
+            s1_mon_words <= mon_words_next;
+            spike_start  <= s0_spike;
+        end
+
+        // stage 2: saturate + present.  s1_prod/s1_mon_words only change on a
+        // packet, so presenting every cycle keeps the outputs stable and
+        // zero-initialized before the first packet.
+        current_word <= {cur_s, cur_s, cur_s, cur_s};
+        mon_words    <= s1_mon_words;
     end
 endmodule
