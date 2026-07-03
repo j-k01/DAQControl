@@ -1168,17 +1168,24 @@ class CurrentSourceWindow(QtWidgets.QWidget):
         self.prog_btn.setEnabled(False)
 
         def work():
+            gain_note = ""
             r = dac.set_current_gain(self.gain_spin.value())
             if not r or r.startswith("ERR"):
-                self.done.emit(False, r or "(no reply)")
-                return
+                if r and "unknown command" in r.lower():
+                    # Firmware predates CURG (display-only DAC mirror gain).
+                    # The waveform itself still programs fine without it.
+                    gain_note = "  [board firmware lacks CURG; mirror gain skipped]"
+                else:
+                    self.done.emit(False, r or "(no reply)")
+                    return
             if self._kind.startswith("Step"):
                 r = dac.program_current_step(
                     cps, self._step_zero, self._step_high,
                     self.amp_spin.value(), hold_last=not self._step_loop)
             else:
                 r = dac.program_current(ys, cps, hold_last=False)
-            self.done.emit(bool(r and r.startswith("OK")), r or "(no reply)")
+            self.done.emit(bool(r and r.startswith("OK")),
+                           (r or "(no reply)") + gain_note)
         threading.Thread(target=work, daemon=True).start()
 
     def _on_stop(self):
