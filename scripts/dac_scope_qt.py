@@ -46,6 +46,13 @@ on connect -- acquisition is opt-in:
         drag individual points up/down; "Program pulse" sends it via PULS. The
         shaped pulse is one crossbar input -- route a Spike source to emit it.
   - CIC anti-alias (chip 1) toggle, autoscale, rising-edge trigger, Time/FFT.
+  - De-interleave baseline (mod-4): optional display-time removal of the
+    ADS54J60's 4-core interleave offset square (~±7 mV) from full-rate
+    captures (UART Capture / Collect Ethernet / Auto-Sample). Subtracts each
+    mod-4 phase's mean; saved .npz files always keep the RAW samples. Note it
+    also removes true DC and any phase-locked fs/4 / fs/2 component, and is
+    not applied to the decimated live stream (decimation breaks the
+    sample-index to core mapping).
   - UART Capture: grab an ADC snapshot over UART (PCAP) and pop up the 4
     channels -- works without the Ethernet path. UART Capture, Collect Ethernet
     and Auto-Sample sit in an always-visible Capture bar below the tabs, so they
@@ -376,6 +383,23 @@ def save_capture(capture_dir, kind, chans, fs_hz, **meta):
         return npz_path
     except Exception:  # noqa: BLE001
         return None
+
+
+def deinterleave_baseline(x):
+    """Remove the ADS54J60 interleave baseline from a full-rate capture.
+
+    The ADC time-interleaves 4 cores per channel (sample i -> core i mod 4);
+    residual per-core DC offsets show up as a deterministic ~+/-few-mV square
+    pattern (spurs at DC / fs4 / fs2) that buries small signals. Subtracting
+    each mod-4 phase's mean removes exactly those 4 constants -- samples keep
+    their order/count and everything except true DC and the phase-locked
+    fs/4 / fs/2 component passes through untouched. Display-time only; saved
+    captures stay raw. Valid ONLY for full-rate data (any decimation breaks
+    the sample-index <-> core association)."""
+    y = np.asarray(x, dtype=np.float64).copy()
+    for k in range(4):
+        y[k::4] -= y[k::4].mean()
+    return y
 
 
 # --------------------------------------------------------------- DAC content
@@ -1658,6 +1682,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.cic_chk = QtWidgets.QCheckBox("CIC anti-alias (ch2/3)")
         self.cic_chk.setChecked(args.cic)
         self.cic_chk.toggled.connect(self._on_cic)
+        # display-time interleave-baseline removal (ADS54J60 4-core offsets);
+        # raw saves are never altered, so this is safe to toggle freely.
+        self.deint_chk = QtWidgets.QCheckBox("De-interleave baseline (mod-4)")
+        self.deint_chk.setToolTip(
+            "Subtract each mod-4 sample phase's mean from full-rate captures.\n"
+            "Removes the ADC's 4-core interleave offset square (~±7 mV) so\n"
+            "small signals are visible. Display only -- saved .npz stays raw.\n"
+            "Also removes true DC and the phase-locked fs/4 & fs/2 component.")
         self.auto_chk = QtWidgets.QCheckBox("Autoscale Y")
         self.auto_chk.toggled.connect(lambda v: setattr(self, "autoscale", v))
         self.trig_chk = QtWidgets.QCheckBox("Trigger")
@@ -1688,11 +1720,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.stream_btn.setCheckable(True)
         self.stream_btn.clicked.connect(self._on_autosample_toggle)
         og.addWidget(self.cic_chk, 0, 0, 1, 2)
-        og.addWidget(self.auto_chk, 1, 0)
-        og.addWidget(self.trig_chk, 1, 1)
-        og.addWidget(self.rb_time, 2, 0)
-        og.addWidget(self.rb_fft, 2, 1)
-        og.addWidget(self.run_btn, 3, 0, 1, 2)
+        og.addWidget(self.deint_chk, 1, 0, 1, 2)
+        og.addWidget(self.auto_chk, 2, 0)
+        og.addWidget(self.trig_chk, 2, 1)
+        og.addWidget(self.rb_time, 3, 0)
+        og.addWidget(self.rb_fft, 3, 1)
+        og.addWidget(self.run_btn, 4, 0, 1, 2)
         capture_lay.addWidget(opt)
 
         # Acquisition controls live OUTSIDE the tabs (added to `outer`) so the
@@ -2239,9 +2272,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
             p.showGrid(x=True, y=True, alpha=0.25)
             p.setLabel("left", f"ch{ch}", units="V")
             t = np.arange(len(chans[ch]))  # ns at 1 GS/s
-            p.plot(t, chans[ch] * VOLTS_PER_COUNT,
+            p.plot(t, self._deint(chans[ch]) * VOLTS_PER_COUNT,
                    pen=pg.mkPen(CH_COLORS[ch], width=1.0))
-        win.addLabel("UART CAPT snapshot  (x = ns @ 1 GS/s)", row=4, col=0)
+        deint = ("; interleave baseline removed"
+                 if self.deint_chk.isChecked() else "")
+        win.addLabel(f"UART CAPT snapshot  (x = ns @ 1 GS/s{deint})",
+                     row=4, col=0)
         win.show()
         self._popup = win                  # keep a reference so it isn't GC'd
         sub = save_capture(self.args.capture_dir, "uart", chans, 1.0e9)
@@ -2412,13 +2448,21 @@ class ScopeWindow(QtWidgets.QMainWindow):
             f"auto-sample 1/s: {len(chans[0])} samples/ch @ 1 GS/s  "
             f"coverage {100 * cov:.0f}%{retry_note}  (not saved)")
 
+    def _deint(self, x):
+        """Display-time mod-4 interleave-baseline removal, when enabled.
+        Full-rate data only -- never call on the decimated live stream."""
+        if getattr(self, "deint_chk", None) is not None \
+                and self.deint_chk.isChecked():
+            return deinterleave_baseline(x)
+        return x
+
     def _render_main(self, chans, fs, span=None):
         """Draw a captured {ch: int16[]} set into the 4 main plots, honoring
         the Time/FFT and Autoscale toggles (full rate, no decimation)."""
         if span is None:
             span = self.args.time_span
         for ch in range(4):
-            full = chans[ch].astype(np.float64)
+            full = self._deint(chans[ch].astype(np.float64))
             if self.fft_view:
                 v = full[-span:] * VOLTS_PER_COUNT
                 v = v - v.mean()
@@ -2452,10 +2496,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
             p.setLabel("left", f"ch{ch}", units="V")
             p.setDownsampling(auto=True, mode="peak")   # big arrays render smoothly
             p.setClipToView(True)
-            y = chans[ch].astype(np.float32) * VOLTS_PER_COUNT
+            y = self._deint(chans[ch].astype(np.float64)).astype(np.float32) \
+                * VOLTS_PER_COUNT
             p.plot(np.arange(len(y)), y, pen=pg.mkPen(CH_COLORS[ch], width=1.0))
+        deint = "; interleave baseline removed" if self.deint_chk.isChecked() else ""
         win.addLabel(f"BCAP {size_lbl}/chip @ 1 GS/s  (x = ns; "
-                     f"coverage {100 * cov:.1f}%)", row=4, col=0)
+                     f"coverage {100 * cov:.1f}%{deint})", row=4, col=0)
         win.show()
         self._popup = win
         sub = save_capture(self.args.capture_dir, "eth", chans, 1.0e9,
