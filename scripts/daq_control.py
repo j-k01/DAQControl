@@ -9,6 +9,7 @@ commands.  The CLI and MCP server both import this file.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -41,6 +42,12 @@ VOLTS_PER_COUNT = 1.9 / 65536.0
 ADC_SAMPLE_RATE_HZ = 1.0e9          # full-rate ADC / DAC sample clock
 DDS_SAMPLE_RATE_HZ = 1.0e9
 DDS_PHASE_BITS = 24                  # freq = inc / 2**24 * 1 GS/s
+CURRENT_PLAYER_CLK_HZ = 50.0e6       # cur_wave player advances in clk_50
+CURRENT_WAVE_DEPTH = 1024
+CURRENT_MA_TO_Q16 = 65536.0          # 1 mA == 1.0 Izhikevich I unit
+CURRENT_Q16_POS_MAX = 0x7FFFFFFF
+CURRENT_MAX_MA = CURRENT_Q16_POS_MAX / CURRENT_MA_TO_Q16
+CURRENT_GAIN_Q8_8_ONE = 0x0100
 
 # Firmware NEUR surface: built-in profiles + the two param classes. Physical
 # params are converted to Q16.16; dt/period/reset pass through as raw integers.
@@ -372,6 +379,165 @@ def set_dds(
         "actual_freq_hz": dds_inc_to_freq(inc),
         "responses": responses,
     }
+
+
+# ----------------------------------------------------------- current source
+def current_ma_to_q16(value_ma: float) -> int:
+    """Unipolar mA -> positive Q16.16 current word for the current source."""
+    value = max(0.0, min(CURRENT_MAX_MA, float(value_ma)))
+    return max(0, min(CURRENT_Q16_POS_MAX, int(round(value * CURRENT_MA_TO_Q16))))
+
+
+def current_gain_to_q8_8(gain: float) -> int:
+    return max(0, min(0xFFFF, int(round(float(gain) * 256.0))))
+
+
+def choose_current_timing(
+    freq_hz: float,
+    n_max: int = CURRENT_WAVE_DEPTH,
+    n_min: int = 16,
+) -> Tuple[int, int, float]:
+    """Choose sample count + cycles/sample for the 50 MHz current player."""
+    freq = float(freq_hz)
+    if not math.isfinite(freq) or freq <= 0.0:
+        freq = CURRENT_PLAYER_CLK_HZ / (65535.0 * max(1, n_max))
+    target_ticks = CURRENT_PLAYER_CLK_HZ / freq
+    n_min = max(1, int(n_min))
+    max_n = int(max(n_min, min(n_max, round(target_ticks))))
+    best: Optional[Tuple[float, int, int, float]] = None
+    for n in range(n_min, max_n + 1):
+        cps = int(round(target_ticks / n))
+        cps = max(1, min(65535, cps))
+        actual = CURRENT_PLAYER_CLK_HZ / (cps * n)
+        err = abs(actual - freq)
+        if best is None or err < best[0] or (err == best[0] and n > best[1]):
+            best = (err, n, cps, actual)
+    assert best is not None
+    _, n, cps, actual = best
+    return n, cps, actual
+
+
+def choose_current_square_timing(
+    freq_hz: float,
+    duty_percent: float = 50.0,
+) -> Tuple[int, int, int, float]:
+    """Return (low_count, high_count, cps, actual_hz) for a square wave."""
+    n, cps, actual = choose_current_timing(freq_hz, n_min=2)
+    duty = max(1.0, min(99.0, float(duty_percent))) / 100.0
+    high = int(round(n * duty))
+    high = max(1, min(n - 1, high))
+    low = n - high
+    return low, high, cps, actual
+
+
+def set_current_gain(
+    gain: float,
+    port_name: str = DEFAULT_PORT,
+    baud: int = DEFAULT_BAUD,
+    timeout: float = DEFAULT_UART_TIMEOUT,
+) -> Dict[str, Any]:
+    """Set DAC-only current-source visibility gain (CURG, Q8.8)."""
+    raw = current_gain_to_q8_8(gain)
+    command = f"CURG 0x{raw:04X}"
+    responses = send_uart_commands(
+        [command], port_name, baud, timeout, expected={command: ("OK CURG",)}
+    )
+    return {"command": command, "gain": raw / 256.0, "raw_q8_8": f"0x{raw:04X}", "responses": responses}
+
+
+def program_current_square(
+    amp_ma: float,
+    freq_hz: Optional[float] = None,
+    duty_percent: float = 50.0,
+    cps: Optional[int] = None,
+    low_count: Optional[int] = None,
+    high_count: Optional[int] = None,
+    port_name: str = DEFAULT_PORT,
+    baud: int = DEFAULT_BAUD,
+    timeout: float = DEFAULT_UART_TIMEOUT,
+) -> Dict[str, Any]:
+    """Program a looping unipolar square wave via firmware ``CURS ... loop``
+    (zero_count low samples then high_count amp samples, repeated).
+
+    Either provide ``freq_hz`` + optional ``duty_percent`` or exact ``cps``,
+    ``low_count``, and ``high_count``.
+    """
+    if cps is None or low_count is None or high_count is None:
+        if freq_hz is None:
+            raise DaqControlError("square requires freq_hz or exact cps/low_count/high_count")
+        low_count, high_count, cps, actual = choose_current_square_timing(freq_hz, duty_percent)
+    else:
+        cps = int(cps)
+        low_count = int(low_count)
+        high_count = int(high_count)
+        if cps < 1 or cps > 65535:
+            raise DaqControlError("cps must be 1..65535")
+        if low_count < 1 or high_count < 1 or low_count + high_count > CURRENT_WAVE_DEPTH:
+            raise DaqControlError("low_count and high_count must be nonzero and sum to <=1024")
+        actual = CURRENT_PLAYER_CLK_HZ / (cps * (low_count + high_count))
+    amp_q16 = current_ma_to_q16(amp_ma)
+    command = f"CURS {cps} {low_count} {high_count} 0x{amp_q16:08X} loop"
+    responses = send_uart_commands(
+        [command], port_name, baud, timeout, expected={command: ("OK CURS",)}
+    )
+    return {
+        "command": command,
+        "amp_ma": max(0.0, min(CURRENT_MAX_MA, float(amp_ma))),
+        "amp_q16": f"0x{amp_q16:08X}",
+        "requested_freq_hz": freq_hz,
+        "actual_freq_hz": actual,
+        "duty_percent": 100.0 * high_count / (low_count + high_count),
+        "cps": cps,
+        "low_count": low_count,
+        "high_count": high_count,
+        "responses": responses,
+    }
+
+
+def program_current_step(
+    amp_ma: float,
+    cps: int,
+    zero_count: int,
+    high_count: int,
+    hold_last: bool = True,
+    port_name: str = DEFAULT_PORT,
+    baud: int = DEFAULT_BAUD,
+    timeout: float = DEFAULT_UART_TIMEOUT,
+) -> Dict[str, Any]:
+    """Program a 0 -> amp step through firmware CURS."""
+    cps = max(1, min(65535, int(cps)))
+    zero_count = max(0, min(CURRENT_WAVE_DEPTH, int(zero_count)))
+    high_count = max(0, min(CURRENT_WAVE_DEPTH - zero_count, int(high_count)))
+    if zero_count + high_count <= 0:
+        high_count = 1
+    amp_q16 = current_ma_to_q16(amp_ma)
+    mode = "hold" if hold_last else "loop"
+    command = f"CURS {cps} {zero_count} {high_count} 0x{amp_q16:08X} {mode}"
+    responses = send_uart_commands(
+        [command], port_name, baud, timeout, expected={command: ("OK CURS",)}
+    )
+    return {
+        "command": command,
+        "amp_ma": max(0.0, min(CURRENT_MAX_MA, float(amp_ma))),
+        "amp_q16": f"0x{amp_q16:08X}",
+        "cps": cps,
+        "zero_count": zero_count,
+        "high_count": high_count,
+        "hold_last": bool(hold_last),
+        "responses": responses,
+    }
+
+
+def stop_current_source(
+    port_name: str = DEFAULT_PORT,
+    baud: int = DEFAULT_BAUD,
+    timeout: float = DEFAULT_UART_TIMEOUT,
+) -> Dict[str, Any]:
+    """Stop the current-source player (CURP off)."""
+    responses = send_uart_commands(
+        ["CURP off"], port_name, baud, timeout, expected={"CURP off": ("CURP off",)}
+    )
+    return {"command": "CURP off", "responses": responses}
 
 
 # ------------------------------------------------------------------- neurons
@@ -785,6 +951,12 @@ def describe() -> Dict[str, Any]:
             "sample_rate_hz": DDS_SAMPLE_RATE_HZ,
             "phase_bits": DDS_PHASE_BITS,
             "example": "inc 0x100000 -> 62.5 MHz",
+        },
+        "current_source": {
+            "player_clock_hz": CURRENT_PLAYER_CLK_HZ,
+            "wave_depth_samples": CURRENT_WAVE_DEPTH,
+            "max_ma": CURRENT_MAX_MA,
+            "commands": ["CURW arbitrary", "CURS step/square(loop)", "CURG gain", "CURP off"],
         },
         "remote": {
             "host": DEFAULT_REMOTE_HOST, "user": DEFAULT_REMOTE_USER,

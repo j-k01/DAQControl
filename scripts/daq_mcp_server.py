@@ -120,6 +120,31 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             )
         ),
     },
+    "daq_program_current_square": {
+        "description": "Program the unipolar current source as a looping square wave via CURS loop. Provide freq_hz+duty_percent or exact cps/low_count/high_count.",
+        "inputSchema": _schema(
+            _uart_args(
+                amp_ma={"type": "number", "description": "high current in mA"},
+                freq_hz={"type": "number", "description": "requested square frequency in Hz"},
+                duty_percent={"type": "number", "default": 50.0},
+                cps={"type": "integer", "description": "exact cycles-per-sample divisor"},
+                low_count={"type": "integer", "description": "exact low sample count"},
+                high_count={"type": "integer", "description": "exact high sample count"},
+            ),
+            required=["amp_ma"],
+        ),
+    },
+    "daq_set_current_gain": {
+        "description": "Set DAC-only current-source mirror gain via CURG. This does not change neuron input current.",
+        "inputSchema": _schema(
+            _uart_args(gain={"type": "number", "description": "gain as a float, e.g. 20"}),
+            required=["gain"],
+        ),
+    },
+    "daq_stop_current_source": {
+        "description": "Stop/pause the current-source player via CURP off.",
+        "inputSchema": _schema(_uart_args()),
+    },
     "daq_program_neuron": {
         "description": "Program a neuron (0..3 or 'all') with a built-in profile and/or params. Params a/b/c/d/i/iconst are physical (converted to Q16.16); dt/period/reset are raw integers.",
         "inputSchema": _schema(
@@ -254,6 +279,31 @@ def call_tool(name: str, args: Dict[str, Any]) -> Any:
         return daq.set_dds(
             freq_hz=args.get("freq_hz"),
             inc=args.get("inc"),
+            port_name=args.get("port", daq.DEFAULT_PORT),
+            baud=int(args.get("baud", daq.DEFAULT_BAUD)),
+            timeout=float(args.get("timeout", daq.DEFAULT_UART_TIMEOUT)),
+        )
+    if name == "daq_program_current_square":
+        return daq.program_current_square(
+            amp_ma=float(args["amp_ma"]),
+            freq_hz=args.get("freq_hz"),
+            duty_percent=float(args.get("duty_percent", 50.0)),
+            cps=args.get("cps"),
+            low_count=args.get("low_count"),
+            high_count=args.get("high_count"),
+            port_name=args.get("port", daq.DEFAULT_PORT),
+            baud=int(args.get("baud", daq.DEFAULT_BAUD)),
+            timeout=float(args.get("timeout", daq.DEFAULT_UART_TIMEOUT)),
+        )
+    if name == "daq_set_current_gain":
+        return daq.set_current_gain(
+            gain=float(args["gain"]),
+            port_name=args.get("port", daq.DEFAULT_PORT),
+            baud=int(args.get("baud", daq.DEFAULT_BAUD)),
+            timeout=float(args.get("timeout", daq.DEFAULT_UART_TIMEOUT)),
+        )
+    if name == "daq_stop_current_source":
+        return daq.stop_current_source(
             port_name=args.get("port", daq.DEFAULT_PORT),
             baud=int(args.get("baud", daq.DEFAULT_BAUD)),
             timeout=float(args.get("timeout", daq.DEFAULT_UART_TIMEOUT)),

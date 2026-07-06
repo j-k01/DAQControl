@@ -110,6 +110,64 @@ def cmd_dds(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_current_square(args: argparse.Namespace) -> int:
+    result = daq.program_current_square(
+        amp_ma=args.amp,
+        freq_hz=args.freq,
+        duty_percent=args.duty,
+        cps=args.cps,
+        low_count=args.low_samples,
+        high_count=args.high_samples,
+        port_name=args.port,
+        baud=args.baud,
+        timeout=args.timeout,
+    )
+    print_result(result, args.json)
+    return 0
+
+
+def cmd_current_step(args: argparse.Namespace) -> int:
+    result = daq.program_current_step(
+        amp_ma=args.amp,
+        cps=args.cps,
+        zero_count=args.zero_samples,
+        high_count=args.high_samples,
+        hold_last=not args.loop,
+        port_name=args.port,
+        baud=args.baud,
+        timeout=args.timeout,
+    )
+    print_result(result, args.json)
+    return 0
+
+
+def cmd_current_constant(args: argparse.Namespace) -> int:
+    result = daq.program_current_step(
+        amp_ma=args.amp,
+        cps=1,
+        zero_count=0,
+        high_count=1,
+        hold_last=False,
+        port_name=args.port,
+        baud=args.baud,
+        timeout=args.timeout,
+    )
+    print_result(result, args.json)
+    return 0
+
+
+def cmd_current_gain(args: argparse.Namespace) -> int:
+    result = daq.set_current_gain(args.gain, args.port, args.baud, args.timeout)
+    print_result(result, args.json)
+    return 0
+
+
+def cmd_current_stop(args: argparse.Namespace) -> int:
+    result = daq.stop_current_source(args.port, args.baud, args.timeout)
+    print_result(result, args.json)
+    return 0
+
+
 def cmd_neuron(args: argparse.Namespace) -> int:
     result = daq.program_neuron(
         target=args.target, profile=args.profile,
@@ -207,6 +265,42 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--freq", type=float, help="DDS frequency in Hz (e.g. 62.5e6)")
     g.add_argument("--inc", type=lambda x: int(x, 0), help="raw 24-bit phase increment")
     p.set_defaults(func=cmd_dds)
+
+    p = sub.add_parser("current", help="program the current source")
+    cur = p.add_subparsers(dest="current_command", required=True)
+
+    q = cur.add_parser("square", help="program a looping unipolar square current")
+    add_uart_args(q)
+    q.add_argument("--amp", type=float, required=True, help="high current in mA")
+    q.add_argument("--freq", type=float, help="requested square frequency in Hz")
+    q.add_argument("--duty", type=float, default=50.0, help="percent of period high")
+    q.add_argument("--cps", type=int, help="exact cycles-per-sample divisor")
+    q.add_argument("--low-samples", type=int, help="exact low sample count")
+    q.add_argument("--high-samples", type=int, help="exact high sample count")
+    q.set_defaults(func=cmd_current_square)
+
+    q = cur.add_parser("step", help="program a one-shot or looping 0->amp step")
+    add_uart_args(q)
+    q.add_argument("--amp", type=float, required=True, help="high current in mA")
+    q.add_argument("--cps", type=int, default=1, help="cycles-per-sample divisor")
+    q.add_argument("--zero-samples", type=int, default=16)
+    q.add_argument("--high-samples", type=int, default=48)
+    q.add_argument("--loop", action="store_true", help="loop the zero/high pattern")
+    q.set_defaults(func=cmd_current_step)
+
+    q = cur.add_parser("constant", help="program a constant DC current")
+    add_uart_args(q)
+    q.add_argument("--amp", type=float, required=True, help="constant current in mA")
+    q.set_defaults(func=cmd_current_constant)
+
+    q = cur.add_parser("gain", help="set DAC-only current mirror gain")
+    add_uart_args(q)
+    q.add_argument("gain", type=float, help="Q8.8 DAC mirror gain as a float, e.g. 20")
+    q.set_defaults(func=cmd_current_gain)
+
+    q = cur.add_parser("stop", help="stop/pause the current player")
+    add_uart_args(q)
+    q.set_defaults(func=cmd_current_stop)
 
     p = sub.add_parser("neuron", help="program a neuron profile and/or params")
     add_uart_args(p)
