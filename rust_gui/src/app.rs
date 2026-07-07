@@ -1,0 +1,897 @@
+//! egui application: scope + control panels.
+
+use std::sync::mpsc::{Receiver, Sender};
+use std::time::Instant;
+
+use eframe::egui;
+use egui::{Color32, Pos2, Stroke};
+use egui_plot::{Line, Plot, PlotPoints};
+
+use crate::dsp;
+use crate::proto::{self, BoardCfg, Cmd, Evt};
+
+#[derive(PartialEq, Clone, Copy)]
+enum Tab {
+    Neuron,
+    Xbar,
+    Capture,
+    Waveforms,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct CustomProfile {
+    name: String,
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    iconst: f64,
+}
+
+fn ch_color(ch: usize) -> Color32 {
+    let (r, g, b) = dsp::CH_COLORS[ch];
+    Color32::from_rgb(r, g, b)
+}
+
+pub struct DaqApp {
+    tx: Sender<Cmd>,
+    rx: Receiver<Evt>,
+
+    ports: Vec<String>,
+    sel_port: String,
+    connected: bool,
+    conn_msg: String,
+    conn_ok: bool,
+
+    tab: Tab,
+
+    // latest capture (raw counts) + cached display series
+    chans: [Vec<i16>; 4],
+    fs: f64,
+    series: [Vec<[f64; 2]>; 4],
+    display_dirty: bool,
+
+    // view toggles
+    fft_view: bool,
+    autoscale: bool,
+    deinterleave: bool,
+
+    // capture controls
+    collect_idx: usize,
+    capt_frames_idx: usize,
+    auto_sample: bool,
+    last_auto: Instant,
+    busy: bool,
+
+    // crossbar
+    staged_src: [usize; 4],
+    applied_src: [Option<usize>; 4],
+    staged_prof: [usize; 4],
+    applied_prof: [Option<String>; 4],
+    dac_status: [String; 4],
+
+    // neuron
+    neuron_prof_idx: [usize; 4],
+    neuron_running: [Option<String>; 4],
+    np_values: [f64; 5],
+    load_prof_idx: usize,
+    save_name: String,
+    custom: Vec<CustomProfile>,
+    dt_idx: usize,
+    neuron_status: String,
+
+    // dds
+    dds_freq_mhz: f64,
+
+    // waveform builder
+    wf_ch: usize, // 0..3, 4=all
+    wf_kind: usize,
+    wf_period: i32,
+    wf_width: i32,
+    wf_vlo: f64,
+    wf_vhi: f64,
+
+    status: String,
+
+    // raw command + streaming + STAT output
+    raw_cmd: String,
+    stream_decim: i32,
+    stream_cic: bool,
+    stat_raw: String,
+}
+
+const DT_OPTIONS: [(&str, u32); 6] = [
+    ("0.25x slow", 0x2000),
+    ("0.5x", 0x4000),
+    ("1x normal", 0x8000),
+    ("2x", 0x10000),
+    ("4x fast", 0x20000),
+    ("8x faster", 0x40000),
+];
+
+impl DaqApp {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let cfg = BoardCfg::default();
+        let (tx, rx) = proto::spawn(cc.egui_ctx.clone(), cfg);
+        let ports = list_ports();
+        let sel_port = ports
+            .iter()
+            .find(|p| p.contains("COM10"))
+            .cloned()
+            .or_else(|| ports.first().cloned())
+            .unwrap_or_else(|| "COM10".into());
+        let mut app = Self {
+            tx,
+            rx,
+            ports,
+            sel_port,
+            connected: false,
+            conn_msg: "not connected".into(),
+            conn_ok: false,
+            tab: Tab::Xbar,
+            chans: Default::default(),
+            fs: 1.0e9,
+            series: Default::default(),
+            display_dirty: false,
+            fft_view: false,
+            autoscale: true,
+            deinterleave: false,
+            collect_idx: 0,
+            capt_frames_idx: 2,
+            auto_sample: false,
+            last_auto: Instant::now(),
+            busy: false,
+            staged_src: [1, 1, 1, 1], // DDS
+            applied_src: [None; 4],
+            staged_prof: [0, 1, 2, 3],
+            applied_prof: Default::default(),
+            dac_status: Default::default(),
+            neuron_prof_idx: [0, 1, 2, 3],
+            neuron_running: Default::default(),
+            np_values: [0.02, 0.20, -65.0, 8.0, 10.0],
+            load_prof_idx: 0,
+            save_name: String::new(),
+            custom: load_custom(),
+            dt_idx: 2,
+            neuron_status: "—".into(),
+            dds_freq_mhz: 62.5,
+            wf_ch: 4,
+            wf_kind: 0,
+            wf_period: 35,
+            wf_width: 7,
+            wf_vlo: 0.0,
+            wf_vhi: (dsp::DAC_FULLSCALE as f64 * dsp::VOLTS_PER_COUNT),
+            status: "Connect to a COM port to begin.".into(),
+            raw_cmd: String::new(),
+            stream_decim: 128,
+            stream_cic: false,
+            stat_raw: String::new(),
+        };
+        for s in app.dac_status.iter_mut() {
+            *s = "not programmed".into();
+        }
+        app
+    }
+
+    fn profile_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = dsp::BUILTIN_PROFILES.iter().map(|s| s.to_string()).collect();
+        v.extend(self.custom.iter().map(|c| c.name.clone()));
+        v
+    }
+
+    fn send(&self, c: Cmd) {
+        let _ = self.tx.send(c);
+    }
+
+    fn drain_events(&mut self) {
+        while let Ok(evt) = self.rx.try_recv() {
+            match evt {
+                Evt::Connected(Ok(port)) => {
+                    self.connected = true;
+                    self.conn_ok = true;
+                    self.conn_msg = format!("connected {port} (idle)");
+                    self.status = "Connected. Use Collect Ethernet or Auto-Sample.".into();
+                    for ch in 0..4 {
+                        self.applied_src[ch] = Some(1); // DDS
+                        self.dac_status[ch] = "OK — DDS".into();
+                    }
+                    for n in 0..4 {
+                        self.neuron_running[n] = Some(dsp::BUILTIN_PROFILES[n].to_string());
+                    }
+                }
+                Evt::Connected(Err(e)) => {
+                    self.connected = false;
+                    self.conn_ok = false;
+                    self.conn_msg = format!("connect failed: {e}");
+                }
+                Evt::Disconnected => {
+                    self.connected = false;
+                    self.conn_ok = false;
+                    self.conn_msg = "disconnected".into();
+                    self.applied_src = [None; 4];
+                }
+                Evt::Reply(s) => self.status = s,
+                Evt::Stat { ok, health, raw } => {
+                    self.conn_ok = ok;
+                    self.stat_raw = raw;
+                    self.conn_msg = if ok {
+                        format!("DAQ board OK  [{health}]")
+                    } else {
+                        "no DAQ response (wrong port / board down)".into()
+                    };
+                }
+                Evt::RouteDone { ch, ok, src_idx, profile, neuron } => {
+                    self.busy = false;
+                    let c = ch as usize;
+                    if ok {
+                        self.applied_src[c] = Some(src_idx);
+                        self.applied_prof[c] = profile.clone();
+                        self.dac_status[c] = format!("OK — {}", dsp::source_label(src_idx));
+                        if let (Some(n), Some(p)) = (neuron, profile) {
+                            self.neuron_running[n as usize] = Some(p);
+                        }
+                    } else {
+                        self.dac_status[c] = format!("ERR — {} not set", dsp::source_label(src_idx));
+                    }
+                }
+                Evt::NeuronDone { target, ok, profile } => {
+                    if ok {
+                        if target == "all" {
+                            for n in 0..4 {
+                                self.neuron_running[n] = Some(profile.clone());
+                            }
+                        } else if let Ok(n) = target.parse::<usize>() {
+                            if n < 4 {
+                                self.neuron_running[n] = Some(profile.clone());
+                            }
+                        }
+                        self.neuron_status = format!("neuron {target}: OK — {profile}");
+                    } else {
+                        self.neuron_status = format!("neuron {target}: ERR");
+                    }
+                }
+                Evt::Capture { kind, chans, cov, tries, saved } => {
+                    self.busy = false;
+                    self.chans = chans;
+                    self.display_dirty = true;
+                    let where_ = saved.map(|s| format!("  -> {s}")).unwrap_or_default();
+                    let retry = if tries > 1 { format!("  ({tries} tries)") } else { String::new() };
+                    self.status = format!(
+                        "{kind} capture: {} samples/ch  cov {:.0}%{retry}{where_}",
+                        self.chans[0].len(),
+                        100.0 * cov
+                    );
+                }
+                Evt::Status(s) => self.status = s,
+                Evt::Error(e) => {
+                    self.busy = false;
+                    self.status = format!("⚠ {e}");
+                }
+            }
+        }
+    }
+
+    fn rebuild_display(&mut self) {
+        for ch in 0..4 {
+            let counts: Vec<f64> = if self.deinterleave {
+                dsp::deinterleave_baseline(&self.chans[ch])
+            } else {
+                self.chans[ch].iter().map(|&v| v as f64).collect()
+            };
+            self.series[ch] = if self.fft_view {
+                dsp::magnitude_db(&counts, self.fs)
+            } else {
+                let n = counts.len();
+                let stride = (n / 6000).max(1);
+                counts
+                    .iter()
+                    .step_by(stride)
+                    .enumerate()
+                    .map(|(i, &v)| [(i * stride) as f64 / self.fs, v * dsp::VOLTS_PER_COUNT])
+                    .collect()
+            };
+        }
+        self.display_dirty = false;
+    }
+
+    // -------------------------------------------------------- panel builders
+    fn connection_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("COM");
+            egui::ComboBox::from_id_salt("port")
+                .selected_text(&self.sel_port)
+                .show_ui(ui, |ui| {
+                    for p in &self.ports {
+                        ui.selectable_value(&mut self.sel_port, p.clone(), p);
+                    }
+                });
+            if ui.button("↻").clicked() {
+                self.ports = list_ports();
+            }
+            let label = if self.connected { "Reconnect" } else { "Connect" };
+            if ui.button(label).clicked() {
+                self.conn_msg = format!("connecting {}...", self.sel_port);
+                self.send(Cmd::Connect(self.sel_port.clone()));
+            }
+            if self.connected && ui.button("STAT").clicked() {
+                self.send(Cmd::Stat);
+            }
+            if self.connected && ui.button("Disconnect").clicked() {
+                self.send(Cmd::Disconnect);
+            }
+        });
+        let col = if self.conn_ok {
+            Color32::from_rgb(0x81, 0xC7, 0x84)
+        } else if self.connected {
+            Color32::from_rgb(0xFF, 0xB7, 0x4D)
+        } else {
+            Color32::from_rgb(0xE5, 0x73, 0x73)
+        };
+        ui.colored_label(col, &self.conn_msg);
+    }
+
+    fn capture_bar(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Capture (always available)").strong());
+            ui.add_enabled_ui(self.connected, |ui| {
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("capt_frames")
+                        .selected_text(format!("{} frames", dsp::CAPT_FRAME_OPTIONS[self.capt_frames_idx]))
+                        .show_ui(ui, |ui| {
+                            for (i, f) in dsp::CAPT_FRAME_OPTIONS.iter().enumerate() {
+                                ui.selectable_value(&mut self.capt_frames_idx, i, format!("{f} frames"));
+                            }
+                        });
+                    if ui.button("UART Capture").clicked() && !self.busy {
+                        self.busy = true;
+                        self.status = "UART capturing...".into();
+                        self.send(Cmd::UartCapture(dsp::CAPT_FRAME_OPTIONS[self.capt_frames_idx]));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("collect_size")
+                        .selected_text(dsp::COLLECT_SIZES[self.collect_idx].1)
+                        .show_ui(ui, |ui| {
+                            for (i, (_, lbl)) in dsp::COLLECT_SIZES.iter().enumerate() {
+                                ui.selectable_value(&mut self.collect_idx, i, *lbl);
+                            }
+                        });
+                    if ui.button("Collect Ethernet").clicked() && !self.busy {
+                        self.busy = true;
+                        self.status = "collecting burst over Ethernet...".into();
+                        self.send(Cmd::CollectEth {
+                            bytes: dsp::COLLECT_SIZES[self.collect_idx].0,
+                            save: true,
+                        });
+                    }
+                });
+                let auto_label = if self.auto_sample { "Stop Auto-Sample" } else { "Start Auto-Sample" };
+                if ui.button(auto_label).clicked() {
+                    self.auto_sample = !self.auto_sample;
+                    if self.auto_sample {
+                        self.last_auto = Instant::now() - std::time::Duration::from_secs(2);
+                    }
+                }
+            });
+        });
+    }
+
+    fn tab_xbar(&mut self, ui: &mut egui::Ui) {
+        for ch in 0..4 {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("DAC{ch}")).strong());
+                    ui.colored_label(ch_color(ch), "●");
+                });
+                egui::ComboBox::from_id_salt(format!("src{ch}"))
+                    .selected_text(dsp::source_label(self.staged_src[ch]))
+                    .show_ui(ui, |ui| {
+                        for i in 0..dsp::SOURCES.len() {
+                            ui.selectable_value(&mut self.staged_src[ch], i, dsp::source_label(i));
+                        }
+                    });
+                if dsp::source_is_neuron(self.staged_src[ch]) {
+                    let names = self.profile_names();
+                    egui::ComboBox::from_id_salt(format!("prof{ch}"))
+                        .selected_text(names.get(self.staged_prof[ch]).cloned().unwrap_or_default())
+                        .show_ui(ui, |ui| {
+                            for (i, n) in names.iter().enumerate() {
+                                ui.selectable_value(&mut self.staged_prof[ch], i, n);
+                            }
+                        });
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Confirm route").clicked() && self.connected {
+                        let names = self.profile_names();
+                        let prof = names.get(self.staged_prof[ch]).cloned().unwrap_or_default();
+                        self.dac_status[ch] = format!("programming {}…", dsp::source_label(self.staged_src[ch]));
+                        self.send(Cmd::ApplyRoute {
+                            ch: ch as u8,
+                            src_idx: self.staged_src[ch],
+                            profile: prof,
+                        });
+                    }
+                    ui.label(&self.dac_status[ch]);
+                });
+            });
+        }
+        ui.separator();
+        ui.label(egui::RichText::new("Crossbar routing (16 → 4)").strong());
+        ui.label(
+            egui::RichText::new("solid = live route · dashed = staged")
+                .size(10.0)
+                .color(Color32::GRAY),
+        );
+        self.draw_crossbar(ui);
+    }
+
+    fn draw_crossbar(&self, ui: &mut egui::Ui) {
+        let n = dsp::SOURCES.len();
+        let h = (24 * n + 24) as f32;
+        let (rect, _resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::hover());
+        let p = ui.painter_at(rect);
+        p.rect_filled(rect, 4.0, Color32::from_rgb(0x0d, 0x11, 0x16));
+        let top = rect.top() + 16.0;
+        let bot = rect.bottom() - 16.0;
+        let src_x = rect.left() + 118.0;
+        let dac_x = rect.right() - 70.0;
+        let span = (bot - top).max(1.0);
+        let sy = |i: usize| top + span * (i as f32 / (n as f32 - 1.0).max(1.0));
+        let dy = |c: usize| top + span * ((c as f32 + 0.5) / 4.0);
+        let fid = egui::FontId::proportional(11.0);
+
+        // staged (dashed) beneath
+        for c in 0..4 {
+            let si = self.staged_src[c];
+            if self.applied_src[c] == Some(si) {
+                continue;
+            }
+            let shapes = egui::Shape::dashed_line(
+                &[Pos2::new(src_x, sy(si)), Pos2::new(dac_x, dy(c))],
+                Stroke::new(1.4, Color32::from_rgba_unmultiplied(150, 162, 176, 160)),
+                6.0,
+                4.0,
+            );
+            p.extend(shapes);
+        }
+        // applied (solid) lines
+        for c in 0..4 {
+            if let Some(si) = self.applied_src[c] {
+                p.line_segment(
+                    [Pos2::new(src_x, sy(si)), Pos2::new(dac_x, dy(c))],
+                    Stroke::new(2.6, ch_color(c)),
+                );
+            }
+        }
+        let live: std::collections::HashSet<usize> = self.applied_src.iter().flatten().cloned().collect();
+        for i in 0..n {
+            let y = sy(i);
+            let on = live.contains(&i);
+            let tcol = if on { Color32::from_rgb(0xe6, 0xee, 0xf6) } else { Color32::from_rgb(0x5f, 0x71, 0x85) };
+            p.text(Pos2::new(src_x - 8.0, y), egui::Align2::RIGHT_CENTER, dsp::source_label(i), fid.clone(), tcol);
+            p.circle_filled(Pos2::new(src_x, y), 3.4, if on { Color32::from_rgb(0x4F, 0xC3, 0xF7) } else { Color32::from_rgb(0x33, 0x41, 0x4d) });
+        }
+        for c in 0..4 {
+            let y = dy(c);
+            p.circle_filled(Pos2::new(dac_x, y), 5.0, ch_color(c));
+            p.text(Pos2::new(dac_x + 10.0, y), egui::Align2::LEFT_CENTER, format!("DAC{c}"), fid.clone(), Color32::from_rgb(0xe6, 0xee, 0xf6));
+        }
+    }
+
+    fn tab_neuron(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Neuron sim speed (all)").strong());
+            egui::ComboBox::from_id_salt("dt")
+                .selected_text(DT_OPTIONS[self.dt_idx].0)
+                .show_ui(ui, |ui| {
+                    for (i, (lbl, _)) in DT_OPTIONS.iter().enumerate() {
+                        ui.selectable_value(&mut self.dt_idx, i, *lbl);
+                    }
+                });
+            if ui.button("apply dt").clicked() && self.connected {
+                self.send(Cmd::SetNeuronDt(DT_OPTIONS[self.dt_idx].1));
+            }
+        });
+
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Per-neuron profiles").strong());
+            let names = self.profile_names();
+            for n in 0..4 {
+                ui.horizontal(|ui| {
+                    ui.label(format!("neuron {n}"));
+                    egui::ComboBox::from_id_salt(format!("nprof{n}"))
+                        .selected_text(names.get(self.neuron_prof_idx[n]).cloned().unwrap_or_default())
+                        .show_ui(ui, |ui| {
+                            for (i, nm) in names.iter().enumerate() {
+                                ui.selectable_value(&mut self.neuron_prof_idx[n], i, nm);
+                            }
+                        });
+                    if ui.button("Program").clicked() && self.connected {
+                        let prof = names.get(self.neuron_prof_idx[n]).cloned().unwrap_or_default();
+                        self.send_profile(n.to_string(), &prof);
+                    }
+                    if let Some(r) = &self.neuron_running[n] {
+                        ui.colored_label(Color32::from_rgb(0x81, 0xC7, 0x84), format!("▶ {r}"));
+                    }
+                });
+            }
+        });
+
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Neuron params").strong());
+            ui.horizontal(|ui| {
+                ui.label("load");
+                let names = self.profile_names();
+                let mut items = vec!["load profile…".to_string()];
+                items.extend(names.clone());
+                egui::ComboBox::from_id_salt("loadprof")
+                    .selected_text(items.get(self.load_prof_idx).cloned().unwrap_or_default())
+                    .show_ui(ui, |ui| {
+                        for (i, nm) in items.iter().enumerate() {
+                            if ui.selectable_value(&mut self.load_prof_idx, i, nm).clicked() && i > 0 {
+                                self.load_profile_values(&items[i]);
+                            }
+                        }
+                    });
+            });
+            for (i, (_, label, lo, hi, _, dec)) in dsp::NEURON_PARAMS.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(*label);
+                    let speed = 10f64.powi(-(*dec as i32));
+                    ui.add(egui::DragValue::new(&mut self.np_values[i]).range(*lo..=*hi).speed(speed).max_decimals(*dec));
+                });
+            }
+            ui.horizontal(|ui| {
+                ui.label("program →");
+                for tgt in ["0", "1", "2", "3", "all"] {
+                    if ui.button(tgt).clicked() && self.connected {
+                        self.send_params(tgt);
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("save as");
+                ui.add(egui::TextEdit::singleline(&mut self.save_name).desired_width(120.0).hint_text("name"));
+                if ui.button("Save…").clicked() {
+                    self.save_current_profile();
+                }
+            });
+            ui.label(&self.neuron_status);
+        });
+    }
+
+    fn tab_waveforms(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("DDS tone").strong());
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut self.dds_freq_mhz).range(0.0..=500.0).speed(0.5).suffix(" MHz"));
+                if ui.button("Set DDS").clicked() && self.connected {
+                    let inc = dsp::dds_freq_to_inc(self.dds_freq_mhz * 1e6);
+                    self.send(Cmd::SetDds(inc));
+                    self.status = format!("DDS {:.3} MHz (inc 0x{inc:06X})", dsp::dds_inc_to_freq(inc) / 1e6);
+                }
+            });
+        });
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("BRAM waveform").strong());
+            egui::Grid::new("wf").num_columns(2).show(ui, |ui| {
+                ui.label("target");
+                egui::ComboBox::from_id_salt("wfch")
+                    .selected_text(if self.wf_ch == 4 { "all".to_string() } else { format!("ch{}", self.wf_ch) })
+                    .show_ui(ui, |ui| {
+                        for c in 0..4 {
+                            ui.selectable_value(&mut self.wf_ch, c, format!("ch{c}"));
+                        }
+                        ui.selectable_value(&mut self.wf_ch, 4, "all");
+                    });
+                ui.end_row();
+                ui.label("shape");
+                egui::ComboBox::from_id_salt("wfkind")
+                    .selected_text(dsp::WAVEFORMS[self.wf_kind])
+                    .show_ui(ui, |ui| {
+                        for (i, k) in dsp::WAVEFORMS.iter().enumerate() {
+                            ui.selectable_value(&mut self.wf_kind, i, *k);
+                        }
+                    });
+                ui.end_row();
+                ui.label("period");
+                ui.add(egui::DragValue::new(&mut self.wf_period).range(2..=dsp::PROGRAM_SAMPLES as i32).suffix(" ns"));
+                ui.end_row();
+                ui.label("width");
+                ui.add(egui::DragValue::new(&mut self.wf_width).range(1..=dsp::PROGRAM_SAMPLES as i32).suffix(" ns"));
+                ui.end_row();
+                let vmax = dsp::DAC_FULLSCALE as f64 * dsp::VOLTS_PER_COUNT;
+                ui.label("V min");
+                ui.add(egui::DragValue::new(&mut self.wf_vlo).range(-vmax..=vmax).speed(0.01).suffix(" V"));
+                ui.end_row();
+                ui.label("V max");
+                ui.add(egui::DragValue::new(&mut self.wf_vhi).range(-vmax..=vmax).speed(0.01).suffix(" V"));
+                ui.end_row();
+            });
+            if ui.button("Program BRAM").clicked() && self.connected {
+                let (words, frames) = dsp::gen_waveform(
+                    dsp::WAVEFORMS[self.wf_kind],
+                    self.wf_period as usize,
+                    self.wf_width as usize,
+                    self.wf_vlo,
+                    self.wf_vhi,
+                );
+                let chans: Vec<u8> = if self.wf_ch == 4 { vec![0, 1, 2, 3] } else { vec![self.wf_ch as u8] };
+                self.status = format!("programming {} to {:?}", dsp::WAVEFORMS[self.wf_kind], chans);
+                self.send(Cmd::ProgramBram { chans, words, loop_frames: frames });
+            }
+        });
+    }
+
+    fn tab_display(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Display").strong());
+            if ui.checkbox(&mut self.deinterleave, "De-interleave baseline (mod-4)").changed() {
+                self.display_dirty = true;
+            }
+            ui.checkbox(&mut self.autoscale, "Autoscale Y");
+            ui.horizontal(|ui| {
+                if ui.selectable_label(!self.fft_view, "Time").clicked() {
+                    self.fft_view = false;
+                    self.display_dirty = true;
+                }
+                if ui.selectable_label(self.fft_view, "FFT").clicked() {
+                    self.fft_view = true;
+                    self.display_dirty = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                let cic = ui.button("CIC on");
+                if cic.clicked() && self.connected {
+                    self.send(Cmd::SetCic(true));
+                }
+                if ui.button("CIC off").clicked() && self.connected {
+                    self.send(Cmd::SetCic(false));
+                }
+            });
+        });
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Live stream (UDP)").strong());
+            ui.horizontal(|ui| {
+                ui.label("decim");
+                ui.add(egui::DragValue::new(&mut self.stream_decim).range(4..=65532).speed(4));
+                ui.checkbox(&mut self.stream_cic, "CIC");
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Start stream").clicked() && self.connected {
+                    self.send(Cmd::StartStream {
+                        decim: (self.stream_decim as u32 / 4) * 4,
+                        cic: self.stream_cic,
+                    });
+                }
+                if ui.button("Stop stream").clicked() && self.connected {
+                    self.send(Cmd::StopStream);
+                }
+            });
+            ui.label(
+                egui::RichText::new("(continuous stream issues STRM; use Auto-Sample for the live plot)")
+                    .size(10.0)
+                    .color(Color32::GRAY),
+            );
+        });
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Raw firmware command").strong());
+            ui.horizontal(|ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.raw_cmd)
+                        .desired_width(220.0)
+                        .hint_text("e.g. NSRC 0 dds"),
+                );
+                let go = ui.button("Send").clicked()
+                    || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                if go && self.connected && !self.raw_cmd.trim().is_empty() {
+                    self.send(Cmd::Raw(self.raw_cmd.trim().to_string()));
+                }
+            });
+            if !self.stat_raw.is_empty() {
+                egui::CollapsingHeader::new("last STAT output").show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(&self.stat_raw).monospace().size(10.0)));
+                    });
+                });
+            }
+        });
+    }
+
+    // --------------------------------------------------------------- helpers
+    fn send_profile(&mut self, target: String, profile: &str) {
+        if dsp::BUILTIN_PROFILES.contains(&profile) {
+            self.send(Cmd::ProgramNeuron {
+                target,
+                profile: Some(profile.to_string()),
+                params: vec![],
+                profile_label: profile.to_string(),
+            });
+        } else if let Some(cp) = self.custom.iter().find(|c| c.name == profile) {
+            let params = custom_params(cp);
+            self.send(Cmd::ProgramNeuron {
+                target,
+                profile: None,
+                params,
+                profile_label: profile.to_string(),
+            });
+        }
+    }
+
+    fn send_params(&mut self, target: &str) {
+        let params: Vec<(String, u32)> = dsp::NEURON_PARAMS
+            .iter()
+            .enumerate()
+            .map(|(i, (name, ..))| (name.to_string(), dsp::izh_to_q16(self.np_values[i])))
+            .collect();
+        self.neuron_status = format!("programming neuron {target}…");
+        self.send(Cmd::ProgramNeuron {
+            target: target.to_string(),
+            profile: None,
+            params,
+            profile_label: "custom".to_string(),
+        });
+    }
+
+    fn load_profile_values(&mut self, name: &str) {
+        if let Some(v) = dsp::builtin_profile_values(name) {
+            for (i, (_, val)) in v.iter().enumerate() {
+                self.np_values[i] = *val;
+            }
+        } else if let Some(cp) = self.custom.iter().find(|c| c.name == name) {
+            self.np_values = [cp.a, cp.b, cp.c, cp.d, cp.iconst];
+        }
+        self.load_prof_idx = 0;
+        self.status = format!("staged profile '{name}' — press a Program button");
+    }
+
+    fn save_current_profile(&mut self) {
+        let name = self.save_name.trim().to_string();
+        if name.is_empty() || dsp::BUILTIN_PROFILES.contains(&name.as_str()) {
+            self.neuron_status = "pick a non-empty, non-builtin name".into();
+            return;
+        }
+        let cp = CustomProfile {
+            name: name.clone(),
+            a: self.np_values[0],
+            b: self.np_values[1],
+            c: self.np_values[2],
+            d: self.np_values[3],
+            iconst: self.np_values[4],
+        };
+        if let Some(e) = self.custom.iter_mut().find(|c| c.name == name) {
+            *e = cp;
+        } else {
+            self.custom.push(cp);
+        }
+        save_custom(&self.custom);
+        self.save_name.clear();
+        self.neuron_status = format!("saved profile '{name}'");
+    }
+}
+
+impl eframe::App for DaqApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.drain_events();
+
+        // auto-sample cadence (1/s)
+        if self.auto_sample && self.connected && !self.busy && self.last_auto.elapsed().as_millis() >= 1000 {
+            self.last_auto = Instant::now();
+            self.busy = true;
+            self.send(Cmd::CollectEth { bytes: 64 * 1024, save: false });
+        }
+        if self.auto_sample {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
+
+        if self.display_dirty {
+            self.rebuild_display();
+        }
+
+        egui::TopBottomPanel::top("top").show(ctx, |ui| {
+            ui.add_space(4.0);
+            self.connection_bar(ui);
+            ui.add_space(4.0);
+        });
+
+        egui::SidePanel::right("controls").resizable(false).exact_width(440.0).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.tab, Tab::Neuron, "Neuron");
+                ui.selectable_value(&mut self.tab, Tab::Xbar, "XBAR");
+                ui.selectable_value(&mut self.tab, Tab::Capture, "Display");
+                ui.selectable_value(&mut self.tab, Tab::Waveforms, "Waveforms");
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().max_height(ui.available_height() - 190.0).show(ui, |ui| {
+                match self.tab {
+                    Tab::Neuron => self.tab_neuron(ui),
+                    Tab::Xbar => self.tab_xbar(ui),
+                    Tab::Capture => self.tab_display(ui),
+                    Tab::Waveforms => self.tab_waveforms(ui),
+                }
+            });
+            ui.separator();
+            self.capture_bar(ui);
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(&self.status).size(11.0).color(Color32::from_rgb(0x9f, 0xb3, 0xc8)));
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let n = self.series.iter().map(|s| s.len()).max().unwrap_or(0);
+            if n == 0 {
+                ui.centered_and_justified(|ui| {
+                    ui.label("No data yet — Connect, then Collect Ethernet / UART Capture / Auto-Sample.");
+                });
+                return;
+            }
+            let h = (ui.available_height() - 8.0) / 4.0;
+            for ch in 0..4 {
+                let (xlabel, ylabel) = if self.fft_view { ("Hz", "dBFS") } else { ("s", "V") };
+                let pts = PlotPoints::from(self.series[ch].clone());
+                let line = Line::new(pts).color(ch_color(ch)).name(format!("ch{ch}"));
+                let mut plot = Plot::new(format!("plot{ch}"))
+                    .height(h)
+                    .x_axis_label(xlabel)
+                    .y_axis_label(format!("ch{ch} [{ylabel}]"))
+                    .allow_scroll(false);
+                if !self.autoscale && !self.fft_view {
+                    plot = plot.include_y(-0.95).include_y(0.95);
+                }
+                if self.fft_view {
+                    plot = plot.include_y(-90.0).include_y(5.0);
+                }
+                plot.show(ui, |pu| pu.line(line));
+            }
+        });
+    }
+}
+
+impl Drop for DaqApp {
+    fn drop(&mut self) {
+        let _ = self.tx.send(Cmd::Shutdown);
+    }
+}
+
+// ------------------------------------------------------------------- support
+fn list_ports() -> Vec<String> {
+    match serialport::available_ports() {
+        Ok(ports) => {
+            let mut v: Vec<String> = ports.into_iter().map(|p| p.port_name).collect();
+            if !v.iter().any(|p| p.contains("COM10")) {
+                v.insert(0, "COM10".to_string());
+            }
+            v
+        }
+        Err(_) => vec!["COM10".to_string()],
+    }
+}
+
+fn custom_params(cp: &CustomProfile) -> Vec<(String, u32)> {
+    vec![
+        ("a".into(), dsp::izh_to_q16(cp.a)),
+        ("b".into(), dsp::izh_to_q16(cp.b)),
+        ("c".into(), dsp::izh_to_q16(cp.c)),
+        ("d".into(), dsp::izh_to_q16(cp.d)),
+        ("iconst".into(), dsp::izh_to_q16(cp.iconst)),
+    ]
+}
+
+fn profiles_path() -> std::path::PathBuf {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".into());
+    std::path::Path::new(&home).join(".daq_neuron_profiles.json")
+}
+
+fn load_custom() -> Vec<CustomProfile> {
+    std::fs::read_to_string(profiles_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_custom(v: &[CustomProfile]) {
+    if let Ok(s) = serde_json::to_string_pretty(v) {
+        let _ = std::fs::write(profiles_path(), s);
+    }
+}
