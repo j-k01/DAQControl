@@ -306,6 +306,10 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
 /* Read-out ceiling per chip. The captured size is bytes + BURST_FLUSH_GUARD, so
  * keep the ceiling a guard below the 16 MB chip0->chip1 gap. */
 #define BURST_MAX_BYTES   0x00FE0000u    /* ~15.9 MB/chip + 64 KB guard < 16 MB */
+/* Per-chip DDR span available to burst captures: the two BCAP regions are laid
+ * out this far apart, and BCPT packs its repetitions (rep stride = bytes +
+ * BURST_FLUSH_GUARD) into one region up to this limit. */
+#define BURST_REGION_SPAN 0x01000000u    /* 16 MB/chip */
 #define BURST_MAGIC       0x42435054u    /* mailbox magic: burst armed        */
 /* burst mailbox layout (at STRM_MAILBOX): 00=magic 04=bytes/chip 08=base0
  * 0C=base1 10=readout_req(MB++) 14=readout_done(A53 echo) 18=beats */
@@ -2283,6 +2287,14 @@ static void cmd_capture_triggered(u32 frames)
         frames = ADC_CAPTURE_FRAMES;
     }
 
+    /* Pause the player BEFORE arming: with a LOOPING waveform a free-running
+     * wrap can fire the armed capture inside the arm delays (same race fixed
+     * in cmd_burst_trig). With run=0 the synchronized restart below is the
+     * only possible trigger. */
+    ctrl = Xil_In32(CUR_PLAYER_CTRL_REG);
+    Xil_Out32(CUR_PLAYER_CTRL_REG, ctrl & ~CUR_PLAYER_RUN);
+    short_delay();                      /* let run=0 cross into clk_50 */
+
     /* select "arm on current-injection start" mode */
     Xil_Out32(RW_REG3, Xil_In32(RW_REG3) | RW3_CAPTURE_TRIG_MODE);
     short_delay();
@@ -2291,13 +2303,27 @@ static void cmd_capture_triggered(u32 frames)
     trigger_capture(1);
     short_delay();
 
-    /* restart the current source to sample 0; its cycle_start fires the armed
-     * capture at the exact injection-window start (one-shot: replays 0..last once) */
+    /* restart the current source to sample 0 with run=1 in one write; its
+     * cycle_start fires the armed capture at the exact injection-window start
+     * (one-shot: replays 0..last once) */
     cur_player_restart_tog ^= 1u;
-    ctrl = Xil_In32(CUR_PLAYER_CTRL_REG);
-    ctrl = (ctrl & ~CUR_PLAYER_RESTART) |
+    ctrl = (ctrl & ~CUR_PLAYER_RESTART) | CUR_PLAYER_RUN |
            (cur_player_restart_tog ? CUR_PLAYER_RESTART : 0u);
     Xil_Out32(CUR_PLAYER_CTRL_REG, ctrl);
+
+    /* The capture's done bit stays STALE from the previous capture until the
+     * trigger actually fires, and sample 0 only lands ~(cps+2) clk_50 cycles
+     * after the restart -- with a large cps that is up to ~1.3 ms, long after
+     * wait_capture_done's first poll, which would return a torn early success.
+     * Spin past the trigger moment first (each AXI read >> 20 ns). */
+    {
+        u32 cps = (ctrl >> CUR_PLAYER_CPS_SHIFT) & 0xFFFFu;
+        u32 i;
+
+        for (i = 0u; i < cps + 16u; i++) {
+            (void)Xil_In32(RW_REG3);
+        }
+    }
 
     if (!wait_capture_done(&status)) {
         Xil_Out32(RW_REG3, Xil_In32(RW_REG3) & ~RW3_CAPTURE_TRIG_MODE);
@@ -2452,6 +2478,29 @@ static int wait_burst_done(u32 *s0, u32 *s1)
     }
     return 0;
 }
+
+#if HAS_BRAM_DATAPLANE
+/* Poll both capture engines until a NEW capture has begun (done bit LOW).
+ * Needed for trigger-synchronized (RW3[7]) captures: the engine's `done` only
+ * clears at the actual trigger (the player's cycle_start), so a stale done=1
+ * from the previous capture would otherwise satisfy wait_burst_done before
+ * this capture even fires.  Race-safe: once started, done stays low for the
+ * whole capture (>= tens of us), far longer than one poll iteration. */
+static int wait_burst_started(u32 *s0, u32 *s1)
+{
+    u32 timeout;
+
+    for (timeout = 0; timeout < 20000000u; timeout++) {
+        *s0 = read_adc_debug(0u, 8u);
+        *s1 = read_adc_debug(1u, 8u);
+        if (((*s0 >> 24) == 0xBCu) && ((*s1 >> 24) == 0xBCu) &&
+            (((*s0 >> 23) & 1u) == 0u) && (((*s1 >> 23) & 1u) == 0u)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+#endif /* HAS_BRAM_DATAPLANE */
 
 /* Pulse the ADC capture trigger (RW3[3] rising edge) WITHOUT disturbing the
  * DAC source/program bits, so a DAC loopback keeps playing through the burst. */
@@ -2754,6 +2803,190 @@ static void cmd_burst(char *args)
     send_str("\r\n");
 }
 
+#if HAS_BRAM_DATAPLANE
+/* BCPT <N[k|m]> [reps] -- multisample trigger-synchronized burst capture.
+ *
+ * Repeats `reps` full-rate DMA captures of N bytes/chip, each fired in
+ * HARDWARE by the current player's sample-0 pulse (RW3[7] arm mode + the
+ * player restart, exactly like PCAPT) so every repetition starts at the
+ * identical current-injection phase.  Repetitions land back-to-back in the
+ * BCAP DDR regions at a fixed stride of (N + BURST_FLUSH_GUARD) bytes and are
+ * drained by ONE BRDO -- no host round-trips between repetitions, so the
+ * inter-rep dead time is only the DMA re-arm (~10s of us).
+ *
+ * Requires the current source to be configured and running first
+ * (CURS/CURP/CURW); the host slices each rep out of the readout at the
+ * reported stride and averages. */
+static void cmd_burst_trig(char *args)
+{
+    char *p = args;
+    u32 cnt = 64u;                          /* default 64 KB/chip per rep */
+    u32 unit = 0x400u;                      /* default unit: KB */
+    u32 reps = 16u;
+    u32 bytes, stride, total, r;
+    u32 s0 = 0, s1 = 0;
+    u32 overflow = 0;
+
+    while (*p == ' ') {
+        p++;
+    }
+    if (parse_u32_arg(&p, &cnt)) {
+        if (*p == 'k' || *p == 'K') {
+            unit = 0x400u;
+            p++;
+        } else if (*p == 'm' || *p == 'M') {
+            unit = 0x100000u;
+            p++;
+        }
+        parse_u32_arg(&p, &reps);
+    }
+    if (cnt == 0u) {
+        cnt = 64u;
+        unit = 0x400u;
+    }
+    if (reps == 0u) {
+        reps = 1u;
+    }
+    bytes = cnt * unit;
+    if (bytes > BURST_MAX_BYTES) {
+        bytes = BURST_MAX_BYTES;
+    }
+    bytes &= ~0x0Fu;                        /* whole 16 B beats */
+    if (bytes == 0u) {
+        bytes = 0x10u;
+    }
+    stride = bytes + BURST_FLUSH_GUARD;     /* guard is captured, never read */
+    /* all reps (incl. the last rep's guard) must fit one chip's DDR region */
+    {
+        u32 reps_max = BURST_REGION_SPAN / stride;
+
+        if (reps_max == 0u) {
+            send_str("ERR BCPT rep size too large for DDR region\r\n");
+            return;
+        }
+        if (reps > reps_max) {
+            reps = reps_max;
+        }
+    }
+    total = reps * stride;
+    burst_bytes = total;
+
+    if (stream_active) {
+        stream_stop();                      /* burst capture owns both DMAs */
+    }
+
+    if ((Xil_In32(CUR_PLAYER_CTRL_REG) & CUR_PLAYER_RUN) == 0u) {
+        send_str("ERR BCPT current player not running; CURS/CURP/CURW first\r\n");
+        return;
+    }
+
+    set_adc_capture_beats(stride >> 4);     /* wanted + guard beats per rep */
+
+    /* arm-on-injection mode: the RW3[3] pulse only ARMS; the player's
+     * cycle_start (CDC'd into the ADC clock) fires the capture. */
+    Xil_Out32(RW_REG3, Xil_In32(RW_REG3) | RW3_CAPTURE_TRIG_MODE);
+    short_delay();
+
+    for (r = 0u; r < reps; r++) {
+        u32 ctrl;
+        u32 ok;
+
+        dma_arm_cyclic_burst(0u, burst_ddr_base[0] + r * stride, stride);
+        dma_arm_cyclic_burst(1u, burst_ddr_base[1] + r * stride, stride);
+
+        /* Pause the player BEFORE arming: with a LOOPING waveform a free-
+         * running wrap right after the arm can fire (and, for short windows,
+         * COMPLETE) the capture inside the arm/restart delays -- the done-bit
+         * handshake below then misses the whole rep and times out. With run=0
+         * no cycle_start can occur until the restart below, so the trigger is
+         * always the synchronized injection-window start. */
+        ctrl = Xil_In32(CUR_PLAYER_CTRL_REG);
+        Xil_Out32(CUR_PLAYER_CTRL_REG, ctrl & ~CUR_PLAYER_RUN);
+        short_delay();                      /* let run=0 cross into clk_50 */
+
+        pulse_adc_capture();                /* RW3[3] edge: arm (keep DAC bits) */
+        short_delay();
+
+        /* restart the player to sample 0 with run=1 in one write; its
+         * cycle_start fires this rep at the exact injection-window start
+         * (also replays one-shot waveforms) */
+        cur_player_restart_tog ^= 1u;
+        ctrl = (ctrl & ~CUR_PLAYER_RESTART) | CUR_PLAYER_RUN |
+               (cur_player_restart_tog ? CUR_PLAYER_RESTART : 0u);
+        Xil_Out32(CUR_PLAYER_CTRL_REG, ctrl);
+
+        /* the engines' done bits are stale from the previous rep until the
+         * player's cycle_start actually fires this capture -- wait for the
+         * capture to BEGIN before waiting for it to finish. */
+        if (!wait_burst_started(&s0, &s1)) {
+            Xil_Out32(RW_REG3, Xil_In32(RW_REG3) & ~RW3_CAPTURE_TRIG_MODE);
+            dma_reset(0u);
+            dma_reset(1u);
+            send_str("ERR BCPT no trigger (player looping/one-shot replay?) rep=");
+            send_uint(r);
+            send_str(" ");
+            print_named_hex("st0", s0);
+            send_str(" ");
+            print_named_hex("st1", s1);
+            send_str("\r\n");
+            return;
+        }
+
+        ok = wait_burst_done(&s0, &s1) ? 1u : 0u;
+        /* let each DMA flush its last in-flight burst into DDR, then halt the
+         * cyclic ring (the data is already written). */
+        {
+            u32 d;
+            for (d = 0u; d < 8000u; d++) {
+                (void)dma_status(0u);
+            }
+        }
+        dma_reset(0u);
+        dma_reset(1u);
+        if (!ok) {
+            Xil_Out32(RW_REG3, Xil_In32(RW_REG3) & ~RW3_CAPTURE_TRIG_MODE);
+            send_str("ERR BCPT timeout (engine) rep=");
+            send_uint(r);
+            send_str(" ");
+            print_named_hex("st0", s0);
+            send_str(" ");
+            print_named_hex("st1", s1);
+            send_str("\r\n");
+            return;
+        }
+        overflow |= ((s0 >> 21) | (s1 >> 21)) & 1u;
+    }
+
+    /* leave trigger mode so a plain BCAP/PCAP behaves normally afterwards */
+    Xil_Out32(RW_REG3, Xil_In32(RW_REG3) & ~RW3_CAPTURE_TRIG_MODE);
+
+    /* publish the WHOLE strided region for one A53 UDP drain; the host slices
+     * `bytes` out of every `stride` and discards each rep's guard tail. */
+    Xil_Out32(STRM_MAILBOX + 0x04u, total);
+    Xil_Out32(STRM_MAILBOX + 0x08u, burst_ddr_base[0]);
+    Xil_Out32(STRM_MAILBOX + 0x0Cu, burst_ddr_base[1]);
+    Xil_Out32(STRM_MAILBOX + 0x18u, total >> 4);
+    Xil_Out32(STRM_MAILBOX + 0x00u, BURST_MAGIC);
+
+    if (overflow) {
+        send_str("WARN BCPT overflow -- capture lossy\r\n");
+    }
+    send_str("OK BCPT reps=");
+    send_uint(reps);
+    send_str(" bytes_per_rep=");
+    send_uint(bytes);
+    send_str(" stride=");
+    send_uint(stride);
+    send_str(" total_per_chip=");
+    send_uint(total);
+    send_str(" base0=");
+    send_hex(burst_ddr_base[0]);
+    send_str(" base1=");
+    send_hex(burst_ddr_base[1]);
+    send_str("\r\n");
+}
+#endif /* HAS_BRAM_DATAPLANE */
+
 /* BRDO -- ask the A53 to read the last captured regions out over UDP. Capture
  * (BCAP) and readout (BRDO) are decoupled, both MB-controlled. */
 static void cmd_burst_readout(char *args)
@@ -3025,6 +3258,7 @@ static void cmd_help(void)
 #if HAS_PS_DDR_DMA
     send_str("  DMAC [frames]    arm ADC0/ADC1 S2MM DMA to PS DDR, then pulse ADC capture\r\n");
     send_str("  BCAP [MB]        full-rate un-decimated burst capture of all 4 ADC ch (default/max 16 MB/chip)\r\n");
+    send_str("  BCPT [N[k|m] [reps]] multisample burst: reps trigger-synced captures of N/chip, strided in DDR (default 64k x16)\r\n");
     send_str("  BRDO             ask the A53 to read the last BCAP regions out over UDP\r\n");
     send_str("  BMAP [b0 b1]     show/set BCAP DDR bases (debug)\r\n");
     send_str("  STRM [decim [cic]]|STOP|STAT  continuous decimated stream into DDR rings (cyclic SG)\r\n");
@@ -3306,6 +3540,10 @@ static void process_cmd(void)
         cmd_stream(&cmd[4]);
     } else if (strncmp(cmd, "BCAP", 4) == 0) {
         cmd_burst(&cmd[4]);
+#if HAS_BRAM_DATAPLANE
+    } else if (strncmp(cmd, "BCPT", 4) == 0) {
+        cmd_burst_trig(&cmd[4]);
+#endif
     } else if (strncmp(cmd, "BRDO", 4) == 0) {
         cmd_burst_readout(&cmd[4]);
     } else if (strncmp(cmd, "BMAP", 4) == 0) {

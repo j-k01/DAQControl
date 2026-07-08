@@ -484,20 +484,24 @@ class DacControl:
         self.port = port
         time.sleep(0.2)
 
-    def _readuntil(self, prefixes):
-        deadline = time.time() + 4
+    def _readuntil(self, prefixes, timeout=4.0):
+        deadline = time.time() + timeout
         while time.time() < deadline:
             line = self.s.readline().decode("ascii", errors="replace").strip()
             if line.startswith(tuple(prefixes)):
                 return line
         return ""
 
-    def cmd(self, c, ok=("OK", "DAC xbar", "STRM")):
+    def cmd(self, c, ok=("OK", "DAC xbar", "STRM"), timeout=4.0):
+        """Long-running firmware commands (e.g. BCPT, whose reps each wait for
+        the current player's next injection-window start) must pass a timeout
+        sized to the command, or the reply is misreported as missing while the
+        MB is still busy."""
         with self.lock:
             self.s.reset_input_buffer()
             self.s.write((c + "\n").encode("ascii"))
             self.s.flush()
-            return self._readuntil(ok)
+            return self._readuntil(ok, timeout=timeout)
 
     def prog(self, ch, words, loop_frames=4096):
         with self.lock:
@@ -598,6 +602,27 @@ class DacControl:
             self.s.write(struct.pack(f"<{n}I", *words))
             self.s.flush()
             return self._readuntil(("OK CURW", "ERR"))
+
+    def program_step_for_capture(self, frames, amp_ma, baseline_frac=0.15,
+                                 settle_frac=0.10, cps=1):
+        """One-shot current step [0..][amp..][0..] sized so the high region fills
+        the ADC capture window.  The window is frames*4 ADC samples at ~1 GS/s
+        (1 ns each); each current sample lasts cps*20 ns, so W = frames*4/(cps*20)
+        current samples span the window.  Uses CURW (not CURS) so the pulse can
+        return to 0 for settling.  Returns (reply, meta)."""
+        cps = max(1, int(cps))
+        W = max(8, round(frames * 4 / (cps * 20.0)))       # samples spanning window
+        b = max(1, round(baseline_frac * W))               # zeros before (step edge here)
+        h = (W - b) + max(2, round(0.10 * W))              # high fills rest + 10% past window
+        s = max(2, round(settle_frac * W))                 # settle zeros after (past window)
+        if b + h + s > CUR_WAVE_MAX:
+            h = max(1, CUR_WAVE_MAX - b - s)               # trim high to fit the BRAM
+        samples = [0.0] * b + [float(amp_ma)] * h + [0.0] * s
+        reply = self.program_current(samples, cps, hold_last=True)
+        meta = {"cps": cps, "b": b, "h": h, "s": s,
+                "step_ns": b * cps * 20.0, "cap_ns": frames * 4.0,
+                "high_ns": h * cps * 20.0}
+        return reply, meta
 
     def set_current_gain(self, gain):
         """Set DAC-only current-source visibility gain (firmware CURG, Q8.8).
@@ -1363,6 +1388,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
     autosampled = QtCore.pyqtSignal(object)   # emits {ch: int16[], '_cov'} each auto-sample
     burst_result = QtCore.pyqtSignal(object)  # emits {'caps':[...], 'frames':int} triggered burst
     burst_progress = QtCore.pyqtSignal(int, int)  # (done, total) during a triggered burst
+    msamp_result = QtCore.pyqtSignal(object)  # multisample Ethernet burst (BCPT) result
+    config_done = QtCore.pyqtSignal(object)   # chattering-demo defaults result
 
     def __init__(self, args):
         super().__init__()
@@ -1724,6 +1751,17 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.burst_n.setPrefix("N=")
         self.burst_btn = QtWidgets.QPushButton("Trig Burst Avg")
         self.burst_btn.clicked.connect(self._on_burst)
+        self.burst_step_chk = QtWidgets.QCheckBox("fit step")
+        self.burst_step_chk.setChecked(True)
+        self.burst_step_chk.setToolTip(
+            "Before the burst, program a one-shot current step sized to the "
+            "capture window (0 baseline, amp for most of the window, 0 settle "
+            "after) and route it to DAC0.")
+        self.burst_amp = QtWidgets.QDoubleSpinBox()
+        self.burst_amp.setRange(0.1, 30.0)
+        self.burst_amp.setValue(6.0)
+        self.burst_amp.setDecimals(1)
+        self.burst_amp.setSuffix(" mA")
         # one-shot burst-over-Ethernet snapshot (BCAP+BRDO): fresh full-rate
         # capture of the selected MB/chip, far more reliable than the cyclic
         # continuous stream. Size is selectable via the combo.
@@ -1737,6 +1775,31 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.stream_btn = QtWidgets.QPushButton("Start Auto-Sample")
         self.stream_btn.setCheckable(True)
         self.stream_btn.clicked.connect(self._on_autosample_toggle)
+        # Multisample trigger-synced Ethernet burst (firmware BCPT): N deep DMA
+        # captures, each fired in hardware by the current player's sample-0
+        # pulse, strided in DDR and drained by ONE UDP pass. Per-rep size comes
+        # from the Collect size combo above.
+        self.msamp_reps = QtWidgets.QSpinBox()
+        self.msamp_reps.setRange(2, 127)
+        self.msamp_reps.setValue(16)
+        self.msamp_reps.setPrefix("reps=")
+        self.msamp_btn = QtWidgets.QPushButton("Multi-Eth Trig Capture")
+        self.msamp_btn.setToolTip(
+            "BCPT: reps trigger-synchronized full-rate captures (per-rep size = "
+            "the Collect size above), aligned + averaged, saved as burst_*.npz. "
+            "Requires the current source to be configured and running "
+            "(e.g. via the Chattering Demo Setup button or the current editor).")
+        self.msamp_btn.clicked.connect(self._on_multisample)
+        # One-click demo bring-up: chattering neurons, 10 mA step current,
+        # current->DAC0 / neuron0 spike->DAC1, 50-sample trapezoid pulse.
+        self.defaults_btn = QtWidgets.QPushButton("Chattering Demo Setup")
+        self.defaults_btn.setToolTip(
+            "All neurons -> chattering profile with injected input current i=0 "
+            "(iconst supplies the drive); current source -> 10 mA one-shot step, "
+            "first 25% baseline, full 1024-sample BRAM, hold mode; crossbar: "
+            "current source on DAC0, neuron-0 spike output on DAC1; spike pulse "
+            "shape -> 50-sample trapezoid with 5-sample ramps.")
+        self.defaults_btn.clicked.connect(self._on_default_config)
         og.addWidget(self.cic_chk, 0, 0, 1, 2)
         og.addWidget(self.deint_chk, 1, 0, 1, 2)
         og.addWidget(self.auto_chk, 2, 0)
@@ -1758,6 +1821,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         ag.addWidget(self.stream_btn, 2, 0, 1, 2)
         ag.addWidget(self.burst_n, 3, 0)
         ag.addWidget(self.burst_btn, 3, 1)
+        ag.addWidget(self.burst_step_chk, 4, 0)
+        ag.addWidget(self.burst_amp, 4, 1)
+        ag.addWidget(self.msamp_reps, 5, 0)
+        ag.addWidget(self.msamp_btn, 5, 1)
+        ag.addWidget(self.defaults_btn, 6, 0, 1, 2)
         right_col.addWidget(acq)        # outside the scroll area -> always visible
 
         left.addStretch(1)
@@ -1778,10 +1846,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._apply_view_ranges()
         self._set_controls_enabled(False)
         self.captured.connect(self._show_capture)
-        self.burst_result.connect(self._show_burst)
+        self.burst_result.connect(self._show_trig_burst)
         self.burst_progress.connect(
             lambda i, n: self.status.setText(f"Triggered burst: {i}/{n} captured..."))
         self.collected.connect(self._on_collected)
+        self.msamp_result.connect(self._show_multisample)
+        self.config_done.connect(self._on_config_done)
         self.stat_result.connect(self._show_stat)
         self.neuron_done.connect(self._on_neuron_done)
         self.dac_done.connect(self._on_dac_done)
@@ -2020,7 +2090,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._controls_enabled = on
         for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.collect_btn,
                   self.collect_mb_cb, self.stream_btn, self.dt_cb,
-                  self.burst_btn, self.burst_n,
+                  self.burst_btn, self.burst_n, self.burst_step_chk, self.burst_amp,
+                  self.msamp_reps, self.msamp_btn, self.defaults_btn,
                   self.np_loadprof, self.np_saveprof, self.cur_preview_btn):
             w.setEnabled(on)
         for b in self.np_btns.values():
@@ -2314,25 +2385,48 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return
         frames = CAPT_FRAME_OPTIONS[self.capt_frames.currentIndex()]
         n = self.burst_n.value()
+        do_step = self.burst_step_chk.isChecked()
+        amp = self.burst_amp.value()
         self.burst_btn.setEnabled(False)
         self.status.setText(f"Triggered burst: 0/{n} ...")
 
         def work():
-            caps = []
-            for i in range(n):
-                d = self.dac.uart_capture_triggered(frames)
-                if d is None:
-                    self.burst_result.emit(None)
-                    return
-                caps.append(d)
-                self.burst_progress.emit(i + 1, n)
-            self.burst_result.emit({"caps": caps, "frames": frames})
+            try:
+                meta = None
+                if do_step:
+                    # route the current source to DAC0 (your loopback) and program
+                    # a one-shot step sized to the capture window
+                    self.dac.cmd("NSRC 0 current", ok=("DAC xbar", "ERR"))
+                    reply, meta = self.dac.program_step_for_capture(frames, amp)
+                    if "OK CURW" not in (reply or ""):
+                        self.burst_result.emit(
+                            {"error": f"step program failed: {reply!r}"})
+                        return
+                caps = []
+                for i in range(n):
+                    d = self.dac.uart_capture_triggered(frames)
+                    if d is None:
+                        self.burst_result.emit(
+                            {"error": f"capture {i + 1}/{n} returned no data. "
+                                      "PCAPT waits for the current-injection restart -- "
+                                      "make sure the current source is configured AND "
+                                      "running (program a step in the Current Source "
+                                      "window) before running a burst."})
+                        return
+                    caps.append(d)
+                    self.burst_progress.emit(i + 1, n)
+                self.burst_result.emit({"caps": caps, "frames": frames, "meta": meta})
+            except Exception as e:            # surface errors instead of a silent grey hang
+                import traceback
+                traceback.print_exc()
+                self.burst_result.emit({"error": f"{type(e).__name__}: {e}"})
         self._bg(work)
 
-    def _show_burst(self, data):
+    def _show_trig_burst(self, data):
         self.burst_btn.setEnabled(True)
-        if data is None:
-            self.status.setText("Triggered burst failed (no sync / timeout).")
+        if not isinstance(data, dict) or "caps" not in data:
+            msg = data.get("error", "no data") if isinstance(data, dict) else "no data"
+            self.status.setText(f"Triggered burst failed: {msg}")
             return
         caps = data["caps"]
         n = len(caps)
@@ -2357,6 +2451,25 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 stack[ch][i] = np.roll(stack[ch][i], -off)
         avg = {ch: stack[ch].mean(axis=0) for ch in range(4)}
 
+        # Measure where the step actually lands: first sample of the aligned
+        # average that departs from the pre-step baseline.  The gap between this
+        # and the programmed baseline time is the fixed DAC->ADC loopback latency.
+        meta = data.get("meta")
+        onset = None
+        lat_txt = ""
+        if meta:
+            a = avg[anchor]
+            base = a[:max(8, L // 20)]
+            mu, sd = base.mean(), base.std() + 1e-6
+            hit = np.where(np.abs(a - mu) >
+                           max(6.0 * sd, 0.05 * (a.max() - a.min())))[0]
+            if len(hit):
+                onset = int(hit[0])
+                lat = onset - meta["step_ns"]           # ADC sample = 1 ns
+                lat_txt = (f"; step @ {onset} ns (programmed baseline "
+                           f"{meta['step_ns']:.0f} ns -> loopback latency "
+                           f"~{lat:.0f} ns)")
+
         win = pg.GraphicsLayoutWidget()
         win.setWindowTitle(f"Triggered burst average (N={n})")
         win.setBackground("#101418")
@@ -2372,16 +2485,22 @@ class ScopeWindow(QtWidgets.QMainWindow):
                        pen=pg.mkPen(col, width=0.6))
             p.plot(t, avg[ch] * VOLTS_PER_COUNT,       # bold average
                    pen=pg.mkPen("#ffffff", width=1.4))
+            if ch == anchor and onset is not None:     # markers on the anchor channel
+                p.addLine(x=onset, pen=pg.mkPen("#E57373", width=1,
+                                                style=QtCore.Qt.DashLine))    # measured step
+                p.addLine(x=meta["step_ns"], pen=pg.mkPen("#81C784", width=1,
+                                                          style=QtCore.Qt.DotLine))  # expected
         omin, omax = min(offs), max(offs)
         win.addLabel(f"N={n} bursts aligned+averaged  (x = ns @ 1 GS/s; "
-                     f"trigger jitter {omin}..{omax} samples -> expect ~0)",
+                     f"trigger jitter {omin}..{omax} samples{lat_txt})",
                      row=4, col=0)
         win.show()
         self._popup = win
         sub = self._save_burst(caps, avg, offs)
         where = f"  -> {sub}" if sub else "  (save FAILED)"
         self.status.setText(
-            f"Triggered burst avg: N={n}, {L} samp/ch, jitter {omin}..{omax}.{where}")
+            f"Triggered burst avg: N={n}, {L} samp/ch, jitter {omin}..{omax}"
+            f"{lat_txt}.{where}")
 
     def _save_burst(self, caps, avg, offs):
         try:
@@ -2517,6 +2636,252 @@ class ScopeWindow(QtWidgets.QMainWindow):
         cov = chans.pop("_cov", 1.0)
         tries = chans.pop("_attempts", 1)
         self._show_burst(chans, cov, tries)
+
+    # ---- multisample trigger-synced burst over Ethernet (BCPT + BRDO) ----
+    def _on_multisample(self):
+        if not self.dac:
+            return
+        self.msamp_btn.setEnabled(False)
+        self._resume_autosample = self.autosample_timer.isActive()
+        if self._resume_autosample:
+            self.autosample_timer.stop()
+        self._resume_after_collect = self.tap is not None
+        if self.tap:
+            self.tap.close()
+            self.tap = None
+        nbytes, lbl = COLLECT_SIZE_OPTIONS[self.collect_mb_cb.currentIndex()]
+        reps = self.msamp_reps.value()
+        self.status.setText(f"multisample: BCPT {lbl} x {reps} trigger-synced reps...")
+        self._bg(lambda: self.msamp_result.emit(self._multisample_once(nbytes, reps)))
+
+    def _multisample_once(self, nbytes, reps):
+        """BCPT + BRDO + one UDP drain, sliced into per-rep stacks and integer-
+        aligned on ch0. Runs in a worker thread. Returns
+        {'stack': {ch: float64[N,L]}, 'offs': [...], 'meta': {...}} or {'_err'}."""
+        try:
+            from burst_capture import Reassembler, decode_chip, parse_brdo_request
+        except Exception as exc:  # noqa: BLE001
+            return {"_err": f"burst_capture import failed: {exc}"}
+        kb = max(1, nbytes // 1024)
+        asm = None
+        try:
+            # a cyclic stream and a burst can't share the DMA
+            self.dac.stop_stream()
+            # Each rep waits in hardware for the player's next injection-window
+            # start, so a slow LOOPING waveform (low-frequency square/sine) can
+            # legitimately take reps x period. Wait long enough; if this still
+            # times out the MB is likely mid-BCPT and needs to finish before it
+            # answers anything else.
+            bcpt = self.dac.cmd(f"BCPT {kb}k {reps}", ok=("OK BCPT", "ERR"),
+                                timeout=180.0)
+            if not bcpt:
+                return {"_err": "BCPT reply timed out -- the board is likely "
+                                "still capturing (reps x waveform period). Wait "
+                                "for it to finish, then retry; for slow loop "
+                                "waveforms use fewer reps or a Step (hold) "
+                                "current instead"}
+            if not bcpt.startswith("OK BCPT"):
+                return {"_err": f"BCPT failed: {bcpt} -- the current player "
+                                "must be configured and RUNNING first "
+                                "(Chattering Demo Setup or current editor)"}
+            meta = {}
+            for tok in bcpt.split():
+                if "=" in tok:
+                    k, v = tok.split("=", 1)
+                    try:
+                        meta[k] = int(v, 0)
+                    except ValueError:
+                        pass
+            if not all(k in meta for k in
+                       ("reps", "bytes_per_rep", "stride", "total_per_chip")):
+                return {"_err": f"unparseable BCPT reply: {bcpt!r}"}
+            total = meta["total_per_chip"]
+            try:
+                asm = Reassembler(self.args.board_ip, self.args.cmd_port,
+                                  self.args.local_ip, self.args.local_port, total)
+            except OSError as exc:
+                return {"_err": (f"UDP bind failed on {self.args.local_ip}:"
+                                 f"{self.args.local_port}: {exc}")}
+            if not asm.register(timeout=2.0):
+                return {"_err": "BRST registration timed out (no BRST_READY from A53)"}
+            brdo = self.dac.cmd("BRDO", ok=("OK BRDO", "ERR"))
+            req = parse_brdo_request(brdo)
+            if not brdo.startswith("OK BRDO") or req is None:
+                return {"_err": f"BRDO failed: {brdo or '(no UART reply)'}"}
+            asm.set_request_id(req)
+            deadline = time.time() + max(10.0, (2.0 * total / 70.0e6) + 4.0)
+            while time.time() < deadline and not asm.complete():
+                started = asm.coverage(0) > 0.0 or asm.coverage(1) > 0.0
+                if started and asm.idle(0.8):
+                    break
+                time.sleep(0.05)
+            cov = min(asm.coverage(0), asm.coverage(1))
+            if not asm.complete():
+                return {"_err": (f"UDP drain incomplete: chip0 "
+                                 f"{100 * asm.coverage(0):.1f}%, chip1 "
+                                 f"{100 * asm.coverage(1):.1f}% coverage")}
+            chans = {}
+            chans.update(decode_chip(asm.buf[0], 0))
+            chans.update(decode_chip(asm.buf[1], 2))
+
+            # slice the strided DDR layout: per channel 4 bytes/sample
+            spr = meta["bytes_per_rep"] // 4      # wanted samples per rep
+            sps = meta["stride"] // 4             # rep-to-rep stride in samples
+            n = meta["reps"]
+            stack = {ch: np.stack([chans[ch][r * sps: r * sps + spr]
+                                   for r in range(n)]).astype(np.float64)
+                     for ch in range(4)}
+
+            # integer alignment on the ch0 anchor via FFT cross-correlation to
+            # the ensemble median (shifts are pure integers: DAC/ADC clocks are
+            # locked; only the clk_50 CDCs move the window by a few beats).
+            L = spr
+            ref = np.median(stack[0], axis=0)
+            ref = ref - ref.mean()
+            fr = np.fft.rfft(ref, n=2 * L)
+            maxlag = min(64, L // 4)
+            offs = []
+            for i in range(n):
+                sig = stack[0][i] - stack[0][i].mean()
+                cc = np.fft.irfft(fr * np.conj(np.fft.rfft(sig, n=2 * L)), n=2 * L)
+                lags = np.concatenate([np.arange(0, maxlag + 1),
+                                       np.arange(-maxlag, 0)])
+                idx = np.concatenate([np.arange(0, maxlag + 1),
+                                      np.arange(2 * L - maxlag, 2 * L)])
+                off = int(lags[int(np.argmax(cc[idx]))])
+                offs.append(off)
+                if off:
+                    for ch in range(4):
+                        stack[ch][i] = np.roll(stack[ch][i], off)
+            meta["cov"] = cov
+            return {"stack": stack, "offs": offs, "meta": meta}
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+            traceback.print_exc()
+            return {"_err": f"multisample exception: {type(exc).__name__}: {exc}"}
+        finally:
+            if asm is not None:
+                asm.close()
+
+    def _show_multisample(self, res):
+        self.msamp_btn.setEnabled(True)
+        # resume auto-sampling / live stream if they were running before
+        if getattr(self, "_resume_autosample", False) and self.dac \
+                and self.stream_btn.isChecked():
+            self._autosample_busy = False
+            self.autosample_timer.start()
+        self._resume_autosample = False
+        if getattr(self, "_resume_after_collect", False) and self.dac:
+            self.dac.start_stream(self.args.decim, self.args.cic)
+            try:
+                self.tap = StreamTap(self.args.board_ip, self.args.cmd_port,
+                                     self.args.local_ip, self.args.local_port,
+                                     self.args.window, self.args.rcvbuf)
+            except OSError:
+                self.tap = None
+        if not isinstance(res, dict) or "stack" not in res:
+            msg = res.get("_err", "no data") if isinstance(res, dict) else "no data"
+            self.status.setText(f"Multisample capture failed: {msg}")
+            return
+        stack, offs, meta = res["stack"], res["offs"], res["meta"]
+        n = meta["reps"]
+        L = stack[0].shape[1]
+        avg = {ch: stack[ch].mean(axis=0) for ch in range(4)}
+
+        win = pg.GraphicsLayoutWidget()
+        win.setWindowTitle(f"Multisample Ethernet burst (N={n}, {L} samp/ch)")
+        win.setBackground("#101418")
+        win.resize(900, 720)
+        t = np.arange(L)
+        draw_reps = n * L <= 2_000_000    # keep the popup responsive for huge grabs
+        for ch in range(4):
+            p = win.addPlot(row=ch, col=0)
+            p.showGrid(x=True, y=True, alpha=0.25)
+            p.setLabel("left", f"ch{ch}", units="V")
+            if draw_reps:
+                for i in range(n):
+                    col = pg.mkColor(CH_COLORS[ch]); col.setAlpha(45)
+                    p.plot(t, stack[ch][i] * VOLTS_PER_COUNT,
+                           pen=pg.mkPen(col, width=0.6))
+            p.plot(t, avg[ch] * VOLTS_PER_COUNT,
+                   pen=pg.mkPen("#ffffff", width=1.4))
+        omin, omax = min(offs), max(offs)
+        win.addLabel(f"N={n} hardware-triggered Ethernet bursts aligned+averaged "
+                     f"(x = ns @ 1 GS/s; trigger jitter {omin}..{omax} samples; "
+                     f"UDP coverage {100 * meta.get('cov', 1.0):.1f}%)",
+                     row=4, col=0)
+        win.show()
+        self._msamp_popup = win
+        caps = [{ch: stack[ch][i].astype(np.int16) for ch in range(4)}
+                for i in range(n)]
+        sub = self._save_burst(caps, avg, offs)
+        where = f"  -> {sub}" if sub else "  (save FAILED)"
+        self.status.setText(
+            f"Multisample: N={n} x {L} samp/ch over Ethernet, jitter "
+            f"{omin}..{omax} samp.{where}")
+
+    # ---- one-click chattering demo bring-up ----
+    def _on_default_config(self):
+        if not self.dac:
+            return
+        self.defaults_btn.setEnabled(False)
+        self.status.setText("Applying chattering demo defaults...")
+
+        def work():
+            log = []
+
+            def step(name, reply, *ok_starts):
+                log.append(f"{name}: {reply or '(no reply)'}")
+                return bool(reply) and any(reply.startswith(s) for s in ok_starts)
+
+            try:
+                ok = True
+                # all neurons -> chattering profile (a/b/c/d + iconst=10 drive)
+                ok &= step("NEUR", self.dac.cmd("NEUR all chattering",
+                                                ok=("OK", "NEUR", "ERR")), "OK")
+                # explicit special 0 mA injected input current (the player's
+                # i_external adds on top of this)
+                ok &= step("NEUR i", self.dac.set_neuron_param("all", "i", 0), "OK")
+                # current source: 10 mA one-shot step, first 25% baseline,
+                # full 1024-sample BRAM, hold mode (replayed per BCPT trigger)
+                zc = CUR_WAVE_MAX // 4
+                ok &= step("CURS", self.dac.program_current_step(
+                    1, zc, CUR_WAVE_MAX - zc, 10.0, hold_last=True), "OK CURS")
+                # crossbar: current source -> DAC0, neuron-0 spike -> DAC1
+                ok &= step("NSRC0", self.dac.cmd("NSRC 0 current",
+                                                 ok=("DAC xbar", "ERR")), "DAC xbar")
+                ok &= step("NSRC1", self.dac.cmd("NSRC 1 spike0",
+                                                 ok=("DAC xbar", "ERR")), "DAC xbar")
+                # spike pulse: 50-sample trapezoid with 5-sample ramps
+                ok &= step("PULS", self.dac.program_pulse(
+                    build_trapezoid_pulse(50, ramp_samples=5)), "PULS")
+                self.config_done.emit({"ok": bool(ok), "log": log})
+            except Exception as e:  # noqa: BLE001
+                import traceback
+                traceback.print_exc()
+                log.append(f"exception: {type(e).__name__}: {e}")
+                self.config_done.emit({"ok": False, "log": log})
+        self._bg(work)
+
+    def _on_config_done(self, res):
+        self.defaults_btn.setEnabled(True)
+        if res.get("ok"):
+            # reflect the demo routing in the crossbar combos (combo changes
+            # only refresh the preview; nothing is re-sent)
+            if hasattr(self, "src_cbs") and len(self.src_cbs) >= 2:
+                self.src_cbs[0].setCurrentText("Current source")
+                self.src_cbs[1].setCurrentText("Spike 0")
+            if hasattr(self, "prof_cbs"):
+                for cb in self.prof_cbs:
+                    cb.setCurrentText("chattering")
+            self.status.setText(
+                "Chattering demo ready: all neurons chattering (i=0), 10 mA "
+                "step (25% baseline, 1024 samp, hold), current->DAC0, "
+                "spike0->DAC1, 50-samp trapezoid pulse. Multi-Eth Trig Capture "
+                "is now armed to use it.")
+        else:
+            tail = res["log"][-1] if res.get("log") else "unknown"
+            self.status.setText(f"Demo defaults FAILED at: {tail}")
 
     # ---- auto-sample: a fresh one-shot burst every second, into the main
     #      plots, NOT saved (and NOT the cyclic UDP stream) ----
