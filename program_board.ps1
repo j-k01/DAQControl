@@ -22,6 +22,8 @@
 param(
     [switch]$NoEth,
     [switch]$NoInit,
+    [switch]$NoPing,                  # skip the final reachability check
+    [string]$BoardIp = "192.168.2.10",
     [string]$Vivado
 )
 $ErrorActionPreference = "Stop"
@@ -95,8 +97,27 @@ if (-not $NoEth) {
     # -notrace, and they don't echo commands the way Vivado does anyway.
     $ethArgs = @("load_ps_eth_stream.tcl")
     if (-not $NoInit) { $ethArgs += "--init-ps" }
-    Write-Host "==> A53 PS-Ethernet app $($ethArgs[1])   ($xsctExe)" -ForegroundColor Green
+    Write-Host "==> A53 PS-Ethernet app $($ethArgs -join ' ')   ($xsctExe)" -ForegroundColor Green
     & $xsctExe @ethArgs
+
+    # An A53 app started right after psu_init latches a dead GEM/PHY autoneg
+    # state (link up, zero packets on the wire). Reload it once the PHY link
+    # has settled -- the second load (no --init-ps) reliably brings UDP up.
+    Write-Host "==> Waiting for the PHY link to settle, then reloading the A53 app" -ForegroundColor Green
+    Start-Sleep -Seconds 10
+    & $xsctExe "load_ps_eth_stream.tcl"
+
+    if (-not $NoPing) {
+        Start-Sleep -Seconds 5
+        if (Test-Connection -ComputerName $BoardIp -Count 3 -Quiet) {
+            Write-Host "==> Board answering on $BoardIp" -ForegroundColor Green
+        } else {
+            Write-Warning ("No ping from $BoardIp. If this terminal has no Ethernet " +
+                "link to the board, rerun with -NoPing. Otherwise wait a few seconds " +
+                "and reload once more: $xsctExe load_ps_eth_stream.tcl")
+            exit 1
+        }
+    }
 }
 
 Write-Host "==> Done. Launch the GUI: python scripts\dac_scope_qt.py --port COM10" -ForegroundColor Cyan
