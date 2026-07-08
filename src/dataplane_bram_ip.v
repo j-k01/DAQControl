@@ -132,7 +132,16 @@ module dataplane_bram_ip (
     input  wire [9:0]   spike_shape_fabric_addr2,
     output wire [63:0]  spike_shape_fabric_dout2,
     input  wire [9:0]   spike_shape_fabric_addr3,
-    output wire [63:0]  spike_shape_fabric_dout3
+    output wire [63:0]  spike_shape_fabric_dout3,
+    // read ports 4..7 feed the conductance-model spike shapers
+    input  wire [9:0]   spike_shape_fabric_addr4,
+    output wire [63:0]  spike_shape_fabric_dout4,
+    input  wire [9:0]   spike_shape_fabric_addr5,
+    output wire [63:0]  spike_shape_fabric_dout5,
+    input  wire [9:0]   spike_shape_fabric_addr6,
+    output wire [63:0]  spike_shape_fabric_dout6,
+    input  wire [9:0]   spike_shape_fabric_addr7,
+    output wire [63:0]  spike_shape_fabric_dout7
 );
 
     dac0_program_bram u_dac0_program_bram (
@@ -329,7 +338,15 @@ module dataplane_bram_ip (
         .fabric_addr2  (spike_shape_fabric_addr2),
         .fabric_dout2  (spike_shape_fabric_dout2),
         .fabric_addr3  (spike_shape_fabric_addr3),
-        .fabric_dout3  (spike_shape_fabric_dout3)
+        .fabric_dout3  (spike_shape_fabric_dout3),
+        .fabric_addr4  (spike_shape_fabric_addr4),
+        .fabric_dout4  (spike_shape_fabric_dout4),
+        .fabric_addr5  (spike_shape_fabric_addr5),
+        .fabric_dout5  (spike_shape_fabric_dout5),
+        .fabric_addr6  (spike_shape_fabric_addr6),
+        .fabric_dout6  (spike_shape_fabric_dout6),
+        .fabric_addr7  (spike_shape_fabric_addr7),
+        .fabric_dout7  (spike_shape_fabric_dout7)
     );
 
     wire unused = dac0_axi_rst ^ dac0_fabric_rst ^

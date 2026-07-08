@@ -11,7 +11,7 @@ pub const DDS_PHASE_BITS: u32 = 24;
 
 /// 16:4 DAC crossbar sources, in the fixed display order. `.1` is the firmware
 /// NSRC token, `.0` is the human label.
-pub const SOURCES: [(&str, &str); 16] = [
+pub const SOURCES: [(&str, &str); 20] = [
     ("Off", "off"),
     ("DDS", "dds"),
     ("BRAM 0", "bram0"),
@@ -28,6 +28,11 @@ pub const SOURCES: [(&str, &str); 16] = [
     ("Monitor 3", "mon3"),
     ("Current source", "current"),
     ("Tag", "tag"),
+    // conductance-neuron spikes (crossbar codes 16-19)
+    ("Cond 0", "cspike0"),
+    ("Cond 1", "cspike1"),
+    ("Cond 2", "cspike2"),
+    ("Cond 3", "cspike3"),
 ];
 
 pub fn source_label(idx: usize) -> &'static str {
@@ -38,7 +43,7 @@ pub fn source_token(idx: usize) -> &'static str {
 }
 pub fn source_is_neuron(idx: usize) -> bool {
     let l = source_label(idx);
-    l.starts_with("Spike ") || l.starts_with("Monitor ")
+    l.starts_with("Spike ") || l.starts_with("Monitor ") || l.starts_with("Cond ")
 }
 /// neuron index named by a Spike/Monitor source, if any.
 pub fn source_neuron_idx(idx: usize) -> Option<u8> {

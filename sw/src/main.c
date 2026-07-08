@@ -164,7 +164,11 @@
 #define XSRC_MON0    10u   /* +ch : neuron current monitor 0..3 */
 #define XSRC_TAG     14u   /* debug tag word */
 #define XSRC_CUR     15u   /* pure injected current source */
-#define XSRC_NIBBLE(ch)  (((u32)(ch) & 3u) * 4u)
+#define XSRC_CSPIKE0 16u   /* +ch : conductance-neuron spike pulse 0..3 */
+/* reg17 packs a 5-bit source select per DAC (widened from 4 bits to fit the
+ * conductance-spike sources).  DAC0=[4:0] DAC1=[9:5] DAC2=[14:10] DAC3=[19:15]. */
+#define XSRC_NIBBLE(ch)  (((u32)(ch) & 3u) * 5u)
+#define XSRC_MASK        0x1Fu
 
 /* Programmable current player: control register (reg16) + waveform BRAM.  The
  * player advances the cur_wave read pointer every cycles_per_sample clk_50
@@ -1037,10 +1041,14 @@ static int parse_dac_source(char **cursor, u32 channel, u32 *code)
                token_eq_ci(p, "current_source") ||
                token_eq_ci(p, "inject") || token_eq_ci(p, "injection")) {
         *code = XSRC_CUR;
+    } else if (token_pref_digit(p, "cspike", &d, &hd) ||
+               token_pref_digit(p, "gspike", &d, &hd) ||
+               token_pref_digit(p, "cond", &d, &hd)) {
+        *code = XSRC_CSPIKE0 + (hd ? d : (channel & 3u));
     } else if (token_eq_ci(p, "tag")) {
         *code = XSRC_TAG;
     } else if (parse_u32_arg(&p, code)) {
-        if (*code > 15u)
+        if (*code > 31u)
             return 0;
         *cursor = p;                 /* parse_u32_arg already advanced p */
         return 1;
@@ -1093,7 +1101,7 @@ static void cmd_nsrc(void)
         char *vp = src_tok;
         if (!parse_dac_source(&vp, all_channels ? 0u : channel, &code)) {
             send_str("ERR NSRC [all|0..3] "
-                     "off|dds|bram[0-3]|spike[0-3]|mon[0-3]|current|tag|0..15\r\n");
+                     "off|dds|bram[0-3]|spike[0-3]|mon[0-3]|current|tag|cspike[0-3]|0..19\r\n");
             return;
         }
     }
@@ -1103,12 +1111,12 @@ static void cmd_nsrc(void)
         for (ch = 0; ch < 4u; ch++) {
             char *vp = src_tok;               /* re-resolve per DAC (relative names) */
             parse_dac_source(&vp, ch, &code);
-            sel = (sel & ~(0xFu << XSRC_NIBBLE(ch))) |
-                  ((code & 0xFu) << XSRC_NIBBLE(ch));
+            sel = (sel & ~(XSRC_MASK << XSRC_NIBBLE(ch))) |
+                  ((code & XSRC_MASK) << XSRC_NIBBLE(ch));
         }
     } else {
-        sel = (sel & ~(0xFu << XSRC_NIBBLE(channel))) |
-              ((code & 0xFu) << XSRC_NIBBLE(channel));
+        sel = (sel & ~(XSRC_MASK << XSRC_NIBBLE(channel))) |
+              ((code & XSRC_MASK) << XSRC_NIBBLE(channel));
     }
     Xil_Out32(DAC_XBAR_SEL_REG, sel);
 
@@ -1117,7 +1125,7 @@ static void cmd_nsrc(void)
         u32 rw3 = Xil_In32(RW_REG3);
         u32 any_bram = 0;
         for (ch = 0; ch < 4u; ch++) {
-            u32 c = (sel >> XSRC_NIBBLE(ch)) & 0xFu;
+            u32 c = (sel >> XSRC_NIBBLE(ch)) & XSRC_MASK;
             if (c >= XSRC_BRAM0 && c <= XSRC_BRAM0 + 3u)
                 any_bram = 1;
         }
@@ -1134,13 +1142,13 @@ static void cmd_nsrc(void)
         send_str("all =");
         for (ch = 0; ch < 4u; ch++) {
             send_str(" ");
-            send_uint((sel >> XSRC_NIBBLE(ch)) & 0xFu);
+            send_uint((sel >> XSRC_NIBBLE(ch)) & XSRC_MASK);
         }
     } else {
         send_str("ch");
         send_uint(channel);
         send_str(" = ");
-        send_uint((sel >> XSRC_NIBBLE(channel)) & 0xFu);
+        send_uint((sel >> XSRC_NIBBLE(channel)) & XSRC_MASK);
     }
     send_str("\r\n");
 }

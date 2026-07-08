@@ -3,9 +3,10 @@
 // Board spike-pulse waveform RAM.
 //
 // Port A is the MicroBlaze/AXI BRAM-controller side: signed s16 DAC samples are
-// packed two per 32-bit word.  Port B is replicated four times and presents one
+// packed two per 32-bit word.  Port B is replicated EIGHT times and presents one
 // 64-bit DAC beat word per read ({s3,s2,s1,s0}), one independent read stream per
-// neuron spike shaper.
+// neuron spike shaper: 0..3 feed the current-model shapers, 4..7 feed the
+// conductance-model shapers.  Every replica mirrors the same AXI-written shape.
 module spike_shape_bram_bank #(
     parameter integer ADDR_W = 10              // 1024 beats * 4 = 4096 samples
 ) (
@@ -23,28 +24,44 @@ module spike_shape_bram_bank #(
     input  wire [ADDR_W-1:0]  fabric_addr2,
     output wire [63:0]        fabric_dout2,
     input  wire [ADDR_W-1:0]  fabric_addr3,
-    output wire [63:0]        fabric_dout3
+    output wire [63:0]        fabric_dout3,
+    input  wire [ADDR_W-1:0]  fabric_addr4,
+    output wire [63:0]        fabric_dout4,
+    input  wire [ADDR_W-1:0]  fabric_addr5,
+    output wire [63:0]        fabric_dout5,
+    input  wire [ADDR_W-1:0]  fabric_addr6,
+    output wire [63:0]        fabric_dout6,
+    input  wire [ADDR_W-1:0]  fabric_addr7,
+    output wire [63:0]        fabric_dout7
 );
     localparam integer AXI_ADDR_W = ADDR_W + 1;
     localparam integer MEM_BITS   = (1 << ADDR_W) * 64;
 
-    wire [31:0] spike_shape_axi_dout_rep [0:3];
-    wire [63:0] spike_shape_fabric_dout_rep [0:3];
-    wire [ADDR_W-1:0] spike_shape_fabric_addr_rep [0:3];
+    wire [31:0] spike_shape_axi_dout_rep [0:7];
+    wire [63:0] spike_shape_fabric_dout_rep [0:7];
+    wire [ADDR_W-1:0] spike_shape_fabric_addr_rep [0:7];
 
     assign spike_shape_fabric_addr_rep[0] = fabric_addr0;
     assign spike_shape_fabric_addr_rep[1] = fabric_addr1;
     assign spike_shape_fabric_addr_rep[2] = fabric_addr2;
     assign spike_shape_fabric_addr_rep[3] = fabric_addr3;
+    assign spike_shape_fabric_addr_rep[4] = fabric_addr4;
+    assign spike_shape_fabric_addr_rep[5] = fabric_addr5;
+    assign spike_shape_fabric_addr_rep[6] = fabric_addr6;
+    assign spike_shape_fabric_addr_rep[7] = fabric_addr7;
     assign fabric_dout0 = spike_shape_fabric_dout_rep[0];
     assign fabric_dout1 = spike_shape_fabric_dout_rep[1];
     assign fabric_dout2 = spike_shape_fabric_dout_rep[2];
     assign fabric_dout3 = spike_shape_fabric_dout_rep[3];
+    assign fabric_dout4 = spike_shape_fabric_dout_rep[4];
+    assign fabric_dout5 = spike_shape_fabric_dout_rep[5];
+    assign fabric_dout6 = spike_shape_fabric_dout_rep[6];
+    assign fabric_dout7 = spike_shape_fabric_dout_rep[7];
     assign axi_dout = spike_shape_axi_dout_rep[0];
 
     genvar pulse_rep;
     generate
-        for (pulse_rep = 0; pulse_rep < 4; pulse_rep = pulse_rep + 1) begin : g_spike_shape_bram
+        for (pulse_rep = 0; pulse_rep < 8; pulse_rep = pulse_rep + 1) begin : g_spike_shape_bram
             xpm_memory_tdpram #(
                 .ADDR_WIDTH_A        (AXI_ADDR_W),
                 .ADDR_WIDTH_B        (ADDR_W),

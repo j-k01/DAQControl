@@ -20,7 +20,7 @@ module daq_litejesd_dac_tx_path #(
     input  wire [3:0]    physical_map_mode,
     input  wire [15:0]   triangle_step,
     input  wire [23:0]   sine_phase_inc,
-    input  wire [15:0]   dac_src_sel,        // 4-bit crossbar source select per DAC
+    input  wire [19:0]   dac_src_sel,        // 5-bit crossbar source select per DAC
     input  wire [255:0]  mon_words,          // 4 x 64-bit per-neuron current monitor (GT domain)
     input  wire [63:0]   current_word,       // pure injected current source (GT domain)
     input  wire          tag_source_enable,
@@ -33,6 +33,10 @@ module daq_litejesd_dac_tx_path #(
     input  wire [63:0]   neuron_word1,
     input  wire [63:0]   neuron_word2,
     input  wire [63:0]   neuron_word3,
+    input  wire [63:0]   neuron_word_c0,   // pre-shaped conductance-neuron spike pulses
+    input  wire [63:0]   neuron_word_c1,
+    input  wire [63:0]   neuron_word_c2,
+    input  wire [63:0]   neuron_word_c3,
 
     output wire          litejesd_ready,
     output wire [31:0]   status,
@@ -233,7 +237,7 @@ module daq_litejesd_dac_tx_path #(
     // broadcast entry (idx 1) any DAC can route.  Index map in
     // dac_source_crossbar.v.  program_enable is no longer a mux input -- it still
     // gates the upstream BRAM read pipeline in top.v.
-    wire [16*64-1:0] xbar_src;
+    wire [32*64-1:0] xbar_src;
     assign xbar_src[ 0*64 +: 64] = 64'd0;                  // 0  off
     assign xbar_src[ 1*64 +: 64] = sine_quad_word;         // 1  DDS (broadcast)
     assign xbar_src[ 2*64 +: 64] = program_word0;          // 2  BRAM ch0
@@ -250,6 +254,11 @@ module daq_litejesd_dac_tx_path #(
     assign xbar_src[13*64 +: 64] = mon_words[3*64 +: 64];  // 13 current monitor 3
     assign xbar_src[14*64 +: 64] = dac_tag_word0;          // 14 debug tag
     assign xbar_src[15*64 +: 64] = current_word;           // 15 pure injected current
+    assign xbar_src[16*64 +: 64] = neuron_word_c0;         // 16 conductance spike 0
+    assign xbar_src[17*64 +: 64] = neuron_word_c1;         // 17 conductance spike 1
+    assign xbar_src[18*64 +: 64] = neuron_word_c2;         // 18 conductance spike 2
+    assign xbar_src[19*64 +: 64] = neuron_word_c3;         // 19 conductance spike 3
+    assign xbar_src[20*64 +: 12*64] = 768'd0;              // 20..31 unused -> off
 
     wire [63:0] selected_src_converter0;
     wire [63:0] selected_src_converter1;

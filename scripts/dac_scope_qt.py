@@ -98,6 +98,7 @@ SOURCE_LABELS = [
     "Spike 0", "Spike 1", "Spike 2", "Spike 3",
     "Monitor 0", "Monitor 1", "Monitor 2", "Monitor 3",
     "Current source", "Tag",
+    "Cond 0", "Cond 1", "Cond 2", "Cond 3",   # conductance-neuron spikes (codes 16-19)
 ]
 LABEL_TO_NSRC = {
     "Off": "off", "DDS": "dds",
@@ -106,6 +107,7 @@ LABEL_TO_NSRC = {
     "Monitor 0": "mon0", "Monitor 1": "mon1", "Monitor 2": "mon2", "Monitor 3": "mon3",
     "Current source": "current",
     "Tag": "tag",
+    "Cond 0": "cspike0", "Cond 1": "cspike1", "Cond 2": "cspike2", "Cond 3": "cspike3",
 }
 WAVEFORMS = ["Sine", "Triangle", "Trapezoid", "Square", "Sawtooth"]
 CH_COLORS = ["#4FC3F7", "#81C784", "#FFB74D", "#E57373"]
@@ -1803,7 +1805,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             label = self.src_cbs[ch].currentText()
             cb.setEnabled(controls_on and
                           (label.startswith("Spike ") or
-                           label.startswith("Monitor ")))
+                           label.startswith("Monitor ") or
+                           label.startswith("Cond ")))
 
     def _refresh_xbar_preview(self, *_):
         """A dropdown change only STAGES a route -- draw it as a dashed pending
@@ -1835,7 +1838,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             if lbl is None:
                 rows.append(f"DAC{ch} ← (not applied)")
             elif (self._applied_profile[ch]
-                  and (lbl.startswith("Spike ") or lbl.startswith("Monitor "))):
+                  and (lbl.startswith("Spike ") or lbl.startswith("Monitor ")
+                       or lbl.startswith("Cond "))):
                 rows.append(f"DAC{ch} ← {lbl} [{self._applied_profile[ch]}]")
             else:
                 rows.append(f"DAC{ch} ← {lbl}")
@@ -2057,9 +2061,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return
         label = self.src_cbs[ch].currentText()
         profile = self.prof_cbs[ch].currentText()
-        # Spike/Monitor sources name a neuron index -> (re)program that neuron.
+        # Spike/Monitor/Cond sources name a neuron index -> (re)program it.
         neuron_idx = None
-        if label.startswith("Spike ") or label.startswith("Monitor "):
+        if (label.startswith("Spike ") or label.startswith("Monitor ")
+                or label.startswith("Cond ")):
             neuron_idx = int(label.split()[-1])
         self._dac_prog[ch] = (label, profile, neuron_idx)
         self.dac_btns[ch].setEnabled(False)

@@ -280,6 +280,11 @@ module top #(
     wire [9:0]  spike_shape_addr_tx2, spike_shape_addr_tx3;
     wire [63:0] spike_shape_word_tx0, spike_shape_word_tx1;
     wire [63:0] spike_shape_word_tx2, spike_shape_word_tx3;
+    // read ports 4..7 feed the conductance-model spike shapers
+    wire [9:0]  spike_shape_addr_tx4, spike_shape_addr_tx5;
+    wire [9:0]  spike_shape_addr_tx6, spike_shape_addr_tx7;
+    wire [63:0] spike_shape_word_tx4, spike_shape_word_tx5;
+    wire [63:0] spike_shape_word_tx6, spike_shape_word_tx7;
     reg  [31:0] selected_count;
     wire [31:0] adc_frontend_status_reg;
     reg  [31:0] adc0_selected_debug_reg;
@@ -542,13 +547,25 @@ module top #(
         .spike_shape_fabric_addr2 (spike_shape_addr_tx2),
         .spike_shape_fabric_dout2 (spike_shape_word_tx2),
         .spike_shape_fabric_addr3 (spike_shape_addr_tx3),
-        .spike_shape_fabric_dout3 (spike_shape_word_tx3)
+        .spike_shape_fabric_dout3 (spike_shape_word_tx3),
+        .spike_shape_fabric_addr4 (spike_shape_addr_tx4),
+        .spike_shape_fabric_dout4 (spike_shape_word_tx4),
+        .spike_shape_fabric_addr5 (spike_shape_addr_tx5),
+        .spike_shape_fabric_dout5 (spike_shape_word_tx5),
+        .spike_shape_fabric_addr6 (spike_shape_addr_tx6),
+        .spike_shape_fabric_dout6 (spike_shape_word_tx6),
+        .spike_shape_fabric_addr7 (spike_shape_addr_tx7),
+        .spike_shape_fabric_dout7 (spike_shape_word_tx7)
     );
 `else
     assign spike_shape_word_tx0 = 64'd0;
     assign spike_shape_word_tx1 = 64'd0;
     assign spike_shape_word_tx2 = 64'd0;
     assign spike_shape_word_tx3 = 64'd0;
+    assign spike_shape_word_tx4 = 64'd0;
+    assign spike_shape_word_tx5 = 64'd0;
+    assign spike_shape_word_tx6 = 64'd0;
+    assign spike_shape_word_tx7 = 64'd0;
 `endif
 
     (* ASYNC_REG = "TRUE" *) reg [2:0] uart_rxd_sync = 3'b111;
@@ -640,7 +657,9 @@ module top #(
     wire [63:0] dac_program_word3_reg;
     wire [3:0]  izh_spike_flags_neuron;
     wire [3:0]  izh_spike_flags_tx;
-    wire [15:0]  dac_src_sel_tx;     // 4 bits/DAC crossbar select (reg17[15:0]) in GT domain
+    wire [3:0]  izh_spike_flags_cond_neuron;   // conductance-model spikes (clk_50)
+    wire [3:0]  izh_spike_flags_cond_tx;       // conductance-model spikes (GT domain)
+    wire [19:0]  dac_src_sel_tx;    // 5 bits/DAC crossbar select (reg17[19:0]) in GT domain
     wire [15:0]  cur_dac_gain_q8_8_tx; // reg20[15:0], Q8.8 current-source DAC gain
     wire [255:0] mon_words_tx;       // 4 x 64-bit current-monitor DAC words in GT domain
     wire [63:0]  cur_source_word_tx; // pure injected-current DAC word in GT domain
@@ -1119,6 +1138,7 @@ module top #(
         .cfg_addr    (neuron_cfg_fabric_addr),
         .cfg_data    (neuron_cfg_fabric_dout),
         .spike_flags (izh_spike_flags_neuron),
+        .spike_flags_cond (izh_spike_flags_cond_neuron),
         .i_mon       (izh_i_mon),
         .debug_word  (dac_neuron_debug_async)
     );
@@ -1245,11 +1265,11 @@ module top #(
     // [3:0]=DAC0 ..
     // [15:12]=DAC3) and we sync it across; independent of the neuron bank.
     cdc_vector_sync #(
-        .WIDTH (16)
+        .WIDTH (20)
     ) u_dac_src_sel_sync (
         .dest_clk (gth_tx_usrclk2),
         .dest_rst (litejesd_reset),
-        .src      (regf_value[17*32 +: 16]),
+        .src      (regf_value[17*32 +: 20]),
         .dest     (dac_src_sel_tx)
     );
 
@@ -1329,6 +1349,52 @@ module top #(
         .clk(gth_tx_usrclk2), .reset(spike_shaper_rst), .spike(izh_spike_flags_tx[3]),
         .shape_addr(spike_shape_addr_tx3), .shape_data(spike_shape_word_tx3),
         .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx3));
+
+    // Conductance-model spikes cross clk_50 -> gth_tx_usrclk2 here.  A clk_50
+    // spike pulse is ~5 GT cycles wide, so a 3-FF synchronizer + rising-edge
+    // detect reliably regenerates a single-cycle start pulse per spike (neurons
+    // spike far slower than this window, so none are missed).  Same edge-detect
+    // idiom as izh_prog_toggle_sync above.
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [2:0] cspk0_sync = 3'b000;
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [2:0] cspk1_sync = 3'b000;
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [2:0] cspk2_sync = 3'b000;
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [2:0] cspk3_sync = 3'b000;
+    always @(posedge gth_tx_usrclk2) begin
+        if (spike_shaper_rst) begin
+            cspk0_sync <= 3'b000; cspk1_sync <= 3'b000;
+            cspk2_sync <= 3'b000; cspk3_sync <= 3'b000;
+        end else begin
+            cspk0_sync <= {cspk0_sync[1:0], izh_spike_flags_cond_neuron[0]};
+            cspk1_sync <= {cspk1_sync[1:0], izh_spike_flags_cond_neuron[1]};
+            cspk2_sync <= {cspk2_sync[1:0], izh_spike_flags_cond_neuron[2]};
+            cspk3_sync <= {cspk3_sync[1:0], izh_spike_flags_cond_neuron[3]};
+        end
+    end
+    assign izh_spike_flags_cond_tx[0] = cspk0_sync[1] & ~cspk0_sync[2];
+    assign izh_spike_flags_cond_tx[1] = cspk1_sync[1] & ~cspk1_sync[2];
+    assign izh_spike_flags_cond_tx[2] = cspk2_sync[1] & ~cspk2_sync[2];
+    assign izh_spike_flags_cond_tx[3] = cspk3_sync[1] & ~cspk3_sync[2];
+
+    // Second pulse-shaper array for the conductance-model spikes (shape RAM read
+    // ports 4..7).  Same shape / nbeats as the current-model shapers; outputs are
+    // crossbar sources 16..19.
+    wire [63:0] neuron_word_ctx0, neuron_word_ctx1, neuron_word_ctx2, neuron_word_ctx3;
+    izh_spike_shaper #(.ADDR_W(10)) u_spike_shaper_c0 (
+        .clk(gth_tx_usrclk2), .reset(spike_shaper_rst), .spike(izh_spike_flags_cond_tx[0]),
+        .shape_addr(spike_shape_addr_tx4), .shape_data(spike_shape_word_tx4),
+        .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_ctx0));
+    izh_spike_shaper #(.ADDR_W(10)) u_spike_shaper_c1 (
+        .clk(gth_tx_usrclk2), .reset(spike_shaper_rst), .spike(izh_spike_flags_cond_tx[1]),
+        .shape_addr(spike_shape_addr_tx5), .shape_data(spike_shape_word_tx5),
+        .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_ctx1));
+    izh_spike_shaper #(.ADDR_W(10)) u_spike_shaper_c2 (
+        .clk(gth_tx_usrclk2), .reset(spike_shaper_rst), .spike(izh_spike_flags_cond_tx[2]),
+        .shape_addr(spike_shape_addr_tx6), .shape_data(spike_shape_word_tx6),
+        .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_ctx2));
+    izh_spike_shaper #(.ADDR_W(10)) u_spike_shaper_c3 (
+        .clk(gth_tx_usrclk2), .reset(spike_shaper_rst), .spike(izh_spike_flags_cond_tx[3]),
+        .shape_addr(spike_shape_addr_tx7), .shape_data(spike_shape_word_tx7),
+        .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_ctx3));
 
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_program_req_sync = 3'b000;
@@ -1475,6 +1541,10 @@ module top #(
         .neuron_word1     (neuron_word_tx1),
         .neuron_word2     (neuron_word_tx2),
         .neuron_word3     (neuron_word_tx3),
+        .neuron_word_c0   (neuron_word_ctx0),
+        .neuron_word_c1   (neuron_word_ctx1),
+        .neuron_word_c2   (neuron_word_ctx2),
+        .neuron_word_c3   (neuron_word_ctx3),
         .litejesd_ready   (litejesd_ready_async),
         .status           (litejesd_status_async),
         .triangle_word    (litejesd_triangle_async),

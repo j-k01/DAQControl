@@ -28,7 +28,8 @@ module izh_dac_bank #(
     output reg  [ADDR_W-1:0]      cfg_addr,   // config BRAM port-B read address
     input  wire [31:0]            cfg_data,   // config BRAM port-B read data (1-cycle latency)
 
-    output wire [3:0]             spike_flags,    // per-neuron spike (-> GT pulse shaper)
+    output wire [3:0]             spike_flags,      // per-neuron spike (current model -> GT pulse shaper)
+    output wire [3:0]             spike_flags_cond, // per-neuron spike (conductance model -> 2nd GT shaper)
     output wire [127:0]           i_mon,          // per-neuron current I+I_constant (Q16.16, 4x32)
     output wire [31:0]            debug_word
 );
@@ -136,7 +137,12 @@ module izh_dac_bank #(
     end
 
     // ---- neurons (core explicitly emits SPIKE; spikes go to the GT shaper) ---
+    // Two neurons per channel share identical config/drive/step: the original
+    // current-model izh_neuron and a conductance-model izh_neuron_conductance.
+    // Their spikes fan out to two independent GT pulse-shaper arrays so both are
+    // XBAR-selectable.
     wire [3:0]         spike;
+    wire [3:0]         spike_c;
     wire signed [31:0] v_out [0:3];
     wire signed [31:0] u_out [0:3];
 
@@ -171,11 +177,31 @@ module izh_dac_bank #(
                 .v_out      (v_out[n]),
                 .u_out      (u_out[n])
             );
+
+            // Conductance-model twin: same config/drive/step.  Here I+I_constant
+            // are interpreted as the excitatory conductance g_exc (see
+            // izh_neuron_conductance.v); the leak conductance provides the decay.
+            izh_neuron_conductance u_izh_neuron_conductance (
+                .clk        (clk),
+                .reset      (reset | neuron_reset[n]),
+                .a_param    (a_param[n]),
+                .b_param    (b_param[n]),
+                .c_param    (c_param[n]),
+                .d_param    (d_param[n]),
+                .I          (i_param[n] + i_external),
+                .v_timestep (g_dt),
+                .I_constant (i_const[n]),
+                .step_enable(step),
+                .SPIKE      (spike_c[n]),
+                .v_out      (),
+                .u_out      ()
+            );
         end
     endgenerate
 
     wire busy = (st != S_IDLE);
     assign spike_flags = spike;
+    assign spike_flags_cond = spike_c;
     assign debug_word  = {8'h1A, mask, busy, global_set, v_out[0][17:0]};
 
     // Per-neuron current monitor = exactly what each neuron integrates
