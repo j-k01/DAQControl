@@ -1365,10 +1365,21 @@ static void cmd_curs(void)
     }
 
     count = zero_count + high_count;
+    if (hold_last && count >= CUR_WAVE_DEPTH) {
+        high_count--;              /* make room for the trailing 0 below */
+        count--;
+    }
     for (i = 0u; i < zero_count; i++)
         Xil_Out32(CUR_WAVE_BRAM_BASE + i * 4u, 0u);
     for (; i < count; i++)
         Xil_Out32(CUR_WAVE_BRAM_BASE + i * 4u, amp);
+    if (hold_last) {
+        /* park at ZERO between one-shots: a trailing 0 sample makes hold mode
+         * rest at baseline (settled, deterministic pre-trigger state for
+         * triggered captures) instead of at the step's HIGH level. */
+        Xil_Out32(CUR_WAVE_BRAM_BASE + count * 4u, 0u);
+        count++;
+    }
 
     cur_player_restart_tog ^= 1u;
     Xil_Out32(CUR_PLAYER_CTRL_REG,
@@ -2283,6 +2294,38 @@ static void cmd_capture(u32 frames, int use_dac_program)
     stream_capture_bram(frames);
 }
 
+/* Deterministic pre-trigger reset for triggered captures.  Replays the current
+ * waveform from sample 0 UNARMED (RW3[7] trig mode must already be selected so
+ * the interim cycle_start is ignored), freezes the player a few samples in --
+ * parking the output at the waveform's INITIAL value (0 for a zero-preamble
+ * step) -- then waits for the analog path to settle.  Without this, hold mode
+ * parks at the LAST sample (a step rests at its HIGH level) and a paused loop
+ * parks at a random phase, so every repetition starts from a different DC
+ * state and the AC-coupled transients never align across reps. */
+static void cur_player_reset_settle(void)
+{
+    u32 ctrl = Xil_In32(CUR_PLAYER_CTRL_REG);
+    u32 cps = (ctrl >> CUR_PLAYER_CPS_SHIFT) & 0xFFFFu;
+    u32 i;
+
+    if (cps == 0u) {
+        cps = 1u;
+    }
+    cur_player_restart_tog ^= 1u;
+    ctrl = (ctrl & ~CUR_PLAYER_RESTART) | CUR_PLAYER_RUN |
+           (cur_player_restart_tog ? CUR_PLAYER_RESTART : 0u);
+    Xil_Out32(CUR_PLAYER_CTRL_REG, ctrl);
+    /* ~8 waveform samples in (each AXI read >> one 20 ns player clock) */
+    for (i = 0u; i < 8u * cps + 64u; i++) {
+        (void)Xil_In32(RW_REG3);
+    }
+    Xil_Out32(CUR_PLAYER_CTRL_REG, ctrl & ~CUR_PLAYER_RUN);  /* freeze there */
+    /* let the AC-coupled analog path settle at the parked level (several us) */
+    for (i = 0u; i < 4000u; i++) {
+        (void)Xil_In32(RW_REG3);
+    }
+}
+
 /* Trigger-synchronized one-shot capture: arm the ADC capture, then restart the
  * current source to sample 0.  The player's sample-0 (cycle_start) pulse fires
  * the armed capture in hardware, so every burst begins at the identical
@@ -2297,17 +2340,16 @@ static void cmd_capture_triggered(u32 frames)
         frames = ADC_CAPTURE_FRAMES;
     }
 
-    /* Pause the player BEFORE arming: with a LOOPING waveform a free-running
-     * wrap can fire the armed capture inside the arm delays (same race fixed
-     * in cmd_burst_trig). With run=0 the synchronized restart below is the
-     * only possible trigger. */
-    ctrl = Xil_In32(CUR_PLAYER_CTRL_REG);
-    Xil_Out32(CUR_PLAYER_CTRL_REG, ctrl & ~CUR_PLAYER_RUN);
-    short_delay();                      /* let run=0 cross into clk_50 */
-
-    /* select "arm on current-injection start" mode */
+    /* select "arm on current-injection start" mode FIRST, so the reset replay
+     * below cannot fire a capture (cycle_start is ignored while unarmed) */
     Xil_Out32(RW_REG3, Xil_In32(RW_REG3) | RW3_CAPTURE_TRIG_MODE);
     short_delay();
+
+    /* deterministic pre-trigger state: replay from sample 0 unarmed, freeze a
+     * few samples in (output = the waveform's initial value, 0 for a step's
+     * zero preamble), and let the AC-coupled loopback settle. Also keeps a
+     * LOOPING waveform from firing the armed capture inside the arm delays. */
+    cur_player_reset_settle();
 
     /* arm: the RW3[3] edge latches the armed flag (DAC loopback kept running) */
     trigger_capture(1);
@@ -2317,6 +2359,7 @@ static void cmd_capture_triggered(u32 frames)
      * cycle_start fires the armed capture at the exact injection-window start
      * (one-shot: replays 0..last once) */
     cur_player_restart_tog ^= 1u;
+    ctrl = Xil_In32(CUR_PLAYER_CTRL_REG);
     ctrl = (ctrl & ~CUR_PLAYER_RESTART) | CUR_PLAYER_RUN |
            (cur_player_restart_tog ? CUR_PLAYER_RESTART : 0u);
     Xil_Out32(CUR_PLAYER_CTRL_REG, ctrl);
@@ -2904,15 +2947,13 @@ static void cmd_burst_trig(char *args)
         dma_arm_cyclic_burst(0u, burst_ddr_base[0] + r * stride, stride);
         dma_arm_cyclic_burst(1u, burst_ddr_base[1] + r * stride, stride);
 
-        /* Pause the player BEFORE arming: with a LOOPING waveform a free-
-         * running wrap right after the arm can fire (and, for short windows,
-         * COMPLETE) the capture inside the arm/restart delays -- the done-bit
-         * handshake below then misses the whole rep and times out. With run=0
-         * no cycle_start can occur until the restart below, so the trigger is
-         * always the synchronized injection-window start. */
-        ctrl = Xil_In32(CUR_PLAYER_CTRL_REG);
-        Xil_Out32(CUR_PLAYER_CTRL_REG, ctrl & ~CUR_PLAYER_RUN);
-        short_delay();                      /* let run=0 cross into clk_50 */
+        /* Deterministic pre-trigger state (trig mode is already selected, so
+         * the replay is unarmed): park the output at the waveform's initial
+         * value and let the analog path settle. Ends with the player FROZEN,
+         * which also keeps a looping waveform from firing/completing the
+         * capture inside the arm delays (the done-bit handshake below would
+         * miss the whole rep). */
+        cur_player_reset_settle();
 
         pulse_adc_capture();                /* RW3[3] edge: arm (keep DAC bits) */
         short_delay();
@@ -2921,6 +2962,7 @@ static void cmd_burst_trig(char *args)
          * cycle_start fires this rep at the exact injection-window start
          * (also replays one-shot waveforms) */
         cur_player_restart_tog ^= 1u;
+        ctrl = Xil_In32(CUR_PLAYER_CTRL_REG);
         ctrl = (ctrl & ~CUR_PLAYER_RESTART) | CUR_PLAYER_RUN |
                (cur_player_restart_tog ? CUR_PLAYER_RESTART : 0u);
         Xil_Out32(CUR_PLAYER_CTRL_REG, ctrl);
