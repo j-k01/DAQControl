@@ -22,8 +22,11 @@
 param(
     [switch]$NoEth,
     [switch]$NoInit,
-    [switch]$NoPing,                  # skip the final reachability check
+    [switch]$NoPing,                  # skip NIC setup + reachability check
+    [switch]$NoNicSetup,              # never touch the host NIC config
     [string]$BoardIp = "192.168.2.10",
+    [string]$HostIp = "192.168.2.1",  # what the board expects this PC to be
+    [int]$MaxEthRetries = 4,
     [string]$Vivado
 )
 $ErrorActionPreference = "Stop"
@@ -61,6 +64,50 @@ function Resolve-Tool([string]$base, [string]$ver, [bool]$isVivado) {
         }
     }
     return $null
+}
+
+function Ensure-BoardNic {
+    # The A53 app, GUI, and UDP drain all assume this PC is $HostIp on the
+    # direct board link. A freshly moved board lands on a machine whose NIC is
+    # still on DHCP (169.254.x.x) -- configure it when it's unambiguous which
+    # port is the board link (Up, physical, and NOT the internet uplink).
+    param([string]$Ip)
+    $have = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -like ($Ip -replace '\.\d+$', '.*') } |
+        Select-Object -First 1
+    if ($have) {
+        Write-Host "Board-subnet NIC: $($have.InterfaceAlias) ($($have.IPAddress))"
+        return $true
+    }
+    $gw = @((Get-NetRoute -DestinationPrefix '0.0.0.0/0' `
+             -ErrorAction SilentlyContinue).InterfaceAlias)
+    $cand = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue |
+        Where-Object { $_.Status -eq 'Up' -and ($gw -notcontains $_.InterfaceAlias) })
+    if ($cand.Count -eq 0) {
+        Write-Warning ("No Up NIC without a default route found. Cable the board " +
+            "link, then set: New-NetIPAddress -InterfaceAlias '<name>' " +
+            "-IPAddress $Ip -PrefixLength 24")
+        return $false
+    }
+    if ($cand.Count -gt 1) {
+        $names = ($cand | ForEach-Object { $_.InterfaceAlias }) -join ', '
+        Write-Warning ("Multiple candidate NICs ($names) -- not guessing. Set the " +
+            "board-link one manually: New-NetIPAddress -InterfaceAlias '<name>' " +
+            "-IPAddress $Ip -PrefixLength 24")
+        return $false
+    }
+    $alias = $cand[0].InterfaceAlias
+    Write-Host "Configuring '$alias' as $Ip/24 for the board link" -ForegroundColor Cyan
+    try {
+        New-NetIPAddress -InterfaceAlias $alias -IPAddress $Ip -PrefixLength 24 `
+            -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        Write-Warning ("Could not set the IP (needs an elevated PowerShell?): $_" +
+            "`nSet it manually: New-NetIPAddress -InterfaceAlias '$alias' " +
+            "-IPAddress $Ip -PrefixLength 24")
+        return $false
+    }
 }
 
 $ver = if ($Vivado) { $Vivado } else { Get-XilinxVersions | Select-Object -First 1 }
@@ -108,13 +155,38 @@ if (-not $NoEth) {
     & $xsctExe "load_ps_eth_stream.tcl"
 
     if (-not $NoPing) {
-        Start-Sleep -Seconds 5
-        if (Test-Connection -ComputerName $BoardIp -Count 3 -Quiet) {
+        if (-not $NoNicSetup) { Ensure-BoardNic $HostIp | Out-Null }
+
+        # Ping -> diagnose -> reload -> retry. "No ARP" = the board transmits
+        # nothing (PHY latch: reload helps); "ARP but no ping" = host side.
+        $up = $false
+        for ($try = 1; $try -le $MaxEthRetries; $try++) {
+            Start-Sleep -Seconds 5
+            if (Test-Connection -ComputerName $BoardIp -Count 3 -Quiet) {
+                $up = $true
+                break
+            }
+            $seen = (arp -a) | Select-String ([regex]::Escape($BoardIp))
+            if ($seen) {
+                Write-Warning ("$BoardIp answers ARP but not ping -- the board is " +
+                    "alive; check host side (VPN/firewall software, a second NIC " +
+                    "on 192.168.2.x).")
+            } else {
+                Write-Host ("==> No ARP from $BoardIp (PHY latch); reloading the " +
+                    "A53 app (retry $try/$MaxEthRetries)") -ForegroundColor Yellow
+            }
+            & $xsctExe "load_ps_eth_stream.tcl"
+            Start-Sleep -Seconds 10
+        }
+        if ($up) {
             Write-Host "==> Board answering on $BoardIp" -ForegroundColor Green
         } else {
-            Write-Warning ("No ping from $BoardIp. If this terminal has no Ethernet " +
-                "link to the board, rerun with -NoPing. Otherwise wait a few seconds " +
-                "and reload once more: $xsctExe load_ps_eth_stream.tcl")
+            Write-Warning "Still no ping after $MaxEthRetries A53 reloads. A53 mailbox:"
+            & $xsctExe "read_eth_mailbox.tcl"
+            Write-Warning ("Mailbox DA0000FF with word1 advancing = app alive, link/" +
+                "host problem (cable in the ZCU102 GEM3 RJ45? host on $HostIp/24?). " +
+                "DA000004/05 = PHY never came up. DAE000xx = app init error -- " +
+                "rerun this script. JTAG-only terminal? use -NoPing.")
             exit 1
         }
     }
