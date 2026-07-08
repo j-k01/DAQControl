@@ -1485,15 +1485,25 @@ static u32 spike_shape_recv_binary(u32 rx_count)
 #endif
 }
 
-/* Power-on default: the original 7 ns trapezoid (1/4,1/2,1,1,1,1/2,1/4 of
- * 0x6000), matching the old fixed izh_spike_trapezoid. */
 static void spike_shape_init_default(void)
 {
-    static const s16 orig_trap[7] = {
-        (s16)0x1800, (s16)0x3000, (s16)0x6000, (s16)0x6000,
-        (s16)0x6000, (s16)0x3000, (s16)0x1800
-    };
-    spike_shape_write(orig_trap, 7u);
+    /* Default: INVERTED trapezoid -- 30 ns flat top at negative full-scale
+     * (0 -> -32767) with 5-sample ramps, 40 samples total at 1 GS/s.  Ramp
+     * points use the same (i+1)/(ramp+2) spacing as the host's trapezoid
+     * builder so the two stay in step. */
+    s16 shape[40];
+    int i;
+
+    for (i = 0; i < 5; i++) {
+        s16 v = (s16)(-(32767 * (i + 1)) / 7);
+
+        shape[i] = v;
+        shape[39 - i] = v;
+    }
+    for (i = 5; i < 35; i++) {
+        shape[i] = (s16)-32767;
+    }
+    spike_shape_write(shape, 40u);
 }
 
 #if HAS_BRAM_DATAPLANE
@@ -1528,7 +1538,7 @@ static void dac_bram_init_default(void)
 }
 #endif
 
-/* PULS default                  -> reload the original 7 ns trapezoid
+/* PULS default                  -> reload the default (inverted 30 ns trapezoid)
  * PULS <s0> <s1> ... <sN>        -> set a short pulse from text (<=32 samples)
  * PULS bin <count> + LE s16 data -> set a long pulse (<=4096 samples)
  *   Samples are full-range signed s16; nbeats auto = ceil(N/4). */
@@ -1543,7 +1553,7 @@ static void cmd_puls(void)
         p++;
     if (token_eq_ci(p, "default")) {
         spike_shape_init_default();
-        send_str("PULS default (original 7 ns trapezoid, 7 samples)\r\n");
+        send_str("PULS default (inverted 30 ns trapezoid, 40 samples)\r\n");
         return;
     }
     if (token_eq_ci(p, "bin") || token_eq_ci(p, "binary")) {
@@ -3593,7 +3603,7 @@ int main(void)
     neuron_image_init();
     dac_bram_init_default();      /* boot default DAC BRAMs = 10 MHz sine */
 #endif
-    spike_shape_init_default();   /* boot default spike-pulse shape = original 7 ns trapezoid */
+    spike_shape_init_default();   /* boot default spike-pulse shape = inverted 30 ns trapezoid */
     firmware_marker(2);
 
     XUartNs550_Initialize(&uart, XPAR_AXI_UART16550_0_DEVICE_ID);

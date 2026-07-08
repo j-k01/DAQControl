@@ -229,16 +229,22 @@ CUR_LOOPBACK_AC_CORNER_HZ = 200e3
 
 # --- programmable spike pulse shape (izh_spike_shaper, firmware PULS) ----------
 PULSE_MAX_SAMPLES = 4096       # firmware SPIKE_MAX_SAMPLES
-# original 7 ns trapezoid boot default (firmware spike_shape_init_default)
-PULSE_DEFAULT = [0x1800, 0x3000, 0x6000, 0x6000, 0x6000, 0x3000, 0x1800]
-PULSE_DEFAULT_PEAK = max(PULSE_DEFAULT)
+# boot default (firmware spike_shape_init_default): INVERTED trapezoid,
+# 30 ns flat top at negative full-scale with 5-sample ramps = 40 samples
+PULSE_DEFAULT_LEN = 40
+PULSE_DEFAULT_RAMP = 5
+PULSE_DEFAULT_PEAK = -DAC_FULLSCALE
 
 
 def build_trapezoid_pulse(n_samples, peak_counts=PULSE_DEFAULT_PEAK,
-                          ramp_samples=None):
-    """Build a positive spike pulse: ramp up, hold steady, ramp down."""
+                          ramp_samples=None, invert=False):
+    """Build a trapezoid spike pulse: ramp, hold, ramp. A negative
+    peak_counts (or invert=True) makes the pulse downward-going."""
     n = max(1, min(PULSE_MAX_SAMPLES, int(n_samples)))
-    peak = max(0, min(DAC_FULLSCALE, int(round(peak_counts))))
+    peak = int(round(peak_counts))
+    if invert:
+        peak = -abs(peak)
+    peak = max(-DAC_FULLSCALE, min(DAC_FULLSCALE, peak))
     if n == 1:
         return [peak]
     if ramp_samples is None:
@@ -405,6 +411,12 @@ def deinterleave_baseline(x):
 # --------------------------------------------------------------- DAC content
 def clamp_s16(v):
     return max(-DAC_FULLSCALE, min(DAC_FULLSCALE, int(round(v))))
+
+
+# firmware boot-default spike shape, mirrored for the pulse editor (defined
+# here because build_trapezoid_pulse needs clamp_s16 at call time)
+PULSE_DEFAULT = build_trapezoid_pulse(PULSE_DEFAULT_LEN, PULSE_DEFAULT_PEAK,
+                                      PULSE_DEFAULT_RAMP)
 
 
 def volts_to_counts(v):
@@ -667,7 +679,7 @@ class DacControl:
             return self._readuntil(("PULS", "ERR"))
 
     def pulse_default(self):
-        """Reload the boot-default spike shape (original 7 ns trapezoid)."""
+        """Reload the boot-default spike shape (inverted 30 ns trapezoid)."""
         return self.cmd("PULS default", ok=("PULS", "ERR"))
 
     def _capture(self, cmd_str, frames):
@@ -921,21 +933,28 @@ class PulseShapeWindow(QtWidgets.QWidget):
         ctl.addWidget(QtWidgets.QLabel("ramp"))
         self.ramp_spin = QtWidgets.QSpinBox()
         self.ramp_spin.setRange(1, max(1, len(PULSE_DEFAULT) // 2))
-        self.ramp_spin.setValue(2)
+        self.ramp_spin.setValue(PULSE_DEFAULT_RAMP)
         self.ramp_spin.valueChanged.connect(self._info)
         ctl.addWidget(self.ramp_spin)
 
         ctl.addWidget(QtWidgets.QLabel("peak"))
         self.peak_spin = QtWidgets.QSpinBox()
         self.peak_spin.setRange(0, DAC_FULLSCALE)
-        self.peak_spin.setValue(PULSE_DEFAULT_PEAK)
+        self.peak_spin.setValue(abs(PULSE_DEFAULT_PEAK))
         self.peak_spin.valueChanged.connect(self._info)
         ctl.addWidget(self.peak_spin)
+
+        self.invert_chk = QtWidgets.QCheckBox("invert")
+        self.invert_chk.setChecked(PULSE_DEFAULT_PEAK < 0)
+        self.invert_chk.setToolTip("Downward-going pulse: 0 to -peak instead "
+                                   "of 0 to +peak.")
+        self.invert_chk.stateChanged.connect(self._info)
+        ctl.addWidget(self.invert_chk)
 
         self.trap_btn = QtWidgets.QPushButton("Build trapezoid")
         self.trap_btn.clicked.connect(self._on_trapezoid)
         ctl.addWidget(self.trap_btn)
-        self.default_btn = QtWidgets.QPushButton("Load 7 ns default")
+        self.default_btn = QtWidgets.QPushButton("Load default (inv 30 ns)")
         self.default_btn.clicked.connect(self._on_default)
         ctl.addWidget(self.default_btn)
         self.zero_btn = QtWidgets.QPushButton("Flatten to 0")
@@ -975,7 +994,8 @@ class PulseShapeWindow(QtWidgets.QWidget):
     def _on_trapezoid(self):
         ys = build_trapezoid_pulse(self.len_spin.value(),
                                    self.peak_spin.value(),
-                                   self.ramp_spin.value())
+                                   self.ramp_spin.value(),
+                                   invert=self.invert_chk.isChecked())
         self.editor.set_values(ys)
         self._info()
 
@@ -984,8 +1004,9 @@ class PulseShapeWindow(QtWidgets.QWidget):
         self.len_spin.setValue(len(PULSE_DEFAULT))
         self.len_spin.blockSignals(False)
         self._sync_trapezoid_controls(len(PULSE_DEFAULT))
-        self.ramp_spin.setValue(2)
-        self.peak_spin.setValue(PULSE_DEFAULT_PEAK)
+        self.ramp_spin.setValue(PULSE_DEFAULT_RAMP)
+        self.peak_spin.setValue(abs(PULSE_DEFAULT_PEAK))
+        self.invert_chk.setChecked(PULSE_DEFAULT_PEAK < 0)
         self.editor.set_values(PULSE_DEFAULT)
         self._info()
 
@@ -1752,7 +1773,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.burst_btn = QtWidgets.QPushButton("Trig Burst Avg")
         self.burst_btn.clicked.connect(self._on_burst)
         self.burst_step_chk = QtWidgets.QCheckBox("fit step")
-        self.burst_step_chk.setChecked(True)
+        # Off by default: when on, every burst REWRITES DAC0's crossbar route
+        # (NSRC 0 current) and replaces the loaded current waveform with a
+        # window-fit step -- surprising when a demo/experiment config is live.
+        self.burst_step_chk.setChecked(False)
         self.burst_step_chk.setToolTip(
             "Before the burst, program a one-shot current step sized to the "
             "capture window (0 baseline, amp for most of the window, 0 settle "
@@ -1798,7 +1822,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "(iconst supplies the drive); current source -> 10 mA one-shot step, "
             "first 25% baseline, full 1024-sample BRAM, hold mode; crossbar: "
             "current source on DAC0, neuron-0 spike output on DAC1; spike pulse "
-            "shape -> 50-sample trapezoid with 5-sample ramps.")
+            "shape -> inverted 50-sample trapezoid with 5-sample ramps.")
         self.defaults_btn.clicked.connect(self._on_default_config)
         og.addWidget(self.cic_chk, 0, 0, 1, 2)
         og.addWidget(self.deint_chk, 1, 0, 1, 2)
