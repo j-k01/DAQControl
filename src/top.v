@@ -1087,6 +1087,7 @@ module top #(
 
     wire signed [31:0] cur_i_current;
     wire               cur_sample_tick;   // pulses (clk_50) when the player updates i_current
+    wire               cur_cycle_start;   // pulses (clk_50) when the player emits sample 0
     wire [127:0]       izh_i_mon;         // per-neuron current I+I_constant (clk_50, 4x Q16.16)
     izh_current_player #(
         .ADDR_W (10),
@@ -1104,8 +1105,18 @@ module top #(
         .bram_data         (cur_wave_fabric_dout),
         .i_current         (cur_i_current),
         .sample_tick       (cur_sample_tick),
+        .cycle_start       (cur_cycle_start),
         .running           ()
     );
+
+    // Toggle in clk_50 that flips on each injection-window start (sample 0).  A
+    // 1-cycle clk_50 pulse is CDC'd into the ADC RX domain (below) to arm a
+    // trigger-synchronized capture at the exact start of the current injection.
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg cur_cycle_start_tog = 1'b0;
+    always @(posedge clk_50) begin
+        if (neuron_rst)          cur_cycle_start_tog <= 1'b0;
+        else if (cur_cycle_start) cur_cycle_start_tog <= ~cur_cycle_start_tog;
+    end
 
     izh_dac_bank #(
         .ADDR_W (6)
@@ -1871,7 +1882,35 @@ module top #(
         end
     end
 
-    wire adc_capture_start = adc_capture_req_sync[2] ^ adc_capture_req_sync[1];
+    // Trigger-synchronized capture (RW3[7]=1): the RW3[3] edge ARMS instead of
+    // firing, and the next current-player sample-0 pulse (cur_cycle_start, CDC'd
+    // into this ADC RX domain) fires the capture -- so every capture begins at the
+    // identical current-injection phase.  RW3[7]=0 = original immediate behavior.
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [2:0] cur_cyc_start_sync = 3'b000;
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] cap_trig_mode_sync = 2'b00;
+    reg cap_armed = 1'b0;
+
+    wire adc_capture_req_edge = adc_capture_req_sync[2] ^ adc_capture_req_sync[1];
+    wire cur_cycle_start_rx   = cur_cyc_start_sync[2]   ^ cur_cyc_start_sync[1];
+    wire cap_trig_mode_rx     = cap_trig_mode_sync[1];
+
+    always @(posedge gth_rx_usrclk2) begin
+        if (adc_rx_reset) begin
+            cur_cyc_start_sync <= 3'b000;
+            cap_trig_mode_sync <= 2'b00;
+            cap_armed          <= 1'b0;
+        end else begin
+            cur_cyc_start_sync <= {cur_cyc_start_sync[1:0], cur_cycle_start_tog};
+            cap_trig_mode_sync <= {cap_trig_mode_sync[0], rw_reg3[7]};
+            if (adc_capture_req_edge && cap_trig_mode_rx)
+                cap_armed <= 1'b1;          // RW3[3] edge arms; waits for injection start
+            else if (cur_cycle_start_rx)
+                cap_armed <= 1'b0;          // fired at the injection-window start
+        end
+    end
+
+    wire adc_capture_start = cap_trig_mode_rx ? (cur_cycle_start_rx & cap_armed)
+                                              : adc_capture_req_edge;
     wire [63:0] adc_ch0_capture = adc1_litejesd_ready_async ? adc_ch0_async : 64'd0;
     wire [63:0] adc_ch1_capture = adc1_litejesd_ready_async ? adc_ch1_async : 64'd0;
     wire [63:0] adc_ch2_capture = adc2_litejesd_ready_async ? adc_ch2_async : 64'd0;

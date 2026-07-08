@@ -139,6 +139,7 @@
 #if HAS_BRAM_DATAPLANE
 #define RW3_CAPTURE_START      (1u << 3)
 #define RW3_DAC_PROGRAM_EN     (1u << 6)
+#define RW3_CAPTURE_TRIG_MODE  (1u << 7)  /* 1 = arm ADC capture on current-injection start */
 #endif
 #define RW3_DAC_SOURCE_SHIFT   4
 #define RW3_DAC_SOURCE_MASK    (3u << RW3_DAC_SOURCE_SHIFT)
@@ -2219,22 +2220,12 @@ static void cmd_dprd(u32 channel, u32 start_word, u32 words)
     }
 }
 
-static void cmd_capture(u32 frames, int use_dac_program)
+/* Emit the FE10CAFE sync then stream the captured BRAM (ADC0=ch0/ch1 then
+ * ADC1=ch2/ch3, little-endian).  Shared by cmd_capture and cmd_capture_triggered. */
+static void stream_capture_bram(u32 frames)
 {
-    u32 status = 0;
     u32 frame;
     u32 word;
-
-    if (frames == 0u || frames > ADC_CAPTURE_FRAMES) {
-        frames = ADC_CAPTURE_FRAMES;
-    }
-    trigger_capture(use_dac_program);
-    if (!wait_capture_done(&status)) {
-        send_str("ERR capture timeout; ");
-        send_hex(status);
-        send_str("\r\n");
-        return;
-    }
 
     send_byte(CAPTURE_SYNC0);
     send_byte(CAPTURE_SYNC1);
@@ -2259,6 +2250,65 @@ static void cmd_capture(u32 frames, int use_dac_program)
             send_byte((u8)((sample >> 24) & 0xFFu));
         }
     }
+}
+
+static void cmd_capture(u32 frames, int use_dac_program)
+{
+    u32 status = 0;
+
+    if (frames == 0u || frames > ADC_CAPTURE_FRAMES) {
+        frames = ADC_CAPTURE_FRAMES;
+    }
+    trigger_capture(use_dac_program);
+    if (!wait_capture_done(&status)) {
+        send_str("ERR capture timeout; ");
+        send_hex(status);
+        send_str("\r\n");
+        return;
+    }
+    stream_capture_bram(frames);
+}
+
+/* Trigger-synchronized one-shot capture: arm the ADC capture, then restart the
+ * current source to sample 0.  The player's sample-0 (cycle_start) pulse fires
+ * the armed capture in hardware, so every burst begins at the identical
+ * injection phase -- ideal for averaging many identical bursts.  Requires the
+ * current source to have been configured (CURS/CURP/CURW) first. */
+static void cmd_capture_triggered(u32 frames)
+{
+    u32 status = 0;
+    u32 ctrl;
+
+    if (frames == 0u || frames > ADC_CAPTURE_FRAMES) {
+        frames = ADC_CAPTURE_FRAMES;
+    }
+
+    /* select "arm on current-injection start" mode */
+    Xil_Out32(RW_REG3, Xil_In32(RW_REG3) | RW3_CAPTURE_TRIG_MODE);
+    short_delay();
+
+    /* arm: the RW3[3] edge latches the armed flag (DAC loopback kept running) */
+    trigger_capture(1);
+    short_delay();
+
+    /* restart the current source to sample 0; its cycle_start fires the armed
+     * capture at the exact injection-window start (one-shot: replays 0..last once) */
+    cur_player_restart_tog ^= 1u;
+    ctrl = Xil_In32(CUR_PLAYER_CTRL_REG);
+    ctrl = (ctrl & ~CUR_PLAYER_RESTART) |
+           (cur_player_restart_tog ? CUR_PLAYER_RESTART : 0u);
+    Xil_Out32(CUR_PLAYER_CTRL_REG, ctrl);
+
+    if (!wait_capture_done(&status)) {
+        Xil_Out32(RW_REG3, Xil_In32(RW_REG3) & ~RW3_CAPTURE_TRIG_MODE);
+        send_str("ERR capture timeout; ");
+        send_hex(status);
+        send_str("\r\n");
+        return;
+    }
+    /* leave trigger mode so a plain PCAP behaves normally afterwards */
+    Xil_Out32(RW_REG3, Xil_In32(RW_REG3) & ~RW3_CAPTURE_TRIG_MODE);
+    stream_capture_bram(frames);
 }
 
 #endif
@@ -2968,6 +3018,7 @@ static void cmd_help(void)
     send_str("  CAPS             print ADC BRAM capture status\r\n");
     send_str("  CAPT [frames]    capture 256-bit adc_ch0..3 frames; stream 8 u32 words/frame\r\n");
     send_str("  PCAP [frames]    restart DAC BRAM program, then capture ADC frames\r\n");
+    send_str("  PCAPT [frames]   arm+restart current source; capture synced to injection start\r\n");
 #else
     send_str("  PROG/CAPS/CAPT/PCAP unavailable; rebuild with --with-bram-dataplane\r\n");
 #endif
@@ -3231,6 +3282,12 @@ static void process_cmd(void)
         u32 frames = ADC_CAPTURE_FRAMES;
         parse_u32_arg(&p, &frames);
         cmd_capture(frames, 0);
+    } else if (strncmp(cmd, "PCAPT", 5) == 0) {
+        /* trigger-synchronized one-shot capture (arm + restart current source) */
+        char *p = &cmd[5];
+        u32 frames = ADC_CAPTURE_FRAMES;
+        parse_u32_arg(&p, &frames);
+        cmd_capture_triggered(frames);
     } else if (strncmp(cmd, "PCAP", 4) == 0) {
         char *p = &cmd[4];
         u32 frames = ADC_CAPTURE_FRAMES;

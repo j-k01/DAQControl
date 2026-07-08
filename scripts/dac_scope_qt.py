@@ -565,6 +565,14 @@ class DacControl:
         it and BRAM would read as noise)."""
         return self._capture(f"PCAP {frames}", frames)
 
+    def uart_capture_triggered(self, frames):
+        """PCAPT <frames> -> 4-channel snapshot armed to the exact start of the
+        current-injection window (one-shot). Firmware arms the ADC capture, then
+        restarts the current source; the player's sample-0 pulse fires the capture
+        in hardware, so repeated PCAPT bursts are phase-identical -> averageable.
+        Requires the current source to be configured first (CURS/CURP/CURW)."""
+        return self._capture(f"PCAPT {frames}", frames)
+
     def set_neuron_param(self, target, param, q16):
         """Live single-param update: writes the config bank and pulses the
         reload. target = 'all' or 0..3; param in a/b/c/d/i/iconst/dt/period."""
@@ -1353,6 +1361,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
     neuron_done = QtCore.pyqtSignal(str, bool)  # (target, ok) program-neuron result
     dac_done = QtCore.pyqtSignal(int, bool, str)  # (ch, ok, detail) program-DAC result
     autosampled = QtCore.pyqtSignal(object)   # emits {ch: int16[], '_cov'} each auto-sample
+    burst_result = QtCore.pyqtSignal(object)  # emits {'caps':[...], 'frames':int} triggered burst
+    burst_progress = QtCore.pyqtSignal(int, int)  # (done, total) during a triggered burst
 
     def __init__(self, args):
         super().__init__()
@@ -1706,6 +1716,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.capt_frames = QtWidgets.QComboBox()
         self.capt_frames.addItems([f"{n} frames" for n in CAPT_FRAME_OPTIONS])
         self.capt_frames.setCurrentText("512 frames")
+        # Triggered burst average: N repeated PCAPT captures, each hardware-synced
+        # to the current-injection window start, then aligned + averaged.
+        self.burst_n = QtWidgets.QSpinBox()
+        self.burst_n.setRange(2, 256)
+        self.burst_n.setValue(16)
+        self.burst_n.setPrefix("N=")
+        self.burst_btn = QtWidgets.QPushButton("Trig Burst Avg")
+        self.burst_btn.clicked.connect(self._on_burst)
         # one-shot burst-over-Ethernet snapshot (BCAP+BRDO): fresh full-rate
         # capture of the selected MB/chip, far more reliable than the cyclic
         # continuous stream. Size is selectable via the combo.
@@ -1738,6 +1756,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         ag.addWidget(self.collect_mb_cb, 1, 0)
         ag.addWidget(self.collect_btn, 1, 1)
         ag.addWidget(self.stream_btn, 2, 0, 1, 2)
+        ag.addWidget(self.burst_n, 3, 0)
+        ag.addWidget(self.burst_btn, 3, 1)
         right_col.addWidget(acq)        # outside the scroll area -> always visible
 
         left.addStretch(1)
@@ -1758,6 +1778,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._apply_view_ranges()
         self._set_controls_enabled(False)
         self.captured.connect(self._show_capture)
+        self.burst_result.connect(self._show_burst)
+        self.burst_progress.connect(
+            lambda i, n: self.status.setText(f"Triggered burst: {i}/{n} captured..."))
         self.collected.connect(self._on_collected)
         self.stat_result.connect(self._show_stat)
         self.neuron_done.connect(self._on_neuron_done)
@@ -1997,6 +2020,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._controls_enabled = on
         for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.collect_btn,
                   self.collect_mb_cb, self.stream_btn, self.dt_cb,
+                  self.burst_btn, self.burst_n,
                   self.np_loadprof, self.np_saveprof, self.cur_preview_btn):
             w.setEnabled(on)
         for b in self.np_btns.values():
@@ -2283,6 +2307,97 @@ class ScopeWindow(QtWidgets.QMainWindow):
         sub = save_capture(self.args.capture_dir, "uart", chans, 1.0e9)
         where = f"  -> {sub}" if sub else "  (save FAILED)"
         self.status.setText(f"UART capture: {len(chans[0])} samples/ch.{where}")
+
+    # ---- triggered burst average (N x PCAPT, hardware-synced to injection) ----
+    def _on_burst(self):
+        if not self.dac:
+            return
+        frames = CAPT_FRAME_OPTIONS[self.capt_frames.currentIndex()]
+        n = self.burst_n.value()
+        self.burst_btn.setEnabled(False)
+        self.status.setText(f"Triggered burst: 0/{n} ...")
+
+        def work():
+            caps = []
+            for i in range(n):
+                d = self.dac.uart_capture_triggered(frames)
+                if d is None:
+                    self.burst_result.emit(None)
+                    return
+                caps.append(d)
+                self.burst_progress.emit(i + 1, n)
+            self.burst_result.emit({"caps": caps, "frames": frames})
+        self._bg(work)
+
+    def _show_burst(self, data):
+        self.burst_btn.setEnabled(True)
+        if data is None:
+            self.status.setText("Triggered burst failed (no sync / timeout).")
+            return
+        caps = data["caps"]
+        n = len(caps)
+        L = min(len(c[0]) for c in caps)
+        anchor = 0
+        # de-interleaved float counts, truncated to the common length
+        stack = {ch: np.stack([self._deint(c[ch]).astype(np.float64)[:L]
+                               for c in caps]) for ch in range(4)}
+        # Alignment sanity: cross-correlate each rep to rep 0 on the anchor channel.
+        # A correct hardware trigger gives ~0 offset; we still roll to remove any
+        # residual jitter before averaging (belt and suspenders).
+        ref = stack[anchor][0] - stack[anchor][0].mean()
+        offs = []
+        for i in range(n):
+            sig = stack[anchor][i] - stack[anchor][i].mean()
+            xc = np.correlate(sig, ref, mode="full")
+            off = int(np.argmax(xc) - (L - 1))
+            if abs(off) > L // 4:      # weak/noisy anchor -> don't trust wild shifts
+                off = 0
+            offs.append(off)
+            for ch in range(4):
+                stack[ch][i] = np.roll(stack[ch][i], -off)
+        avg = {ch: stack[ch].mean(axis=0) for ch in range(4)}
+
+        win = pg.GraphicsLayoutWidget()
+        win.setWindowTitle(f"Triggered burst average (N={n})")
+        win.setBackground("#101418")
+        win.resize(900, 720)
+        t = np.arange(L)
+        for ch in range(4):
+            p = win.addPlot(row=ch, col=0)
+            p.showGrid(x=True, y=True, alpha=0.25)
+            p.setLabel("left", f"ch{ch}", units="V")
+            for i in range(n):                       # faint raw bursts
+                col = pg.mkColor(CH_COLORS[ch]); col.setAlpha(45)
+                p.plot(t, stack[ch][i] * VOLTS_PER_COUNT,
+                       pen=pg.mkPen(col, width=0.6))
+            p.plot(t, avg[ch] * VOLTS_PER_COUNT,       # bold average
+                   pen=pg.mkPen("#ffffff", width=1.4))
+        omin, omax = min(offs), max(offs)
+        win.addLabel(f"N={n} bursts aligned+averaged  (x = ns @ 1 GS/s; "
+                     f"trigger jitter {omin}..{omax} samples -> expect ~0)",
+                     row=4, col=0)
+        win.show()
+        self._popup = win
+        sub = self._save_burst(caps, avg, offs)
+        where = f"  -> {sub}" if sub else "  (save FAILED)"
+        self.status.setText(
+            f"Triggered burst avg: N={n}, {L} samp/ch, jitter {omin}..{omax}.{where}")
+
+    def _save_burst(self, caps, avg, offs):
+        try:
+            import os
+            import time
+            d = self.args.capture_dir
+            os.makedirs(d, exist_ok=True)
+            path = os.path.join(d, f"burst_{time.strftime('%Y%m%d_%H%M%S')}.npz")
+            kw = {"offsets": np.asarray(offs)}
+            for ch in range(4):
+                kw[f"raw_ch{ch}"] = np.stack([c[ch] for c in caps])
+                kw[f"avg_ch{ch}"] = np.asarray(avg[ch])
+            np.savez_compressed(path, **kw)
+            return path
+        except Exception:
+            return None
 
     # ---- one-shot burst capture over Ethernet (BCAP + BRDO) ----
     def _on_collect_eth(self):

@@ -43,6 +43,7 @@ module izh_current_player #(
     // ---- outputs ------------------------------------------------------------
     output reg  [DATA_W-1:0]  i_current,        // held current sample (-> neuron + DAC)
     output reg                sample_tick,      // 1-cycle pulse when i_current updates
+    output reg                cycle_start,      // 1-cycle pulse when i_current becomes sample 0
     output wire               running           // status: playback active
 );
     localparam [ADDR_W-1:0] ZERO_ADDR = {ADDR_W{1'b0}};
@@ -66,6 +67,7 @@ module izh_current_player #(
 
     always @(posedge clk) begin
         sample_tick <= 1'b0;
+        cycle_start <= 1'b0;
         if (reset) begin
             bram_addr <= ZERO_ADDR;
             div_cnt   <= 16'd0;
@@ -98,6 +100,10 @@ module izh_current_player #(
                     div_cnt     <= 16'd0;
                     i_current   <= bram_data;     // sample for out_idx
                     sample_tick <= 1'b1;
+                    // Injection-window start: pulse when sample 0's value lands on
+                    // i_current (first tick after restart, and every loop wrap).
+                    if (out_idx == ZERO_ADDR)
+                        cycle_start <= 1'b1;
                     if (hold_last && (out_idx == eff_last)) begin
                         done      <= 1'b1;
                         bram_addr <= eff_last;
