@@ -126,7 +126,10 @@ if [ -z "$VIVADO" ]; then
 fi
 
 echo "==> FPGA bitstream + MicroBlaze firmware   ($VIVADO)"
-run "$VIVADO" -mode batch -source quiet.tcl -tclargs program_and_load.tcl
+# A git-pull deployment must load the tracked bit/ELF pair together. Never let
+# an ignored, stale local Vitis workspace ELF override the pulled firmware.
+run "$VIVADO" -mode batch -source quiet.tcl -tclargs program_and_load.tcl \
+    prebuilt/top.bit prebuilt/firmware.elf
 
 if [ "$DO_ETH" -eq 1 ]; then
     if [ -z "$XSCT" ]; then

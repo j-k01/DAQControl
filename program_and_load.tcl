@@ -198,6 +198,9 @@ proc load_firmware {script_dir elf_file} {
         [concat $xsct_cmd [list [file join $script_dir load_mb_firmware.tcl] $elf_file]]
 }
 
+puts "Selected FPGA bitstream: $bit_file"
+puts "Selected MicroBlaze firmware: $elf_file"
+
 program_bitstream $script_dir $bit_file $probes_file
 load_firmware $script_dir $elf_file
 

@@ -128,8 +128,17 @@ if (-not $vivadoExe) {
     exit 1
 }
 
+$trackedBit = Join-Path $scriptDir "prebuilt\top.bit"
+$trackedElf = Join-Path $scriptDir "prebuilt\firmware.elf"
 Write-Host "==> FPGA bitstream + MicroBlaze firmware   ($vivadoExe)" -ForegroundColor Green
-& $vivadoExe -mode batch -source quiet.tcl -tclargs program_and_load.tcl
+Write-Host "    bit: $trackedBit" -ForegroundColor DarkGray
+Write-Host "    elf: $trackedElf" -ForegroundColor DarkGray
+# Pass both tracked artifacts explicitly. program_and_load.tcl's developer
+# default prefers a local Vitis workspace ELF when one exists; that is useful
+# during builds but unsafe on a git-pull target because the ignored workspace
+# may be stale and incompatible with the newly pulled bitstream.
+& $vivadoExe -mode batch -source quiet.tcl -tclargs program_and_load.tcl `
+    $trackedBit $trackedElf
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Vivado step failed (exit $LASTEXITCODE). Not loading the A53 app."
     exit 1

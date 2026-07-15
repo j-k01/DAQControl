@@ -655,7 +655,7 @@ class DacControl:
     def uart_capture(self, frames):
         """PCAP <frames> -> 4-channel snapshot. PCAP keeps RW3_DAC_PROGRAM_EN
         set so BRAM channels keep playing during the capture (plain CAPT clears
-        it and BRAM would read as noise)."""
+        it and BRAM would read as noise). It never changes the DAC crossbar."""
         return self._capture(f"PCAP {frames}", frames)
 
     def uart_capture_triggered(self, frames):
@@ -1844,14 +1844,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "GUI reports correlation offsets but never software-shifts them.")
         self.burst_btn.clicked.connect(self._on_burst)
         self.burst_step_chk = QtWidgets.QCheckBox("fit step")
-        # Off by default: when on, every burst REWRITES DAC0's crossbar route
-        # (NSRC 0 current) and replaces the loaded current waveform with a
-        # window-fit step -- surprising when a demo/experiment config is live.
+        # Off by default: when on, replace the loaded current waveform with a
+        # window-fit step. Acquisition never changes any crossbar route.
         self.burst_step_chk.setChecked(False)
         self.burst_step_chk.setToolTip(
             "Before the burst, program a one-shot current step sized to the "
             "capture window (0 baseline, amp for most of the window, 0 settle "
-            "after) and route it to DAC0.")
+            "after). This does not change the XBAR. Select Current source on "
+            "the desired DAC yourself if you want a direct loopback trace.")
         self.burst_amp = QtWidgets.QDoubleSpinBox()
         self.burst_amp.setRange(0.1, 30.0)
         self.burst_amp.setValue(6.0)
@@ -2449,6 +2449,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         n = self.burst_n.value()
         do_step = self.burst_step_chk.isChecked()
         amp = self.burst_amp.value()
+        # Snapshot the confirmed route only for optional direct-step latency
+        # annotation. Capture must never alter it.
+        current_route_ch = next(
+            (ch for ch, label in enumerate(self._applied_label)
+             if label == "Current source"), None)
         self.burst_btn.setEnabled(False)
         self.status.setText(f"Triggered burst: 0/{n} ...")
 
@@ -2456,14 +2461,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
             try:
                 meta = None
                 if do_step:
-                    # route the current source to DAC0 (your loopback) and program
-                    # a one-shot step sized to the capture window
-                    self.dac.cmd("NSRC 0 current", ok=("DAC xbar", "ERR"))
+                    # Program the injected waveform only. The user's XBAR
+                    # configuration is experiment state and must be preserved.
                     reply, meta = self.dac.program_step_for_capture(frames, amp)
                     if "OK CURW" not in (reply or ""):
                         self.burst_result.emit(
                             {"error": f"step program failed: {reply!r}"})
                         return
+                    meta["current_route_ch"] = current_route_ch
                 caps = []
                 for i in range(n):
                     d = self.dac.uart_capture_triggered(frames)
@@ -2505,15 +2510,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
         offs = diag["offsets"]
         avg = {ch: stack[ch].mean(axis=0) for ch in range(4)}
 
-        # Measure where the step actually lands: first sample of the aligned
-        # average that departs from the pre-step baseline.  Fit-step explicitly
-        # routes current to DAC0, so latency is always measured on ADC0 even if
-        # another channel was a stronger correlation diagnostic.
+        # If the user explicitly routed Current source to a DAC, measure where
+        # its direct loopback step lands. Fit-step itself never changes XBAR.
         meta = data.get("meta")
         onset = None
         lat_txt = ""
-        if meta:
-            a = avg[0]
+        current_route_ch = meta.get("current_route_ch") if meta else None
+        if meta and current_route_ch is not None:
+            a = avg[current_route_ch]
             base = a[:max(8, L // 20)]
             mu, sd = base.mean(), base.std() + 1e-6
             hit = np.where(np.abs(a - mu) >
@@ -2521,9 +2525,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
             if len(hit):
                 onset = int(hit[0])
                 lat = onset - meta["step_ns"]           # ADC sample = 1 ns
-                lat_txt = (f"; step @ {onset} ns (programmed baseline "
+                lat_txt = (f"; ADC{current_route_ch} step @ {onset} ns "
+                           f"(programmed baseline "
                            f"{meta['step_ns']:.0f} ns -> loopback latency "
                            f"~{lat:.0f} ns)")
+        elif meta:
+            lat_txt = "; step programmed; Current source not routed for direct readback"
 
         win = pg.GraphicsLayoutWidget()
         win.setWindowTitle(f"Triggered burst average (N={n})")
@@ -2540,7 +2547,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                        pen=pg.mkPen(col, width=0.6))
             p.plot(t, avg[ch] * VOLTS_PER_COUNT,       # bold average
                    pen=pg.mkPen("#ffffff", width=1.4))
-            if ch == 0 and onset is not None:          # fit-step is DAC0 -> ADC0
+            if ch == current_route_ch and onset is not None:
                 p.addLine(x=onset, pen=pg.mkPen("#E57373", width=1,
                                                 style=QtCore.Qt.DashLine))    # measured step
                 p.addLine(x=meta["step_ns"], pen=pg.mkPen("#81C784", width=1,
@@ -2933,6 +2940,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
             if hasattr(self, "src_cbs") and len(self.src_cbs) >= 2:
                 self.src_cbs[0].setCurrentText("Current source")
                 self.src_cbs[1].setCurrentText("Spike 0")
+                # Demo setup explicitly changed these two routes and received
+                # successful NSRC replies, so keep the live XBAR display honest.
+                self._set_applied_route(0, "Current source")
+                self._set_applied_route(1, "Spike 0")
             self.status.setText(
                 "Chattering demo ready: all neurons chattering (i=0), 10 mA "
                 "step (25% baseline, 1024 samp, hold), current->DAC0, "
