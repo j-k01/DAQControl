@@ -11,11 +11,12 @@ on connect -- acquisition is opt-in:
 
   - Connection: pick the UART COM port and connect/reconnect (no streaming).
   - Per channel (DAC0..3): pick any crossbar source -- Off / DDS / BRAM 0-3 /
-    Spike 0-3 / Monitor 0-3 (per-neuron current) / Current source / Tag -- from the source
-    dropdown (+ a neuron-profile dropdown), then hit "Confirm route" to commit:
-    the dropdowns only stage a choice; the button sends NSRC (+ the neuron
-    profile when the source is a Spike/Monitor) and the per-DAC status line
-    confirms "OK — <source>" once the board is reconfigured. The XBAR tab draws
+    Spike 0-3 / Monitor 0-3 (per-neuron current) / Current source / Tag -- from
+    the source dropdown, then hit "Confirm route" to commit. Confirming sends
+    only NSRC; choosing a neuron-derived source never programs or resets that
+    neuron. Neuron profiles are applied exclusively from the Neuron tab. The
+    per-DAC status line confirms "OK — <source>" once the route is applied.
+    The XBAR tab draws
     the 16:4 crossbar as lines from each source to its DAC; a route is drawn
     SOLID only once it is actually applied (a staged-but-unconfirmed pick shows
     as a faint dashed line), so the picture never claims a switch the board
@@ -1381,13 +1382,11 @@ class CrossbarView(QtWidgets.QWidget):
         self.colors = list(colors)
         self.applied = [None, None, None, None]   # live source idx per DAC
         self.pending = [None, None, None, None]   # staged source idx per DAC
-        self.profiles = [None, None, None, None]  # spike/monitor profile note
         self.setMinimumHeight(24 * len(self.sources) + 24)
         self.setMinimumWidth(360)
 
-    def set_applied(self, ch, idx, profile=None):
+    def set_applied(self, ch, idx):
         self.applied[ch] = idx
-        self.profiles[ch] = profile
         self.update()
 
     def set_pending(self, ch, idx):
@@ -1504,8 +1503,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         # (only updated once a route is committed), never the staged dropdown.
         self.custom_profiles = load_custom_profiles()
         self._applied_label = [None, None, None, None]    # live source per DAC
-        self._applied_profile = [None, None, None, None]  # live profile per DAC
-        self._dac_prog = [None, None, None, None]          # (label,prof,nidx) in flight
+        self._dac_prog = [None, None, None, None]          # source label in flight
         self._prog_profile_name = {}                       # target -> profile being set
         self.neuron_applied_profile = {"0": None, "1": None, "2": None, "3": None}
         self.setWindowTitle("DAC scope + control (PyQtGraph)")
@@ -1613,10 +1611,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
         cur_lay.addWidget(self.cur_preview_btn)
         right.addWidget(cur_box)
 
-        # per-channel source + neuron profile. The radio/profile only STAGE a
-        # selection; nothing reaches the board until the per-DAC "Program"
-        # button commits it (NSRC + NEUR), then the status line confirms.
-        self.src_cbs, self.prof_cbs = [], []
+        # Per-channel crossbar source. Selection only STAGES a route; nothing
+        # reaches the board until "Confirm route" sends NSRC. Neuron profiles
+        # intentionally live only on the Neuron tab.
+        self.src_cbs = []
         self.dac_btns, self.dac_status = [], []
         initial = args.initial if args.initial in SOURCE_LABELS else "DDS"
         for ch in range(4):
@@ -1626,27 +1624,19 @@ class ScopeWindow(QtWidgets.QMainWindow):
             src.addItems(SOURCE_LABELS)
             src.setCurrentText(initial)
             src.setToolTip("16:4 DAC crossbar (reg17): route any source to this "
-                           "DAC. One combo means one legal source per output.")
+                           "DAC. Routing does not program or reset neurons.")
             src.currentIndexChanged.connect(self._refresh_xbar_preview)
-            src.currentIndexChanged.connect(self._refresh_xbar_profile_enable)
             g.addWidget(QtWidgets.QLabel("source"), 0, 0)
             g.addWidget(src, 0, 1, 1, 2)
             self.src_cbs.append(src)
-            prof = QtWidgets.QComboBox()
-            prof.addItems(NEURON_PROFILES)
-            prof.setCurrentIndex(ch % len(NEURON_PROFILES))
-            prof.currentIndexChanged.connect(self._refresh_xbar_preview)
-            g.addWidget(QtWidgets.QLabel("profile"), 1, 0)
-            g.addWidget(prof, 1, 1, 1, 2)
-            self.prof_cbs.append(prof)
             btn = QtWidgets.QPushButton("Confirm route")
             btn.clicked.connect(self._make_program_dac_cb(ch))
-            g.addWidget(btn, 2, 0, 1, 3)
+            g.addWidget(btn, 1, 0, 1, 3)
             self.dac_btns.append(btn)
-            st = QtWidgets.QLabel("not programmed")
+            st = QtWidgets.QLabel("not routed")
             st.setStyleSheet("color:#9fb3c8; font-size:11px;")
             st.setWordWrap(True)
-            g.addWidget(st, 3, 0, 1, 3)
+            g.addWidget(st, 2, 0, 1, 3)
             self.dac_status.append(st)
             left.addWidget(box)
 
@@ -1945,7 +1935,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
         right_col.addWidget(self.status)   # always-visible strip, not scrollable
 
         self._refresh_profile_combos()
-        self._refresh_xbar_profile_enable()
         self._refresh_xbar_preview()
         self._refresh_xbar_summary()
         ys, cps, actual = gen_current_wave("Sine", 10.0, 5000.0)
@@ -1995,16 +1984,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
             f"{state}: {kind}, {ys.size} samples, cps={int(cps)}, "
             f"{freq}, peak {float(ys.max()):.3f} mA")
 
-    def _refresh_xbar_profile_enable(self, *_):
-        if not hasattr(self, "src_cbs"):
-            return
-        controls_on = getattr(self, "_controls_enabled", True)
-        for ch, cb in enumerate(self.prof_cbs):
-            label = self.src_cbs[ch].currentText()
-            cb.setEnabled(controls_on and
-                          (label.startswith("Spike ") or
-                           label.startswith("Monitor ")))
-
     def _refresh_xbar_preview(self, *_):
         """A dropdown change only STAGES a route -- draw it as a dashed pending
         line. The solid (live) line is set separately, on apply, so the picture
@@ -2016,14 +1995,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
             idx = SOURCE_LABELS.index(label) if label in SOURCE_LABELS else None
             self.xbar_view.set_pending(ch, idx)
 
-    def _set_applied_route(self, ch, label, profile=None):
+    def _set_applied_route(self, ch, label):
         """Record a route as live-on-the-board and redraw the solid line +
         summary. Called only after the board confirms (NSRC OK)."""
         self._applied_label[ch] = label
-        self._applied_profile[ch] = profile
         idx = SOURCE_LABELS.index(label) if label in SOURCE_LABELS else None
         if hasattr(self, "xbar_view"):
-            self.xbar_view.set_applied(ch, idx, profile)
+            self.xbar_view.set_applied(ch, idx)
         self._refresh_xbar_summary()
 
     def _refresh_xbar_summary(self):
@@ -2034,9 +2012,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
             lbl = self._applied_label[ch]
             if lbl is None:
                 rows.append(f"DAC{ch} ← (not applied)")
-            elif (self._applied_profile[ch]
-                  and (lbl.startswith("Spike ") or lbl.startswith("Monitor "))):
-                rows.append(f"DAC{ch} ← {lbl} [{self._applied_profile[ch]}]")
             else:
                 rows.append(f"DAC{ch} ← {lbl}")
         self.xbar_summary.setText("\n".join(rows))
@@ -2075,7 +2050,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         """Rebuild every profile dropdown to include the built-ins plus any
         saved custom profiles, preserving each combo's current selection."""
         names = list(NEURON_PROFILES) + list(self.custom_profiles.keys())
-        combos = list(self.neuron_profile_cbs.values()) + list(self.prof_cbs)
+        combos = list(self.neuron_profile_cbs.values())
         for cb in combos:
             cur = cb.currentText()
             cb.blockSignals(True)
@@ -2091,7 +2066,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
         j = self.np_loadprof.findText(cur)
         self.np_loadprof.setCurrentIndex(j if j > 0 else 0)
         self.np_loadprof.blockSignals(False)
-        self._refresh_xbar_profile_enable()
 
     def _on_save_profile(self):
         name, ok = QtWidgets.QInputDialog.getText(
@@ -2135,7 +2109,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
         # re-confirms them (a failed/old connect must not show phantom live lines)
         for ch in range(4):
             self._applied_label[ch] = None
-            self._applied_profile[ch] = None
         if hasattr(self, "xbar_view"):
             self.xbar_view.reset()
         self._refresh_xbar_preview()
@@ -2174,7 +2147,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         for ch in range(4):
             self.dac_status[ch].setText(f"OK — {self.args.initial}")
             self.dac_status[ch].setStyleSheet("color:#81C784; font-size:11px;")
-            self._set_applied_route(ch, self.args.initial, None)
+            self._set_applied_route(ch, self.args.initial)
         # base_setup() programmed neuron n with the n-th built-in profile
         for n in range(4):
             self._set_neuron_running(str(n), NEURON_PROFILES[n])
@@ -2211,11 +2184,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             sp.setEnabled(on)
         for cb in self.src_cbs:
             cb.setEnabled(on)
-        for cb in self.prof_cbs:
-            cb.setEnabled(on)
         for b in self.dac_btns:
             b.setEnabled(on)
-        self._refresh_xbar_profile_enable()
 
     def _show_stat(self, is_daq, health):
         port = self.dac.port if self.dac else self.port_cb.currentText()
@@ -2252,34 +2222,23 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._pulse_win.activateWindow()
 
     def _program_dac(self, ch):
-        """Commit DACn's staged selection: route the picked source (NSRC) and,
-        when that source is a spike/current-monitor of a neuron, also program
-        that neuron's profile (NEUR); report OK/ERR on the per-DAC status line."""
+        """Commit DACn's staged source using NSRC only.
+
+        Routing a Spike/Monitor output must never program or reset its neuron;
+        neuron configuration belongs exclusively to the Neuron tab.
+        """
         if not self.dac:
             return
         label = self.src_cbs[ch].currentText()
-        profile = self.prof_cbs[ch].currentText()
-        # Spike/Monitor sources name a neuron index -> (re)program that neuron.
-        neuron_idx = None
-        if label.startswith("Spike ") or label.startswith("Monitor "):
-            neuron_idx = int(label.split()[-1])
-        self._dac_prog[ch] = (label, profile, neuron_idx)
+        self._dac_prog[ch] = label
         self.dac_btns[ch].setEnabled(False)
-        self.dac_status[ch].setText(f"programming {label}…")
+        self.dac_status[ch].setText(f"routing {label}…")
         self.dac_status[ch].setStyleSheet("color:#FFB74D; font-size:11px;")
 
         def work():
-            ok = True
             r = self.dac.set_source(ch, label)
-            if not r or r.startswith("ERR"):
-                ok = False
-            detail = label
-            if neuron_idx is not None:
-                ok2, _ = self._apply_profile_blocking(neuron_idx, profile)
-                if not ok2:
-                    ok = False
-                detail = f"{label} (neuron {neuron_idx}: {profile})"
-            self.dac_done.emit(ch, ok, detail)
+            ok = bool(r and not r.startswith("ERR"))
+            self.dac_done.emit(ch, ok, label)
         self._bg(work)
 
     def _on_dac_done(self, ch, ok, detail):
@@ -2287,18 +2246,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if ok:
             self.dac_status[ch].setText(f"OK — {detail}")
             self.dac_status[ch].setStyleSheet("color:#81C784; font-size:11px;")
-            # the route is now live: promote the staged pick to a solid line and
-            # reflect any neuron (re)program in the per-neuron profile display.
-            prog = self._dac_prog[ch]
-            if prog is not None:
-                label, profile, neuron_idx = prog
-                self._set_applied_route(
-                    ch, label, profile if neuron_idx is not None else None)
-                if neuron_idx is not None:
-                    self._set_neuron_running(str(neuron_idx), profile)
+            # The route is now live: promote the staged pick to a solid line.
+            label = self._dac_prog[ch]
+            if label is not None:
+                self._set_applied_route(ch, label)
         else:
             self.dac_status[ch].setText(f"ERR — {detail} not set")
             self.dac_status[ch].setStyleSheet("color:#E57373; font-size:11px;")
+        self._dac_prog[ch] = None
 
     def _on_cic(self, on):
         if self.dac:
@@ -2978,9 +2933,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
             if hasattr(self, "src_cbs") and len(self.src_cbs) >= 2:
                 self.src_cbs[0].setCurrentText("Current source")
                 self.src_cbs[1].setCurrentText("Spike 0")
-            if hasattr(self, "prof_cbs"):
-                for cb in self.prof_cbs:
-                    cb.setCurrentText("chattering")
             self.status.setText(
                 "Chattering demo ready: all neurons chattering (i=0), 10 mA "
                 "step (25% baseline, 1024 samp, hold), current->DAC0, "
