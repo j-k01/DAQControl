@@ -109,6 +109,16 @@ LABEL_TO_NSRC = {
     "Current source": "current",
     "Tag": "tag",
 }
+# Hardware reg17 codes.  Keep this explicit: the GUI display order deliberately
+# lists Current source before Tag, while the HDL/firmware encoding is Tag=14 and
+# Current source=15.  SOURCE_LABELS.index() is therefore not a valid code map.
+LABEL_TO_XBAR_CODE = {
+    "Off": 0, "DDS": 1,
+    "BRAM 0": 2, "BRAM 1": 3, "BRAM 2": 4, "BRAM 3": 5,
+    "Spike 0": 6, "Spike 1": 7, "Spike 2": 8, "Spike 3": 9,
+    "Monitor 0": 10, "Monitor 1": 11, "Monitor 2": 12, "Monitor 3": 13,
+    "Tag": 14, "Current source": 15,
+}
 WAVEFORMS = ["Sine", "Triangle", "Trapezoid", "Square", "Sawtooth"]
 CH_COLORS = ["#4FC3F7", "#81C784", "#FFB74D", "#E57373"]
 CAPT_FRAME_OPTIONS = [128, 256, 512, 1024, 2048, 4096]   # 4096 = firmware max
@@ -629,7 +639,7 @@ class DacControl:
             value = int(rb.split("=", 1)[1].strip(), 0)
         except (IndexError, ValueError):
             return f"ERR malformed XBar readback ({rb})"
-        expected = SOURCE_LABELS.index(label)
+        expected = LABEL_TO_XBAR_CODE[label]
         actual = (value >> (4 * int(ch))) & 0xF
         if actual != expected:
             return (f"ERR XBar readback DAC{ch}: requested {expected}, "
