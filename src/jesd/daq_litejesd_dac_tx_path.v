@@ -296,11 +296,22 @@ module daq_litejesd_dac_tx_path #(
     wire [63:0] preimage_converter2;
     wire [63:0] preimage_converter3;
 
+    // Board connector order is 0,2,1,3 at this preimage boundary.  Hardware
+    // loopback ownership measurements show logical source2 on connector DAC1
+    // (and therefore logical source1 on connector DAC2).  Swap only those two
+    // complete 64-bit streams before byte preimaging; sample/byte order within
+    // every stream remains unchanged.  This keeps the public DAC0..3 source
+    // contract aligned with the connector labels.
+    wire [63:0] connector_source0 = src_converter0;
+    wire [63:0] connector_source1 = src_converter2;
+    wire [63:0] connector_source2 = src_converter1;
+    wire [63:0] connector_source3 = src_converter3;
+
     dac_source_to_converter_preimage u_dac_source_to_converter_preimage (
-        .source0    (src_converter0),
-        .source1    (src_converter1),
-        .source2    (src_converter2),
-        .source3    (src_converter3),
+        .source0    (connector_source0),
+        .source1    (connector_source1),
+        .source2    (connector_source2),
+        .source3    (connector_source3),
         .converter0 (preimage_converter0),
         .converter1 (preimage_converter1),
         .converter2 (preimage_converter2),

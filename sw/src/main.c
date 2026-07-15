@@ -2294,15 +2294,15 @@ static void cmd_capture(u32 frames, int use_dac_program)
     stream_capture_bram(frames);
 }
 
-/* Deterministic pre-trigger reset for triggered captures.  Replays the current
- * waveform from sample 0 UNARMED (RW3[7] trig mode must already be selected so
- * the interim cycle_start is ignored), freezes the player a few samples in --
- * parking the output at the waveform's INITIAL value (0 for a zero-preamble
- * step) -- then waits for the analog path to settle.  Without this, hold mode
- * parks at the LAST sample (a step rests at its HIGH level) and a paused loop
- * parks at a random phase, so every repetition starts from a different DC
- * state and the AC-coupled transients never align across reps. */
-static void cur_player_reset_settle(void)
+/* Put every triggered repetition into the same complete initial state.  Replay
+ * the current waveform from sample 0 UNARMED, freeze it a few samples into its
+ * initial baseline, then reload all four neuron state machines (v/u as well as
+ * their profile/configuration).  The fixed wait covers the neuron config reader
+ * and lets the analog path settle before the capture is armed.  Without the
+ * neuron reload, only the stimulus restarts: v/u continue from the preceding
+ * repetition, so nominally identical current windows do not produce identical
+ * spike trains. */
+static void prepare_trigger_repetition(void)
 {
     u32 ctrl = Xil_In32(CUR_PLAYER_CTRL_REG);
     u32 cps = (ctrl >> CUR_PLAYER_CPS_SHIFT) & 0xFFFFu;
@@ -2320,7 +2320,12 @@ static void cur_player_reset_settle(void)
         (void)Xil_In32(RW_REG3);
     }
     Xil_Out32(CUR_PLAYER_CTRL_REG, ctrl & ~CUR_PLAYER_RUN);  /* freeze there */
-    /* let the AC-coupled analog path settle at the parked level (several us) */
+
+    /* The config-bank reader holds the selected neurons in reset while it
+     * reloads the complete shadow image, then releases them together. */
+    neuron_program(0xFu, 1u);
+
+    /* Let config loading finish and the AC-coupled path settle at baseline. */
     for (i = 0u; i < 4000u; i++) {
         (void)Xil_In32(RW_REG3);
     }
@@ -2349,7 +2354,7 @@ static void cmd_capture_triggered(u32 frames)
      * few samples in (output = the waveform's initial value, 0 for a step's
      * zero preamble), and let the AC-coupled loopback settle. Also keeps a
      * LOOPING waveform from firing the armed capture inside the arm delays. */
-    cur_player_reset_settle();
+    prepare_trigger_repetition();
 
     /* arm: the RW3[3] edge latches the armed flag (DAC loopback kept running) */
     trigger_capture(1);
@@ -2953,7 +2958,7 @@ static void cmd_burst_trig(char *args)
          * which also keeps a looping waveform from firing/completing the
          * capture inside the arm delays (the done-bit handshake below would
          * miss the whole rep). */
-        cur_player_reset_settle();
+        prepare_trigger_repetition();
 
         pulse_adc_capture();                /* RW3[3] edge: arm (keep DAC bits) */
         short_delay();

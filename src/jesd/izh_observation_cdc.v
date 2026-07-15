@@ -7,6 +7,7 @@
 //   - pure injected current, Q16.16
 //   - four per-neuron current monitors, Q16.16
 //   - four spike event bits
+//   - current-player cycle-start marker
 //
 // The neuron input current itself is not changed here.  The optional gain is
 // applied only to the pure-current DAC view (source 15) after the CDC.
@@ -19,18 +20,21 @@ module izh_observation_cdc #(
     input  wire [127:0]     monitor_q16,
     input  wire [3:0]       spike_flags,
     input  wire             capture,
+    input  wire             cycle_start,
 
     input  wire             dst_clk,
     input  wire [15:0]      pure_gain_q8_8,
     output reg  [255:0]     mon_words,
     output reg  [63:0]      current_word,
-    output reg  [3:0]       spike_start
+    output reg  [3:0]       spike_start,
+    output reg              cycle_start_dst = 1'b0
 );
-    localparam integer WIDTH = 32 + 128 + 4;
+    localparam integer WIDTH = 32 + 128 + 4 + 1;
     localparam integer FIFO_DEPTH = 16;
 
     reg [3:0]       spike_pending = 4'd0;
     reg             refresh_pending = 1'b0;
+    reg             cycle_pending = 1'b0;
     reg [WIDTH-1:0] fifo_din_r = {WIDTH{1'b0}};
     reg             fifo_wr_en_r = 1'b0;
 
@@ -72,25 +76,30 @@ module izh_observation_cdc #(
 
     wire [3:0] spike_to_send = spike_pending | spike_flags;
     wire       refresh_to_send = refresh_pending | capture;
-    wire want_write = (refresh_to_send | (|spike_to_send)) &
+    wire       cycle_to_send = cycle_pending | cycle_start;
+    wire want_write = (refresh_to_send | cycle_to_send | (|spike_to_send)) &
                       ~fifo_full & ~fifo_wr_rst_busy;
 
     always @(posedge src_clk) begin
         if (src_rst) begin
             spike_pending  <= 4'd0;
             refresh_pending <= 1'b0;
+            cycle_pending  <= 1'b0;
             fifo_wr_en_r   <= 1'b0;
             fifo_din_r     <= {WIDTH{1'b0}};
         end else begin
             fifo_wr_en_r <= 1'b0;
             if (want_write) begin
-                fifo_din_r <= {spike_to_send, monitor_q16, pure_current_q16};
+                fifo_din_r <= {cycle_to_send, spike_to_send, monitor_q16,
+                               pure_current_q16};
                 fifo_wr_en_r <= 1'b1;
                 spike_pending <= 4'd0;
                 refresh_pending <= 1'b0;
+                cycle_pending <= 1'b0;
             end else begin
                 spike_pending <= spike_to_send;
                 refresh_pending <= refresh_to_send;
+                cycle_pending <= cycle_to_send;
             end
         end
     end
@@ -112,6 +121,7 @@ module izh_observation_cdc #(
     wire signed [31:0] fifo_pure = $signed(fifo_dout[31:0]);
     wire [127:0] fifo_mon = fifo_dout[32 +: 128];
     wire [3:0] fifo_spike = fifo_dout[160 +: 4];
+    wire fifo_cycle = fifo_dout[164];
 
     // Effective DAC-view gain; 0 selects the hardware default 1.0x.  Quasi-
     // static (register write through a CDC), so it is safe to use directly
@@ -132,9 +142,12 @@ module izh_observation_cdc #(
     reg signed [31:0] s0_pure = 32'd0;
     reg [127:0]       s0_mon = 128'd0;
     reg [3:0]         s0_spike = 4'd0;
+    reg               s0_cycle = 1'b0;
 
     reg signed [48:0] s1_prod = 49'd0;       // 32b x 17b signed product
     reg [255:0]       s1_mon_words = 256'd0;
+    reg               s1_valid = 1'b0;
+    reg               s1_cycle = 1'b0;
 
     integer n;
     reg [15:0]  s;
@@ -166,14 +179,17 @@ module izh_observation_cdc #(
             s0_pure  <= fifo_pure;
             s0_mon   <= fifo_mon;
             s0_spike <= fifo_spike;
+            s0_cycle <= fifo_cycle;
         end
 
         // stage 1: register the DSP product + converted monitors; spike fires
+        s1_valid <= s0_valid;
         spike_start <= 4'd0;
         if (s0_valid) begin
             s1_prod      <= s0_pure * $signed({1'b0, gain_eff});
             s1_mon_words <= mon_words_next;
             spike_start  <= s0_spike;
+            s1_cycle     <= s0_cycle;
         end
 
         // stage 2: saturate + present.  s1_prod/s1_mon_words only change on a
@@ -181,5 +197,6 @@ module izh_observation_cdc #(
         // zero-initialized before the first packet.
         current_word <= {cur_s, cur_s, cur_s, cur_s};
         mon_words    <= s1_mon_words;
+        cycle_start_dst <= s1_valid & s1_cycle;
     end
 endmodule

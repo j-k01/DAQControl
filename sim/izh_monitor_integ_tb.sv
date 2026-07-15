@@ -74,11 +74,13 @@ module izh_monitor_integ_tb;
         .monitor_q16(i_mon),
         .spike_flags(obs_spike_flags),
         .capture(capture),
+        .cycle_start(1'b0),
         .dst_clk(gt_clk),
         .pure_gain_q8_8(16'h0000),
         .mon_words(mon_words),
         .current_word(cur_source_word),
-        .spike_start(spike_start)
+        .spike_start(spike_start),
+        .cycle_start_dst()
     );
 
     // A small programmed spike shape on the same DAC-domain path as top.v.

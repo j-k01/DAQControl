@@ -1109,15 +1109,6 @@ module top #(
         .running           ()
     );
 
-    // Toggle in clk_50 that flips on each injection-window start (sample 0).  A
-    // 1-cycle clk_50 pulse is CDC'd into the ADC RX domain (below) to arm a
-    // trigger-synchronized capture at the exact start of the current injection.
-    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg cur_cycle_start_tog = 1'b0;
-    always @(posedge clk_50) begin
-        if (neuron_rst)          cur_cycle_start_tog <= 1'b0;
-        else if (cur_cycle_start) cur_cycle_start_tog <= ~cur_cycle_start_tog;
-    end
-
     izh_dac_bank #(
         .ADDR_W (6)
     ) u_izh_dac_bank (
@@ -1300,6 +1291,7 @@ module top #(
         else            cur_mon_hb <= cur_mon_hb + 8'd1;
     end
     wire cur_mon_capture = cur_sample_tick | (cur_mon_hb == 8'd0);
+    wire cur_cycle_start_tx;
 
     izh_observation_cdc #(
         .SHIFT (8)
@@ -1310,12 +1302,26 @@ module top #(
         .monitor_q16      (izh_i_mon),
         .spike_flags      (izh_spike_flags_neuron),
         .capture          (cur_mon_capture),
+        .cycle_start      (cur_cycle_start),
         .dst_clk          (gth_tx_usrclk2),
         .pure_gain_q8_8   (cur_dac_gain_q8_8_tx),
         .mon_words        (mon_words_tx),
         .current_word     (cur_source_word_tx),
-        .spike_start      (izh_spike_flags_tx)
+        .spike_start      (izh_spike_flags_tx),
+        .cycle_start_dst  (cur_cycle_start_tx)
     );
+
+    // Generate the capture event only after sample zero has crossed with its
+    // current value and is presented in the DAC clock domain.  Synchronizing
+    // this toggle into ADC RX cannot then introduce a phase choice independent
+    // of the DAC-visible waveform.
+    reg cur_cycle_start_tx_tog = 1'b0;
+    always @(posedge gth_tx_usrclk2) begin
+        if (litejesd_reset)
+            cur_cycle_start_tx_tog <= 1'b0;
+        else if (cur_cycle_start_tx)
+            cur_cycle_start_tx_tog <= ~cur_cycle_start_tx_tog;
+    end
 
     // Programmable spike-pulse shapers (one per neuron).  These live here -- NOT
     // in the JESD wrapper -- and their outputs are just four of the crossbar's
@@ -1883,9 +1889,10 @@ module top #(
     end
 
     // Trigger-synchronized capture (RW3[7]=1): the RW3[3] edge ARMS instead of
-    // firing, and the next current-player sample-0 pulse (cur_cycle_start, CDC'd
-    // into this ADC RX domain) fires the capture -- so every capture begins at the
-    // identical current-injection phase.  RW3[7]=0 = original immediate behavior.
+    // firing, and the next DAC-visible current-player sample-0 marker fires the
+    // capture.  The marker shares the observation FIFO with the current value,
+    // eliminating an independent CDC phase choice.  RW3[7]=0 keeps the original
+    // immediate behavior.
     (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [2:0] cur_cyc_start_sync = 3'b000;
     (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] cap_trig_mode_sync = 2'b00;
     reg cap_armed = 1'b0;
@@ -1900,7 +1907,7 @@ module top #(
             cap_trig_mode_sync <= 2'b00;
             cap_armed          <= 1'b0;
         end else begin
-            cur_cyc_start_sync <= {cur_cyc_start_sync[1:0], cur_cycle_start_tog};
+            cur_cyc_start_sync <= {cur_cyc_start_sync[1:0], cur_cycle_start_tx_tog};
             cap_trig_mode_sync <= {cap_trig_mode_sync[0], rw_reg3[7]};
             if (adc_capture_req_edge && cap_trig_mode_rx)
                 cap_armed <= 1'b1;          // RW3[3] edge arms; waits for injection start

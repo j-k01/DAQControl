@@ -2513,7 +2513,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                                                           style=QtCore.Qt.DotLine))  # expected
         omin, omax = min(offs), max(offs)
         win.addLabel(f"N={n} bursts aligned+averaged  (x = ns @ 1 GS/s; "
-                     f"trigger jitter {omin}..{omax} samples{lat_txt})",
+                     f"measured offsets {omin}..{omax} samples{lat_txt})",
                      row=4, col=0)
         win.show()
         self._popup = win
@@ -2828,7 +2828,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                    pen=pg.mkPen("#ffffff", width=1.4))
         omin, omax = min(offs), max(offs)
         win.addLabel(f"N={n} hardware-triggered Ethernet bursts aligned+averaged "
-                     f"(x = ns @ 1 GS/s; trigger jitter {omin}..{omax} samples; "
+                     f"(x = ns @ 1 GS/s; measured offsets {omin}..{omax} samples; "
                      f"UDP coverage {100 * meta.get('cov', 1.0):.1f}%)",
                      row=4, col=0)
         win.show()

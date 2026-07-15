@@ -58,12 +58,12 @@ dac_channel_word[63:48] = sample 3
 
 No source is allowed to prearrange bytes, lanes, physical DAC outputs, or
 connector labels before this mux boundary. After source selection, the four
-complete channel streams are registered on `jesd_clk` and then fed through
-`dac_source_to_converter_preimage`, a wiring-only module that creates the
-LiteJESD converter preimage. Board lane correction is still handled after
-LiteJESD by moving `TXDATA` and `TXCHARISK` together. Legacy remap calculations
-remain visible only as ILA diagnostics and do not drive the DAC output. The
-shell exports:
+complete channel streams are registered on `jesd_clk`.  A measured board
+connector permutation swaps complete streams 1 and 2 (logical-to-preimage order
+0,2,1,3), then `dac_source_to_converter_preimage` creates the LiteJESD byte
+preimage. Board lane correction is still handled after LiteJESD by moving
+`TXDATA` and `TXCHARISK` together. Legacy remap calculations remain visible
+only as ILA diagnostics and do not drive the DAC output. The shell exports:
 
 ```verilog
 gth_txdata[255:0]    // {lane7, ..., lane0}, 32 bits per lane

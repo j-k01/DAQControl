@@ -22,11 +22,13 @@ module izh_observation_cdc_tb;
     reg [127:0] monitor_q16 = 128'd0;
     reg [3:0] spike_flags = 4'd0;
     reg capture = 1'b0;
+    reg cycle_start = 1'b0;
     reg [15:0] pure_gain_q8_8 = 16'h0000; // 0 means hardware default 1.0x
 
     wire [255:0] mon_words;
     wire [63:0] current_word;
     wire [3:0] spike_start;
+    wire cycle_start_dst;
 
     izh_observation_cdc #(.SHIFT(8)) dut (
         .src_clk(src_clk),
@@ -35,11 +37,13 @@ module izh_observation_cdc_tb;
         .monitor_q16(monitor_q16),
         .spike_flags(spike_flags),
         .capture(capture),
+        .cycle_start(cycle_start),
         .dst_clk(dst_clk),
         .pure_gain_q8_8(pure_gain_q8_8),
         .mon_words(mon_words),
         .current_word(current_word),
-        .spike_start(spike_start)
+        .spike_start(spike_start),
+        .cycle_start_dst(cycle_start_dst)
     );
 
     // Programmed spike shape, modeled as a synchronous BRAM read port.
@@ -96,9 +100,11 @@ module izh_observation_cdc_tb;
             set_monitors(mon0_q16, mon0_q16 + q16(1), mon0_q16 + q16(2),
                          mon0_q16 + q16(3));
             capture = 1'b1;
+            cycle_start = 1'b1;
             spike_flags = 4'b0001;
             @(negedge src_clk);
             capture = 1'b0;
+            cycle_start = 1'b0;
             spike_flags = 4'd0;
 
             timeout = 0;
@@ -110,9 +116,18 @@ module izh_observation_cdc_tb;
                 errors = errors + 1;
                 $display("FAIL %0s: no spike_start", label);
             end else begin
+                // The cycle marker must be asserted on the exact destination
+                // clock that presents the packet's current word.
+                @(posedge dst_clk);
+                if (cycle_start_dst !== 1'b1 ||
+                    current_word !== {expected_current_s16, expected_current_s16,
+                                     expected_current_s16, expected_current_s16}) begin
+                    errors = errors + 1;
+                    $display("FAIL %0s: cycle marker/current misaligned marker=%b current=%h",
+                             label, cycle_start_dst, current_word);
+                end
                 // The shaper's synchronous RAM emits the first visible beat two
                 // DAC clocks after spike_start is registered.
-                @(posedge dst_clk);
                 @(posedge dst_clk);
                 if (spike_word !== shape_mem[0]) begin
                     errors = errors + 1;

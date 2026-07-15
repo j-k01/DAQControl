@@ -7,14 +7,11 @@ so every repetition starts at the same current-injection phase.  All reps land
 strided in DDR and are drained by a single BRDO/UDP pass, then this script
 slices, aligns, and coherently averages them.
 
-Why alignment is still needed: the current player runs in clk_50 (MMCM off the
-board SYSCLK), which is NOT frequency-locked to the converter clock tree (GTH
-QPLL / HMC).  Each rep therefore carries a small integer-sample offset from two
-CDCs (player cycle_start -> ADC RX capture start, and player value -> DAC TX
-stimulus edge).  Because DAC and ADC clocks ARE locked to each other, the
-offset is a pure integer number of ADC samples -- so integer cross-correlation
-alignment against the ensemble mean recovers exact sample registration, and
-coherent averaging then gains sqrt(N) SNR on white noise.
+The current-player cycle marker now crosses in the same FIFO packet as the
+DAC-visible sample-zero value, so a correct hardware run should report zero
+per-repetition offsets.  Integer cross-correlation remains as a diagnostic and
+safety net: any nonzero shift is evidence of a trigger/data-path regression,
+while coherent averaging gains sqrt(N) SNR on white noise.
 
 Typical use (step stimulus on the current source, monitor on DAC0 -> ADC ch0):
 
@@ -127,9 +124,9 @@ def _xcorr_shift(a, ref, max_lag):
 def align_stack(stack, max_lag=64, passes=2):
     """Integer-sample align each rep to the evolving ensemble average.
 
-    Returns (aligned float64 stack, shifts).  Shifts SHOULD be small integers
-    (a few samples): the residual CDC quantization of the clk_50 player vs the
-    locked DAC/ADC clocks.  Large shifts indicate a stimulus/trigger problem.
+    Returns (aligned float64 stack, shifts).  Shifts should now be zero because
+    the trigger marker travels with the DAC-visible sample-zero packet.  Any
+    nonzero shift indicates a stimulus/trigger problem.
     """
     aligned = stack.astype(np.float64)
     shifts = np.zeros(len(stack), dtype=int)
