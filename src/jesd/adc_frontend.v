@@ -147,7 +147,7 @@ module adc_frontend (
     daq_litejesd_adc1_rx_path #(
         .STATUS_TAG (8'hA0),
         .SWAP_CHANNEL_B_BYTES (1'b1),
-        // ADC0: channel A is high0/low2; channel B is high1/low3.
+        // ADC0: channel A is high0/low2; channel B is high3/low1.
         .USE_TRANSPORT_CROSSPAIR (1'b1),
         .USE_ALTERNATE_TRANSPORT_CROSSPAIR (1'b0)
     ) u_adc0_rx_path (

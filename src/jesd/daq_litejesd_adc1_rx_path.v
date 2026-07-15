@@ -276,17 +276,17 @@ module daq_litejesd_adc1_rx_path #(
         swap_sample_bytes16(sample_b0)
     };
 
-    // LMFS=4211 carries each converter's high and low bytes on different
-    // transport lanes.  Rebuild complete 16-bit samples here instead of using
-    // the generated core's adjacent-lane converter publication.
+    // ADC chip0's board permutation produces high0/low2 for channel A and
+    // high3/low1 for channel B.  Rebuild complete 16-bit samples here instead
+    // of using the generated core's adjacent-lane converter publication.
     adc1_sundance_halfbeat #(
         .REVERSE_BYTES (0),
         .SWAP_SAMPLE_BYTES (0)
     ) u_adc1_transport_crosspair (
         .lane0    (transport_lane0),
         .lane1    (transport_lane2),
-        .lane2    (transport_lane1),
-        .lane3    (transport_lane3),
+        .lane2    (transport_lane3),
+        .lane3    (transport_lane1),
         .adc1_ch1 (crosspair_ch_a),
         .adc1_ch2 (crosspair_ch_b)
     );
