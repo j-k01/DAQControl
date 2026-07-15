@@ -46,13 +46,10 @@ on connect -- acquisition is opt-in:
         drag individual points up/down; "Program pulse" sends it via PULS. The
         shaped pulse is one crossbar input -- route a Spike source to emit it.
   - CIC anti-alias (chip 1) toggle, autoscale, rising-edge trigger, Time/FFT.
-  - De-interleave baseline (mod-4): optional display-time removal of the
-    ADS54J60's 4-core interleave offset square (~±7 mV) from full-rate
-    captures (UART Capture / Collect Ethernet / Auto-Sample). Subtracts each
-    mod-4 phase's mean; saved .npz files always keep the RAW samples. Note it
-    also removes true DC and any phase-locked fs/4 / fs/2 component, and is
-    not applied to the decimated live stream (decimation breaks the
-    sample-index to core mapping).
+  - Legacy mod-4 baseline removal: optional display-time diagnostic for old
+    captures or genuine small per-core offsets. Corrected FPGA images assemble
+    LMFS=4211 transport bytes directly and do not need it to remove the former
+    +/-7 mV artifact. Saved .npz files always keep the RAW samples.
   - UART Capture: grab an ADC snapshot over UART (PCAP) and pop up the 4
     channels -- works without the Ethernet path. UART Capture, Collect Ethernet
     and Auto-Sample sit in an always-visible Capture bar below the tabs, so they
@@ -392,12 +389,12 @@ def save_capture(capture_dir, kind, chans, fs_hz, **meta):
 
 
 def deinterleave_baseline(x):
-    """Remove the ADS54J60 interleave baseline from a full-rate capture.
+    """Remove a mod-4 phase baseline from a full-rate capture.
 
     The ADC time-interleaves 4 cores per channel (sample i -> core i mod 4);
-    residual per-core DC offsets show up as a deterministic ~+/-few-mV square
-    pattern (spurs at DC / fs4 / fs2) that buries small signals. Subtracting
-    each mod-4 phase's mean removes exactly those 4 constants -- samples keep
+    Residual per-core DC offsets can produce a deterministic square pattern
+    (spurs at DC / fs4 / fs2). Subtracting each mod-4 phase's mean removes the
+    four constants -- samples keep
     their order/count and everything except true DC and the phase-locked
     fs/4 / fs/2 component passes through untouched. Display-time only; saved
     captures stay raw. Valid ONLY for full-rate data (any decimation breaks
@@ -1740,13 +1737,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.cic_chk = QtWidgets.QCheckBox("CIC anti-alias (ch2/3)")
         self.cic_chk.setChecked(args.cic)
         self.cic_chk.toggled.connect(self._on_cic)
-        # display-time interleave-baseline removal (ADS54J60 4-core offsets);
-        # raw saves are never altered, so this is safe to toggle freely.
-        self.deint_chk = QtWidgets.QCheckBox("De-interleave baseline (mod-4)")
+        # Legacy display-time mod-4 diagnostic; raw saves are never altered.
+        self.deint_chk = QtWidgets.QCheckBox("Legacy mod-4 baseline removal")
         self.deint_chk.setToolTip(
             "Subtract each mod-4 sample phase's mean from full-rate captures.\n"
-            "Removes the ADC's 4-core interleave offset square (~±7 mV) so\n"
-            "small signals are visible. Display only -- saved .npz stays raw.\n"
+            "For old captures or genuine small core offsets; corrected FPGA\n"
+            "byte mapping does not need it for the old +/-7 mV artifact.\n"
+            "Display only -- saved .npz stays raw.\n"
             "Also removes true DC and the phase-locked fs/4 & fs/2 component.")
         self.auto_chk = QtWidgets.QCheckBox("Autoscale Y")
         self.auto_chk.toggled.connect(lambda v: setattr(self, "autoscale", v))

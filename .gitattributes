@@ -13,3 +13,4 @@
 *.xml text eol=lf
 
 *.zip binary
+*.ltx binary

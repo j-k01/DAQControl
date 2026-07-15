@@ -127,8 +127,9 @@ pub fn volts_to_counts(v: f64) -> i32 {
 }
 
 // ------------------------------------------------------------- interleave fix
-/// Remove the ADS54J60 mod-4 interleave baseline: subtract each phase's mean.
-/// Full-rate data only. Returns counts as f64 (display-time; input untouched).
+/// Subtract each mod-4 phase mean as a legacy/diagnostic display operation.
+/// Correct transport-byte assembly does not require this for the former
+/// +/-7 mV artifact. Full-rate data only; input samples remain untouched.
 pub fn deinterleave_baseline(x: &[i16]) -> Vec<f64> {
     let mut y: Vec<f64> = x.iter().map(|&v| v as f64).collect();
     for k in 0..4 {

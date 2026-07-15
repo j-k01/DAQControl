@@ -27,8 +27,9 @@ this app is the host-side control/scope, same as the Python GUI.
   (`~/.daq_neuron_profiles.json`), per-neuron running-profile readout, live
   a/b/c/d/I params, sim-speed (`dt`).
 - **DDS** tone (`DDSI`), **BRAM waveform** builder (`PROG`).
-- **De-interleave baseline (mod-4)** — optional display-time removal of the
-  ADS54J60 4-core interleave offset square; raw captures kept intact.
+- **Legacy mod-4 baseline removal** — optional display-time diagnostic for old
+  captures or small genuine core offsets; raw captures stay intact. Corrected
+  FPGA images do not need it for the former +/-7 mV byte-pairing artifact.
 - **Always-visible Capture bar** — UART Capture (`PCAP`), Collect Ethernet
   (`BCAP`/`BRDO` burst with auto-retry on dropped-packet drains), Auto-Sample.
 - **Raw firmware command** box, STAT view, live-stream `STRM` start/stop.

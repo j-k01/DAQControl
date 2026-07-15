@@ -3,7 +3,8 @@
 module daq_litejesd_adc1_rx_path #(
     parameter [7:0] STATUS_TAG = 8'hA1,
     parameter       SWAP_CHANNEL_B_BYTES = 1'b1,
-    parameter       USE_TRANSPORT_CROSSPAIR = 1'b0
+    parameter       USE_TRANSPORT_CROSSPAIR = 1'b0,
+    parameter       USE_ALTERNATE_TRANSPORT_CROSSPAIR = 1'b0
 ) (
     input  wire        jesd_clk,
     input  wire        jesd_rst,
@@ -253,6 +254,8 @@ module daq_litejesd_adc1_rx_path #(
     wire [63:0] sun_ch2_revbyte;
     wire [63:0] crosspair_ch_a;
     wire [63:0] crosspair_ch_b;
+    wire [63:0] alternate_crosspair_ch_a;
+    wire [63:0] alternate_crosspair_ch_b;
 
     function [15:0] swap_sample_bytes16;
         input [15:0] value;
@@ -273,11 +276,9 @@ module daq_litejesd_adc1_rx_path #(
         swap_sample_bytes16(sample_b0)
     };
 
-    // Diagnostic captures on ADC chip1 with clean DAC0/DAC1 tones cabled to
-    // IN3/IN4 showed the valid post-link byte pairings are lane0/lane2 for
-    // channel A and lane1/lane3 for channel B.  This is a publication step at
-    // the ADC frontend boundary; ADC chip0 keeps the earlier validated
-    // generated-converter publication.
+    // LMFS=4211 carries each converter's high and low bytes on different
+    // transport lanes.  Rebuild complete 16-bit samples here instead of using
+    // the generated core's adjacent-lane converter publication.
     adc1_sundance_halfbeat #(
         .REVERSE_BYTES (0),
         .SWAP_SAMPLE_BYTES (0)
@@ -290,11 +291,29 @@ module daq_litejesd_adc1_rx_path #(
         .adc1_ch2 (crosspair_ch_b)
     );
 
+    // ADC chip1 has a different physical-lane permutation.  With all DACs off,
+    // exhaustive raw-lane reconstruction gives the two low-noise pairings as
+    // high0/low3 and high1/low2 (no byte-index or sample shift).  Keep A/B in
+    // the same connector identity established by the earlier two-tone test.
+    adc1_sundance_halfbeat #(
+        .REVERSE_BYTES (0),
+        .SWAP_SAMPLE_BYTES (0)
+    ) u_adc1_transport_alternate_crosspair (
+        .lane0    (transport_lane0),
+        .lane1    (transport_lane3),
+        .lane2    (transport_lane1),
+        .lane3    (transport_lane2),
+        .adc1_ch1 (alternate_crosspair_ch_a),
+        .adc1_ch2 (alternate_crosspair_ch_b)
+    );
+
     wire [63:0] sample_a_lmfs4211 =
-        USE_TRANSPORT_CROSSPAIR ? crosspair_ch_a : sample_a;
+        USE_ALTERNATE_TRANSPORT_CROSSPAIR ? alternate_crosspair_ch_a :
+        (USE_TRANSPORT_CROSSPAIR ? crosspair_ch_a : sample_a);
     wire [63:0] sample_b_lmfs4211 =
-        USE_TRANSPORT_CROSSPAIR ? crosspair_ch_b :
-        (SWAP_CHANNEL_B_BYTES ? sample_b_swapped : sample_b);
+        USE_ALTERNATE_TRANSPORT_CROSSPAIR ? alternate_crosspair_ch_b :
+        (USE_TRANSPORT_CROSSPAIR ? crosspair_ch_b :
+        (SWAP_CHANNEL_B_BYTES ? sample_b_swapped : sample_b));
 
     adc1_sundance_halfbeat #(
         .REVERSE_BYTES (0),

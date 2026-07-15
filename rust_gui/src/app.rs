@@ -626,7 +626,7 @@ impl DaqApp {
     fn tab_display(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
             ui.label(egui::RichText::new("Display").strong());
-            if ui.checkbox(&mut self.deinterleave, "De-interleave baseline (mod-4)").changed() {
+            if ui.checkbox(&mut self.deinterleave, "Legacy mod-4 baseline removal").changed() {
                 self.display_dirty = true;
             }
             ui.checkbox(&mut self.autoscale, "Autoscale Y");
