@@ -4,6 +4,7 @@ module adc_burst_capture_tb;
     reg clk = 1'b0;
     reg rd_clk = 1'b0;
     reg rst = 1'b1;
+    reg prepare = 1'b0;
     reg start = 1'b0;
     reg [31:0] capture_beats = 32'd0;
     reg data_valid = 1'b1;
@@ -35,6 +36,7 @@ module adc_burst_capture_tb;
         .clk           (clk),
         .rd_clk        (rd_clk),
         .rst           (rst),
+        .prepare       (prepare),
         .start         (start),
         .capture_beats (capture_beats),
         .data_valid    (data_valid),
@@ -56,10 +58,31 @@ module adc_burst_capture_tb;
 
     task pulse_start(input [31:0] beats);
         begin
-            @(posedge clk);
+            @(negedge clk);
             capture_beats <= beats;
+            prepare <= 1'b1;
             start <= 1'b1;
-            @(posedge clk);
+            @(negedge clk);
+            prepare <= 1'b0;
+            start <= 1'b0;
+        end
+    endtask
+
+    task pulse_prepare(input [31:0] beats);
+        begin
+            @(negedge clk);
+            capture_beats <= beats;
+            prepare <= 1'b1;
+            @(negedge clk);
+            prepare <= 1'b0;
+        end
+    endtask
+
+    task pulse_fire;
+        begin
+            @(negedge clk);
+            start <= 1'b1;
+            @(negedge clk);
             start <= 1'b0;
         end
     endtask
@@ -115,6 +138,34 @@ module adc_burst_capture_tb;
             fail("zero-length capture emitted AXIS data");
         if (status[22] || status[18])
             fail("zero-length capture remained running or AXIS-enabled");
+
+        // Trigger mode prepares the async FIFO before the sample-zero event.
+        // Once prepared, start must launch on the next ADC beat without any
+        // FIFO-reset-dependent delay.
+        pulse_prepare(32'd4);
+        wait_cycles = 0;
+        while (!dut.prepared && wait_cycles < 2000) begin
+            @(posedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (!dut.prepared)
+            fail("pre-trigger prepare never became ready");
+        pulse_fire();
+        wait_cycles = 0;
+        while (!dut.fifo_wr_en && wait_cycles < 8) begin
+            @(posedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (wait_cycles > 1)
+            fail("prepared trigger did not accept data on the next ADC beat");
+
+        wait_cycles = 0;
+        while (!status[23] && wait_cycles < 2000) begin
+            @(posedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (!status[23])
+            fail("prepared trigger capture did not report done");
 
         if (errors != 0) begin
             $display("adc_burst_capture_tb FAILED with %0d error(s)", errors);

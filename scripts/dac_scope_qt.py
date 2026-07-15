@@ -54,6 +54,10 @@ on connect -- acquisition is opt-in:
     channels -- works without the Ethernet path. UART Capture, Collect Ethernet
     and Auto-Sample sit in an always-visible Capture bar below the tabs, so they
     are reachable no matter which tab is selected.
+  - Triggered acquisition: Trig Burst Avg (PCAPT) and Multi-Eth Trig Capture
+    (BCPT) replay a fresh current program and neuron state for every repetition.
+    Captures are averaged at their original hardware-aligned sample indices;
+    correlation offsets are reported as diagnostics but never shift saved data.
 
 Prereqs: board programmed + A53 PS-eth app running; UART (default COM10); NIC at
 192.168.2.1/24. See notes/dac_sources_howto.md.
@@ -403,6 +407,81 @@ def deinterleave_baseline(x):
     for k in range(4):
         y[k::4] -= y[k::4].mean()
     return y
+
+
+def trigger_offset_diagnostics(stack_by_ch, maxlag=64, max_samples=262144):
+    """Measure trigger consistency without modifying any captured samples.
+
+    ``stack_by_ch`` maps ADC channel -> ``[repetition, sample]``.  The channel
+    with the clearest repeatable time-domain feature is selected automatically;
+    this avoids treating ADC0 noise as a trigger when the injected current is
+    zero/constant and only the neuron/spike channel contains timing information.
+
+    The returned offsets are diagnostics only.  Triggered acquisitions are
+    already aligned in hardware and must be averaged at their original sample
+    indices--never ``roll``ed according to a noisy correlation estimate.
+    """
+    stacks = {int(ch): np.asarray(values, dtype=np.float64)
+              for ch, values in stack_by_ch.items()}
+    if not stacks:
+        return {"anchor": None, "offsets": [], "observable": False,
+                "score": 0.0, "signal_rms": 0.0, "noise_rms": 0.0}
+    first = next(iter(stacks.values()))
+    if first.ndim != 2 or first.shape[0] == 0 or first.shape[1] == 0:
+        return {"anchor": None, "offsets": [], "observable": False,
+                "score": 0.0, "signal_rms": 0.0, "noise_rms": 0.0}
+
+    # Prefer a channel whose ensemble median has substantially more structure
+    # than the rep-to-rep residual.  A flat/noise-only loopback scores below 1;
+    # a current edge or repeatable spike train scores well above it.
+    # Correlation is only a UI diagnostic; cap its work so a multi-megasample
+    # BCPT does not allocate another multi-gigabyte median/residual workspace.
+    # Trigger/current edges and initial neuron spikes are in the leading window.
+    diag_length = min(first.shape[1], max(256, int(max_samples)))
+    candidates = []
+    for ch, values in stacks.items():
+        if values.shape != first.shape:
+            continue
+        values = values[:, :diag_length]
+        median = np.median(values, axis=0)
+        centered = median - median.mean()
+        signal_rms = float(np.sqrt(np.mean(centered * centered)))
+        residual = values - median
+        noise_rms = float(np.median(np.sqrt(np.mean(residual * residual, axis=1))))
+        score = signal_rms / max(noise_rms, 1.0)
+        candidates.append((score, signal_rms, -noise_rms, ch, median, noise_rms))
+
+    if not candidates:
+        return {"anchor": None, "offsets": [0] * first.shape[0],
+                "observable": False, "score": 0.0,
+                "signal_rms": 0.0, "noise_rms": 0.0}
+    score, signal_rms, _, anchor, ref, noise_rms = max(candidates)
+    # Requiring both absolute structure and repeatability keeps zero-current or
+    # open-input noise from producing authoritative-looking arbitrary lags.
+    observable = bool(signal_rms >= 4.0 and score >= 1.5)
+    if not observable:
+        return {"anchor": None, "offsets": [0] * first.shape[0],
+                "observable": False, "score": score,
+                "signal_rms": signal_rms, "noise_rms": noise_rms}
+
+    values = stacks[anchor][:, :diag_length]
+    nrep, length = values.shape
+    ref = ref - ref.mean()
+    nfft = 2 * length
+    fr = np.fft.rfft(ref, n=nfft)
+    maxlag = max(0, min(int(maxlag), length // 4))
+    lags = np.concatenate([np.arange(0, maxlag + 1),
+                           np.arange(-maxlag, 0)])
+    indices = np.concatenate([np.arange(0, maxlag + 1),
+                              np.arange(nfft - maxlag, nfft)])
+    offsets = []
+    for rep in range(nrep):
+        sig = values[rep] - values[rep].mean()
+        cc = np.fft.irfft(fr * np.conj(np.fft.rfft(sig, n=nfft)), n=nfft)
+        offsets.append(int(lags[int(np.argmax(cc[indices]))]))
+    return {"anchor": int(anchor), "offsets": offsets,
+            "observable": True, "score": score,
+            "signal_rms": signal_rms, "noise_rms": noise_rms}
 
 
 # --------------------------------------------------------------- DAC content
@@ -1762,12 +1841,17 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.capt_frames.addItems([f"{n} frames" for n in CAPT_FRAME_OPTIONS])
         self.capt_frames.setCurrentText("512 frames")
         # Triggered burst average: N repeated PCAPT captures, each hardware-synced
-        # to the current-injection window start, then aligned + averaged.
+        # to a fresh current/neuron restart.  Average at the original sample
+        # indices; correlation is diagnostic only and never shifts the data.
         self.burst_n = QtWidgets.QSpinBox()
         self.burst_n.setRange(2, 256)
         self.burst_n.setValue(16)
         self.burst_n.setPrefix("N=")
         self.burst_btn = QtWidgets.QPushButton("Trig Burst Avg")
+        self.burst_btn.setToolTip(
+            "Repeat PCAPT with a fresh deterministic current/neuron restart for "
+            "every capture. Repetitions are averaged exactly as captured; the "
+            "GUI reports correlation offsets but never software-shifts them.")
         self.burst_btn.clicked.connect(self._on_burst)
         self.burst_step_chk = QtWidgets.QCheckBox("fit step")
         # Off by default: when on, every burst REWRITES DAC0's crossbar route
@@ -1807,7 +1891,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.msamp_btn = QtWidgets.QPushButton("Multi-Eth Trig Capture")
         self.msamp_btn.setToolTip(
             "BCPT: reps trigger-synchronized full-rate captures (per-rep size = "
-            "the Collect size above), aligned + averaged, saved as burst_*.npz. "
+            "the Collect size above), hardware-aligned and averaged without "
+            "software shifting, saved as burst_*.npz. Each repetition reloads "
+            "the neuron state and restarts the current waveform from sample 0. "
             "Requires the current source to be configured and running "
             "(e.g. via the Chattering Demo Setup button or the current editor).")
         self.msamp_btn.clicked.connect(self._on_multisample)
@@ -2452,34 +2538,27 @@ class ScopeWindow(QtWidgets.QMainWindow):
         caps = data["caps"]
         n = len(caps)
         L = min(len(c[0]) for c in caps)
-        anchor = 0
         # de-interleaved float counts, truncated to the common length
         stack = {ch: np.stack([self._deint(c[ch]).astype(np.float64)[:L]
                                for c in caps]) for ch in range(4)}
-        # Alignment sanity: cross-correlate each rep to rep 0 on the anchor channel.
-        # A correct hardware trigger gives ~0 offset; we still roll to remove any
-        # residual jitter before averaging (belt and suspenders).
-        ref = stack[anchor][0] - stack[anchor][0].mean()
-        offs = []
-        for i in range(n):
-            sig = stack[anchor][i] - stack[anchor][i].mean()
-            xc = np.correlate(sig, ref, mode="full")
-            off = int(np.argmax(xc) - (L - 1))
-            if abs(off) > L // 4:      # weak/noisy anchor -> don't trust wild shifts
-                off = 0
-            offs.append(off)
-            for ch in range(4):
-                stack[ch][i] = np.roll(stack[ch][i], -off)
+        # The FPGA now transports sample zero with the observation packet,
+        # pre-arms the burst FIFO, and resets neuron state/dividers on the same
+        # current-player restart.  Preserve that hardware alignment.  The lag
+        # estimate is displayed only as a health diagnostic and automatically
+        # chooses a useful channel (important when ADC0 current is exactly 0).
+        diag = trigger_offset_diagnostics(stack)
+        offs = diag["offsets"]
         avg = {ch: stack[ch].mean(axis=0) for ch in range(4)}
 
         # Measure where the step actually lands: first sample of the aligned
-        # average that departs from the pre-step baseline.  The gap between this
-        # and the programmed baseline time is the fixed DAC->ADC loopback latency.
+        # average that departs from the pre-step baseline.  Fit-step explicitly
+        # routes current to DAC0, so latency is always measured on ADC0 even if
+        # another channel was a stronger correlation diagnostic.
         meta = data.get("meta")
         onset = None
         lat_txt = ""
         if meta:
-            a = avg[anchor]
+            a = avg[0]
             base = a[:max(8, L // 20)]
             mu, sd = base.mean(), base.std() + 1e-6
             hit = np.where(np.abs(a - mu) >
@@ -2506,31 +2585,45 @@ class ScopeWindow(QtWidgets.QMainWindow):
                        pen=pg.mkPen(col, width=0.6))
             p.plot(t, avg[ch] * VOLTS_PER_COUNT,       # bold average
                    pen=pg.mkPen("#ffffff", width=1.4))
-            if ch == anchor and onset is not None:     # markers on the anchor channel
+            if ch == 0 and onset is not None:          # fit-step is DAC0 -> ADC0
                 p.addLine(x=onset, pen=pg.mkPen("#E57373", width=1,
                                                 style=QtCore.Qt.DashLine))    # measured step
                 p.addLine(x=meta["step_ns"], pen=pg.mkPen("#81C784", width=1,
                                                           style=QtCore.Qt.DotLine))  # expected
         omin, omax = min(offs), max(offs)
-        win.addLabel(f"N={n} bursts aligned+averaged  (x = ns @ 1 GS/s; "
-                     f"measured offsets {omin}..{omax} samples{lat_txt})",
+        diag_txt = (f"diagnostic ADC{diag['anchor']} offsets {omin}..{omax} samples"
+                    if diag["observable"] else
+                    "offset diagnostic unavailable (no repeatable timing feature)")
+        win.addLabel(f"N={n} hardware-aligned bursts averaged without shifting "
+                     f"(x = ns @ 1 GS/s; {diag_txt}{lat_txt})",
                      row=4, col=0)
         win.show()
         self._popup = win
-        sub = self._save_burst(caps, avg, offs)
+        sub = self._save_burst(caps, avg, offs, diag)
         where = f"  -> {sub}" if sub else "  (save FAILED)"
+        health = (f"diagnostic ADC{diag['anchor']} lag {omin}..{omax}"
+                  if diag["observable"] else "lag not observable")
         self.status.setText(
-            f"Triggered burst avg: N={n}, {L} samp/ch, jitter {omin}..{omax}"
+            f"Triggered burst avg: N={n}, {L} samp/ch, {health}"
             f"{lat_txt}.{where}")
 
-    def _save_burst(self, caps, avg, offs):
+    def _save_burst(self, caps, avg, offs, diag=None):
         try:
             import os
             import time
             d = self.args.capture_dir
             os.makedirs(d, exist_ok=True)
             path = os.path.join(d, f"burst_{time.strftime('%Y%m%d_%H%M%S')}.npz")
-            kw = {"offsets": np.asarray(offs)}
+            # Keep the historical `offsets` key for readers of older burst
+            # files, but explicitly label its new diagnostic-only meaning.
+            kw = {"offsets": np.asarray(offs),
+                  "offsets_diagnostic": np.asarray(offs),
+                  "software_alignment_applied": np.asarray(False)}
+            if diag:
+                kw["trigger_anchor"] = np.asarray(
+                    -1 if diag.get("anchor") is None else diag["anchor"])
+                kw["trigger_observable"] = np.asarray(diag.get("observable", False))
+                kw["trigger_score"] = np.asarray(diag.get("score", 0.0))
             for ch in range(4):
                 kw[f"raw_ch{ch}"] = np.stack([c[ch] for c in caps])
                 kw[f"avg_ch{ch}"] = np.asarray(avg[ch])
@@ -2676,8 +2769,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._bg(lambda: self.msamp_result.emit(self._multisample_once(nbytes, reps)))
 
     def _multisample_once(self, nbytes, reps):
-        """BCPT + BRDO + one UDP drain, sliced into per-rep stacks and integer-
-        aligned on ch0. Runs in a worker thread. Returns
+        """BCPT + BRDO + one UDP drain, sliced into raw hardware-aligned reps.
+        Correlation offsets are reported as diagnostics but are never applied.
+        Runs in a worker thread. Returns
         {'stack': {ch: float64[N,L]}, 'offs': [...], 'meta': {...}} or {'_err'}."""
         try:
             from burst_capture import Reassembler, decode_chip, parse_brdo_request
@@ -2753,29 +2847,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
                                    for r in range(n)]).astype(np.float64)
                      for ch in range(4)}
 
-            # integer alignment on the ch0 anchor via FFT cross-correlation to
-            # the ensemble median (shifts are pure integers: DAC/ADC clocks are
-            # locked; only the clk_50 CDCs move the window by a few beats).
-            L = spr
-            ref = np.median(stack[0], axis=0)
-            ref = ref - ref.mean()
-            fr = np.fft.rfft(ref, n=2 * L)
-            maxlag = min(64, L // 4)
-            offs = []
-            for i in range(n):
-                sig = stack[0][i] - stack[0][i].mean()
-                cc = np.fft.irfft(fr * np.conj(np.fft.rfft(sig, n=2 * L)), n=2 * L)
-                lags = np.concatenate([np.arange(0, maxlag + 1),
-                                       np.arange(-maxlag, 0)])
-                idx = np.concatenate([np.arange(0, maxlag + 1),
-                                      np.arange(2 * L - maxlag, 2 * L)])
-                off = int(lags[int(np.argmax(cc[idx]))])
-                offs.append(off)
-                if off:
-                    for ch in range(4):
-                        stack[ch][i] = np.roll(stack[ch][i], off)
+            # Do not realign in software. A featureless zero-current ADC0 used
+            # to produce arbitrary lags here and np.roll would move valid ADC1
+            # neuron spikes. Pick the strongest repeatable channel solely for
+            # reporting whether the hardware trigger remained at sample zero.
+            diag = trigger_offset_diagnostics(stack)
+            offs = diag["offsets"]
             meta["cov"] = cov
-            return {"stack": stack, "offs": offs, "meta": meta}
+            return {"stack": stack, "offs": offs, "diag": diag, "meta": meta}
         except Exception as exc:  # noqa: BLE001
             import traceback
             traceback.print_exc()
@@ -2805,6 +2884,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.status.setText(f"Multisample capture failed: {msg}")
             return
         stack, offs, meta = res["stack"], res["offs"], res["meta"]
+        diag = res.get("diag", {"anchor": None, "observable": False, "score": 0.0})
         n = meta["reps"]
         L = stack[0].shape[1]
         avg = {ch: stack[ch].mean(axis=0) for ch in range(4)}
@@ -2827,19 +2907,25 @@ class ScopeWindow(QtWidgets.QMainWindow):
             p.plot(t, avg[ch] * VOLTS_PER_COUNT,
                    pen=pg.mkPen("#ffffff", width=1.4))
         omin, omax = min(offs), max(offs)
-        win.addLabel(f"N={n} hardware-triggered Ethernet bursts aligned+averaged "
-                     f"(x = ns @ 1 GS/s; measured offsets {omin}..{omax} samples; "
+        diag_txt = (f"diagnostic ADC{diag['anchor']} offsets {omin}..{omax} samples"
+                    if diag.get("observable") else
+                    "offset diagnostic unavailable (no repeatable timing feature)")
+        win.addLabel(f"N={n} hardware-triggered Ethernet bursts averaged at raw "
+                     f"sample indices (no software shift; x = ns @ 1 GS/s; "
+                     f"{diag_txt}; "
                      f"UDP coverage {100 * meta.get('cov', 1.0):.1f}%)",
                      row=4, col=0)
         win.show()
         self._msamp_popup = win
         caps = [{ch: stack[ch][i].astype(np.int16) for ch in range(4)}
                 for i in range(n)]
-        sub = self._save_burst(caps, avg, offs)
+        sub = self._save_burst(caps, avg, offs, diag)
         where = f"  -> {sub}" if sub else "  (save FAILED)"
+        health = (f"diagnostic ADC{diag['anchor']} lag {omin}..{omax}"
+                  if diag.get("observable") else "lag not observable")
         self.status.setText(
-            f"Multisample: N={n} x {L} samp/ch over Ethernet, jitter "
-            f"{omin}..{omax} samp.{where}")
+            f"Multisample: N={n} x {L} samp/ch, raw hardware alignment, "
+            f"{health}.{where}")
 
     # ---- one-click chattering demo bring-up ----
     def _on_default_config(self):

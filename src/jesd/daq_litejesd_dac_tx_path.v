@@ -61,6 +61,10 @@ module daq_litejesd_dac_tx_path #(
     reg  [31:0] triangle_word_r = 32'd0;
     reg  [23:0] sine_phase = 24'd0;
     reg  [31:0] sine_word_r = 32'd0;
+    // This register is an intentional 250 MHz timing boundary.  Vivado can
+    // otherwise absorb/retime it into src_converter*, recreating the full
+    // phase-add + lookup + crossbar path in one cycle.
+    (* DONT_TOUCH = "TRUE" *) reg [63:0] sine_quad_word_r = 64'd0;
 
     function [16:0] advance_triangle;
         input [15:0] sample;
@@ -202,11 +206,22 @@ module daq_litejesd_dac_tx_path #(
             triangle_word_r <= 32'd0;
             sine_phase      <= 24'd0;
             sine_word_r     <= 32'd0;
+            sine_quad_word_r <= 64'd0;
         end else begin
             triangle_word_r <= {triangle_next0[15:0], triangle_sample};
             triangle_sample <= triangle_next3[15:0];
             triangle_up     <= triangle_next3[16];
             sine_word_r     <= {sine_sample1, sine_sample0};
+            // Register the complete four-sample DDS beat before the source
+            // crossbar.  This keeps the phase-add/lookup chain out of the
+            // crossbar-to-output timing path at 250 MHz.  The added latency is
+            // one fixed JESD beat and does not alter DDS phase or sample order.
+            sine_quad_word_r <= {
+                sine_sample3,
+                sine_sample2,
+                sine_sample1,
+                sine_sample0
+            };
             sine_phase      <= sine_phase4;
         end
     end
@@ -214,12 +229,6 @@ module daq_litejesd_dac_tx_path #(
     assign triangle_word = triangle_word_r;
     assign sine_word = sine_word_r;
 
-    wire [63:0] sine_quad_word = {
-        sine_sample3,
-        sine_sample2,
-        sine_sample1,
-        sine_sample0
-    };
     wire [63:0] dac_tag_word0 = {16'h4444, 16'h3333, 16'h2222, 16'h1111};
     wire [63:0] dac_tag_word1 = {16'h8888, 16'h7777, 16'h6666, 16'h5555};
     wire [63:0] dac_tag_word2 = {16'hCCCC, 16'hBBBB, 16'hAAAA, 16'h9999};
@@ -235,7 +244,7 @@ module daq_litejesd_dac_tx_path #(
     // gates the upstream BRAM read pipeline in top.v.
     wire [16*64-1:0] xbar_src;
     assign xbar_src[ 0*64 +: 64] = 64'd0;                  // 0  off
-    assign xbar_src[ 1*64 +: 64] = sine_quad_word;         // 1  DDS (broadcast)
+    assign xbar_src[ 1*64 +: 64] = sine_quad_word_r;       // 1  DDS (broadcast)
     assign xbar_src[ 2*64 +: 64] = program_word0;          // 2  BRAM ch0
     assign xbar_src[ 3*64 +: 64] = program_word1;          // 3  BRAM ch1
     assign xbar_src[ 4*64 +: 64] = program_word2;          // 4  BRAM ch2

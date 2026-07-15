@@ -11,6 +11,7 @@ module izh_dac_integration_tb;
 
     reg reset = 1'b1;
     reg prog_start = 1'b0;
+    reg experiment_restart = 1'b0;
     reg signed [31:0] i_external = 32'sd0;
 
     wire [5:0]  cfg_addr;
@@ -27,6 +28,7 @@ module izh_dac_integration_tb;
         .clk         (clk),
         .reset       (reset),
         .prog_start  (prog_start),
+        .experiment_restart (experiment_restart),
         .i_external  (i_external),
         .cfg_addr    (cfg_addr),
         .cfg_data    (cfg_data),
@@ -122,6 +124,20 @@ module izh_dac_integration_tb;
         check32("global dt", u_bank.g_dt, 32'h0000_2000);
         check32("global period", {8'd0, u_bank.g_period}, 32'h0000_0011);
         check32("ch1 I survives global load", u_bank.i_param[1], 32'h0003_0000);
+
+        // A fresh current program resets neuron v/u and its update divider on
+        // the same clk edge as the current-player restart.
+        repeat (5) tick();
+        if (u_bank.gen_neuron[0].upd_cnt == 24'd0) begin
+            $display("FAIL update divider did not advance before experiment restart");
+            $fatal;
+        end
+        @(negedge clk); experiment_restart = 1'b1;
+        tick();
+        check32("experiment restart v", u_bank.v_out[0], u_bank.c_param[0]);
+        check32("experiment restart divider",
+                {8'd0, u_bank.gen_neuron[0].upd_cnt}, 32'd0);
+        @(negedge clk); experiment_restart = 1'b0;
 
         if (debug_word[31:24] !== 8'h1A) begin
             $display("FAIL debug marker actual=0x%08x", debug_word);

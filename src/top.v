@@ -1115,6 +1115,7 @@ module top #(
         .clk         (clk_50),
         .reset       (neuron_rst),
         .prog_start  (izh_prog_start),
+        .experiment_restart (cur_restart_50),
         // Injected current source (Q16.16): the programmable current player's
         // held output, summed into every neuron's I.
         .i_external  (cur_i_current),
@@ -1967,6 +1968,7 @@ module top #(
         .clk           (gth_rx_usrclk2),
         .rd_clk        (clk_300),
         .rst           (adc_rx_reset),
+        .prepare       (adc_capture_req_edge),
         .start         (adc_capture_start),
         .capture_beats (adc_capture_beats_rx),
         .data_valid    (adc1_litejesd_ready_async),
@@ -1983,6 +1985,7 @@ module top #(
         .clk           (gth_rx_usrclk2),
         .rd_clk        (clk_300),
         .rst           (adc_rx_reset),
+        .prepare       (adc_capture_req_edge),
         .start         (adc_capture_start),
         .capture_beats (adc_capture_beats_rx),
         .data_valid    (adc2_litejesd_ready_async),

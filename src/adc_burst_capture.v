@@ -28,6 +28,7 @@ module adc_burst_capture #(
     input  wire         clk,            // ADC beat clock (write side, ~250 MHz)
     input  wire         rd_clk,         // DMA drain clock (read side, faster)
     input  wire         rst,            // reset, applied in the `clk` domain
+    input  wire         prepare,        // clear/prepare FIFO before a later trigger
     input  wire         start,          // 1-cycle pulse (clk): begin a capture
     input  wire [31:0]  capture_beats,  // total 128-bit beats to capture
 
@@ -54,6 +55,8 @@ module adc_burst_capture #(
     reg         fifo_clear = 1'b0;
     reg [3:0]   fifo_clear_count = 4'd0;
     reg         start_pending = 1'b0;
+    reg         preparing = 1'b0;
+    reg         prepared = 1'b0;
     reg [31:0]  pending_beats = 32'd0;
 
     wire        last_beat = (in_rem == 32'd1);
@@ -72,6 +75,9 @@ module adc_burst_capture #(
     (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] fifo_wr_busy_sync = 2'b11;
     (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] fifo_rd_busy_sync = 2'b11;
     wire        fifo_ready_after_clear = ~fifo_wr_busy_sync[1] & ~fifo_rd_busy_sync[1];
+    wire        clear_ready = ~fifo_clear & fifo_ready_after_clear;
+    wire        launch_now = ~prepare & clear_ready & (prepared | preparing) &
+                             (start | start_pending);
 
     // First-word-fall-through: dout is valid whenever non-empty, straight onto
     // AXIS in the rd_clk domain.
@@ -131,13 +137,16 @@ module adc_burst_capture #(
             fifo_clear <= 1'b0;
             fifo_clear_count <= 4'd0;
             start_pending <= 1'b0;
+            preparing <= 1'b0;
+            prepared <= 1'b0;
             pending_beats <= 32'd0;
-        end else if (start) begin
+        end else if (prepare) begin
             // A DMA reset/re-arm does NOT reset this PL-side async FIFO. If any
             // previous capture beats remain, a newly armed S2MM channel will
-            // drain stale data into DDR before the new ADC window starts. Gate
-            // AXIS off, clear the FIFO, then begin the capture once reset has
-            // propagated through both FIFO clock domains.
+            // drain stale data into DDR before the new ADC window starts.  Gate
+            // AXIS off and clear the FIFO while the hardware trigger is still
+            // DISARMED.  A simultaneous start (legacy immediate mode) is held
+            // pending until reset has propagated through both FIFO domains.
             running <= 1'b0;
             armed <= 1'b0;
             done <= 1'b0;
@@ -146,7 +155,9 @@ module adc_burst_capture #(
             axis_enable <= 1'b0;
             fifo_clear <= 1'b1;
             fifo_clear_count <= 4'd8;
-            start_pending <= 1'b1;
+            start_pending <= start;
+            preparing <= 1'b1;
+            prepared <= 1'b0;
             pending_beats <= capture_beats;
         end else begin
             if (fifo_clear) begin
@@ -154,8 +165,22 @@ module adc_burst_capture #(
                     fifo_clear_count <= fifo_clear_count - 1'b1;
                 else
                     fifo_clear <= 1'b0;
-            end else if (start_pending && fifo_ready_after_clear) begin
+            end
+
+            // FIFO reset has completed before the external trigger.  Mark the
+            // engine ready but do not accept ADC data until start arrives.
+            if (preparing && clear_ready && !launch_now) begin
+                preparing <= 1'b0;
+                prepared <= 1'b1;
+            end
+
+            if (start && !launch_now)
+                start_pending <= 1'b1;
+
+            if (launch_now) begin
                 start_pending <= 1'b0;
+                preparing <= 1'b0;
+                prepared <= 1'b0;
                 if (pending_beats == 32'd0) begin
                     running <= 1'b0;
                     armed <= 1'b0;
@@ -195,7 +220,7 @@ module adc_burst_capture #(
         running,
         overflow,
         tready_sync[1],
-        fifo_clear | start_pending,
+        fifo_clear | preparing | start_pending,
         axis_enable,
         in_rem[17:0]
     };

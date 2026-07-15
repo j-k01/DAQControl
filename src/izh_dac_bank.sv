@@ -23,6 +23,7 @@ module izh_dac_bank #(
     input  wire                   clk,        // clk_50 (neuron domain)
     input  wire                   reset,      // global reset, active high
     input  wire                   prog_start, // 1-cycle pulse (CDC'd to clk): load bank
+    input  wire                   experiment_restart, // current-player restart: fresh v/u phase
     input  wire signed [31:0]     i_external, // injected current (Q16.16): added to each neuron's I
 
     output reg  [ADDR_W-1:0]      cfg_addr,   // config BRAM port-B read address
@@ -137,6 +138,8 @@ module izh_dac_bank #(
 
     // ---- neurons (core explicitly emits SPIKE; spikes go to the GT shaper) ---
     wire [3:0]         spike;
+    wire [3:0]         effective_neuron_reset = neuron_reset |
+                                                  {4{reset | experiment_restart}};
     wire signed [31:0] v_out [0:3];
     wire signed [31:0] u_out [0:3];
 
@@ -148,7 +151,7 @@ module izh_dac_bank #(
             wire step = (upd_cnt == 24'd0);
 
             always @(posedge clk) begin
-                if (reset | neuron_reset[n] | (reload == 24'd0))
+                if (effective_neuron_reset[n] | (reload == 24'd0))
                     upd_cnt <= 24'd0;
                 else if (upd_cnt == reload)
                     upd_cnt <= 24'd0;
@@ -158,7 +161,7 @@ module izh_dac_bank #(
 
             izh_neuron u_izh_neuron (
                 .clk        (clk),
-                .reset      (reset | neuron_reset[n]),
+                .reset      (effective_neuron_reset[n]),
                 .a_param    (a_param[n]),
                 .b_param    (b_param[n]),
                 .c_param    (c_param[n]),
@@ -175,7 +178,10 @@ module izh_dac_bank #(
     endgenerate
 
     wire busy = (st != S_IDLE);
-    assign spike_flags = spike;
+    // The third-party core's SPIKE register does not explicitly test reset and
+    // can otherwise expose one stale event on a v/u reset edge.  Suppress that
+    // cycle along with resetting v/u and the update divider.
+    assign spike_flags = spike & ~effective_neuron_reset;
     assign debug_word  = {8'h1A, mask, busy, global_set, v_out[0][17:0]};
 
     // Per-neuron current monitor = exactly what each neuron integrates

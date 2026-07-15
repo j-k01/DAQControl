@@ -52,6 +52,7 @@ module izh_monitor_integ_tb;
     wire [31:0]  dbg;
     izh_dac_bank #(.ADDR_W(6)) u_bank (
         .clk(clk_50), .reset(neuron_rst), .prog_start(1'b0),
+        .experiment_restart(restart),
         .i_external(i_current),
         .cfg_addr(cfg_addr), .cfg_data(cfg_data),
         .spike_flags(spike_flags), .i_mon(i_mon), .debug_word(dbg)
