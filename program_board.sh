@@ -133,13 +133,19 @@ run "$VIVADO" -mode batch -source quiet.tcl -tclargs program_and_load.tcl \
 
 if [ "$DO_ETH" -eq 1 ]; then
     if [ -z "$XSCT" ]; then
-        echo "ERROR: xsdb/xsct not found. Set XSCT=/full/path, or pass --no-eth." >&2
-        exit 1
+        echo "WARNING: xsdb/xsct not found; Ethernet skipped, UART remains available." >&2
+    else
+        # Ethernet is optional. psu_init may reset fabric-side processors even
+        # when A53/GEM bring-up subsequently fails, so never let `set -e` abort
+        # before the MicroBlaze UART firmware is restored below.
+        echo "==> A53 PS-Ethernet app ${INIT_PS:-(no psu_init)}   ($XSCT)"
+        if ! run "$XSCT" load_ps_eth_stream.tcl $INIT_PS; then
+            echo "WARNING: Ethernet bring-up failed; continuing with UART-only control." >&2
+        fi
+
+        echo "==> Restoring MicroBlaze UART firmware after PS/Ethernet attempt"
+        run "$XSCT" load_mb_firmware.tcl prebuilt/firmware.elf --no-ps-init
     fi
-    # run xsdb/xsct directly (NOT via quiet.tcl): their `source` rejects
-    # -notrace, and they don't echo commands the way Vivado does anyway.
-    echo "==> A53 PS-Ethernet app ${INIT_PS:-(no psu_init)}   ($XSCT)"
-    run "$XSCT" load_ps_eth_stream.tcl $INIT_PS
 fi
 
-echo "==> Done. Launch the GUI: python scripts/dac_scope_qt.py --port COM10"
+echo "==> UART/XBar control ready. Launch: python scripts/dac_scope_qt.py --port COM10"

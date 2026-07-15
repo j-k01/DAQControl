@@ -4,6 +4,26 @@ if {![info exists argv]} {
     set argv {}
 }
 
+# The normal FPGA-programming path may initialize the PS before loading the
+# MicroBlaze.  program_board.{ps1,sh} also reloads the MicroBlaze *after* the
+# optional Ethernet/PS bring-up so a failed psu_init cannot leave UART dead.
+# That final reload must not run psu_init again or it could disturb the A53 app.
+set elf_file [file join $script_dir sw workspace firmware Debug firmware.elf]
+set explicit_elf 0
+set run_ps_init 1
+foreach arg $argv {
+    if {$arg eq "--no-ps-init"} {
+        set run_ps_init 0
+    } elseif {[string match "--*" $arg]} {
+        error "Unknown option: $arg\nUsage: xsdb load_mb_firmware.tcl \[firmware.elf\] \[--no-ps-init\]"
+    } elseif {$explicit_elf} {
+        error "Only one MicroBlaze ELF may be specified."
+    } else {
+        set elf_file [file normalize $arg]
+        set explicit_elf 1
+    }
+}
+
 if {
     [llength [info commands connect]] == 0 ||
     [llength [info commands targets]] == 0 ||
@@ -13,14 +33,8 @@ if {
     error "load_mb_firmware.tcl must run under XSCT/Vitis Tcl, not Vivado Tcl.\nUse 'xsct.bat load_mb_firmware.tcl', or use 'vivado.bat -mode batch -source program_and_load.tcl' to program the FPGA and then load firmware."
 }
 
-if {[llength $argv] > 0} {
-    set elf_file [file normalize [lindex $argv 0]]
-} else {
-    set elf_file [file join $script_dir sw workspace firmware Debug firmware.elf]
-}
-
 if {![file exists $elf_file]} {
-    error "MicroBlaze ELF not found: $elf_file\nRun 'xsct.bat build_sw.tcl' first, or pass an ELF path: xsct.bat load_mb_firmware.tcl path/to/firmware.elf"
+    error "MicroBlaze ELF not found: $elf_file\nRun 'xsct.bat build_sw.tcl' first, or pass an ELF path: xsct.bat load_mb_firmware.tcl path/to/firmware.elf \[--no-ps-init\]"
 }
 
 proc select_microblaze_target {} {
@@ -103,7 +117,11 @@ proc run_psu_init_if_available {script_dir} {
 puts "Connecting to hw_server..."
 connect
 
-run_psu_init_if_available $script_dir
+if {$run_ps_init} {
+    run_psu_init_if_available $script_dir
+} else {
+    puts "Skipping PS init for MicroBlaze-only UART restore."
+}
 
 set target_id [select_microblaze_target]
 puts "Selected MicroBlaze target: $target_id"

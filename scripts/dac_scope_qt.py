@@ -571,6 +571,7 @@ class DacControl:
         self.s = serial.Serial(port, baud, timeout=2, write_timeout=3)
         self.lock = threading.Lock()
         self.port = port
+        self.last_error = ""
         time.sleep(0.2)
 
     def _readuntil(self, prefixes, timeout=4.0):
@@ -610,7 +611,34 @@ class DacControl:
         self.cmd(f"WRTE 3 0x{rw3:08X}")
 
     def set_source(self, ch, label):
-        return self.cmd(f"NSRC {ch} {LABEL_TO_NSRC[label]}", ok=("DAC xbar", "ERR"))
+        """Set one XBar nibble and verify the actual reg17 readback.
+
+        The acknowledgement alone only proves that firmware parsed NSRC.  The
+        readback prevents the GUI from displaying a live route unless the
+        register file really contains the requested source (and also proves
+        that routing Spike 0 to DAC0 and DAC1 is legal: low byte 0x66).
+        """
+        token = LABEL_TO_NSRC[label]
+        reply = self.cmd(f"NSRC {ch} {token}", ok=("DAC xbar", "ERR"))
+        if not reply or reply.startswith("ERR"):
+            return reply or "ERR no UART response to NSRC"
+        rb = self.cmd("RDRW 17", ok=("REG17", "ERR"))
+        if not rb.startswith("REG17"):
+            return f"ERR XBar readback failed ({rb or 'no UART response'})"
+        try:
+            value = int(rb.split("=", 1)[1].strip(), 0)
+        except (IndexError, ValueError):
+            return f"ERR malformed XBar readback ({rb})"
+        expected = SOURCE_LABELS.index(label)
+        actual = (value >> (4 * int(ch))) & 0xF
+        if actual != expected:
+            return (f"ERR XBar readback DAC{ch}: requested {expected}, "
+                    f"read {actual} (reg17=0x{value & 0xFFFF:04X})")
+        return f"{reply}; reg17=0x{value & 0xFFFF:04X}"
+
+    def probe_firmware(self, timeout=2.0):
+        """Return reg17 reply only when the DAQ MicroBlaze is actually alive."""
+        return self.cmd("RDRW 17", ok=("REG17", "ERR"), timeout=timeout)
 
     def set_neuron(self, ch, profile):
         return self.cmd(f"NEUR {ch} {profile}", ok=("OK", "NEUR", "ERR"))
@@ -639,11 +667,12 @@ class DacControl:
 
     def base_setup(self):
         """Board init only -- does NOT start the live stream (opt-in)."""
-        self.cmd("WRTE 2 0x01000018")
+        replies = [self.cmd("WRTE 2 0x01000018")]
         for ch, prof in enumerate(NEURON_PROFILES):
-            self.cmd(f"NEUR {ch} {prof}")
-        self.cmd("NEUR all period 1")
-        self.cmd("NEUR all dt 0x8000")
+            replies.append(self.cmd(f"NEUR {ch} {prof}"))
+        replies.append(self.cmd("NEUR all period 1"))
+        replies.append(self.cmd("NEUR all dt 0x8000"))
+        return replies
 
     def start_stream(self, decim, usecic):
         return self.cmd(f"STRM {decim}{' cic' if usecic else ''}",
@@ -763,21 +792,27 @@ class DacControl:
         """Send a capture command, wait for the FE10CAFE sync, read
         frames*8*4 bytes, and decode to 4-channel int16 arrays (over UART)."""
         with self.lock:
+            self.last_error = ""
             self.s.reset_input_buffer()
             self.s.write((cmd_str + "\n").encode("ascii"))
             self.s.flush()
             win = bytearray()
+            prefix = bytearray()
             deadline = time.time() + 15
             while time.time() < deadline:
                 b = self.s.read(1)
                 if not b:
                     continue
+                if len(prefix) < 512:
+                    prefix += b
                 win += b
                 if len(win) > 4:
                     del win[0]
                 if bytes(win) == CAPT_SYNC:
                     break
             else:
+                msg = bytes(prefix).decode("ascii", errors="replace").strip()
+                self.last_error = msg or "no UART response / no capture sync"
                 return None
             need = frames * 8 * 4
             data = bytearray()
@@ -787,6 +822,7 @@ class DacControl:
                     break
                 data += chunk
         if len(data) < need:
+            self.last_error = f"short UART payload: {len(data)}/{need} bytes"
             return None
         arr = np.frombuffer(bytes(data), dtype="<u4").reshape(-1, 8)
         chans = {}
@@ -2132,12 +2168,29 @@ class ScopeWindow(QtWidgets.QMainWindow):
         # ---- UART (required): everything in the panel works over this ----
         try:
             self.dac = DacControl(port)
-            self.dac.base_setup()
+            probe = self.dac.probe_firmware()
+            if not probe.startswith("REG17"):
+                raise RuntimeError(
+                    "COM port opened, but DAQ MicroBlaze firmware did not answer "
+                    "RDRW 17. Re-run program_board.ps1; Ethernet is not required.")
+            setup_replies = self.dac.base_setup()
+            if any(not r or r.startswith("ERR") for r in setup_replies):
+                raise RuntimeError("DAQ firmware stopped responding during setup")
             for ch in range(4):
-                self.dac.set_source(ch, self.args.initial)
+                reply = self.dac.set_source(ch, self.args.initial)
+                if not reply or reply.startswith("ERR"):
+                    raise RuntimeError(f"DAC{ch} initial XBar route failed: {reply}")
         except Exception as e:  # noqa: BLE001
             self.conn_lbl.setText(f"UART connect failed: {e}")
             self.conn_lbl.setStyleSheet("color:#E57373;")
+            # Release COM immediately. Do not call DacControl.close() here: it
+            # sends another firmware command, which would add a second timeout
+            # precisely when the firmware probe has already failed.
+            if self.dac:
+                try:
+                    self.dac.s.close()
+                except Exception:  # noqa: BLE001
+                    pass
             self.dac = None
             return
         self.connect_btn.setText("Reconnect")
@@ -2238,7 +2291,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         def work():
             r = self.dac.set_source(ch, label)
             ok = bool(r and not r.startswith("ERR"))
-            self.dac_done.emit(ch, ok, label)
+            detail = label if ok else f"{label}: {r or 'no UART response'}"
+            self.dac_done.emit(ch, ok, detail)
         self._bg(work)
 
     def _on_dac_done(self, ch, ok, detail):
@@ -2418,7 +2472,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
     def _show_capture(self, chans):
         self.capt_btn.setEnabled(True)
         if chans is None:
-            self.status.setText("UART capture failed (no sync / timeout).")
+            why = self.dac.last_error if self.dac else "no connection"
+            self.status.setText(f"UART capture failed: {why}")
             return
         win = pg.GraphicsLayoutWidget()
         win.setWindowTitle("UART ADC capture")

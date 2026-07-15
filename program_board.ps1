@@ -146,59 +146,87 @@ if ($LASTEXITCODE -ne 0) {
 
 if (-not $NoEth) {
     if (-not $xsctExe) {
-        Write-Error "xsdb/xsct not found for $ver. Re-run with -NoEth, or pass -Vivado <ver>."
-        exit 1
-    }
-    # run xsdb/xsct directly (NOT via quiet.tcl): their `source` rejects
-    # -notrace, and they don't echo commands the way Vivado does anyway.
-    $ethArgs = @("load_ps_eth_stream.tcl")
-    if (-not $NoInit) { $ethArgs += "--init-ps" }
-    Write-Host "==> A53 PS-Ethernet app $($ethArgs -join ' ')   ($xsctExe)" -ForegroundColor Green
-    & $xsctExe @ethArgs
-
-    # An A53 app started right after psu_init latches a dead GEM/PHY autoneg
-    # state (link up, zero packets on the wire). Reload it once the PHY link
-    # has settled -- the second load (no --init-ps) reliably brings UDP up.
-    Write-Host "==> Waiting for the PHY link to settle, then reloading the A53 app" -ForegroundColor Green
-    Start-Sleep -Seconds 10
-    & $xsctExe "load_ps_eth_stream.tcl"
-
-    if (-not $NoPing) {
-        if (-not $NoNicSetup) { Ensure-BoardNic $HostIp | Out-Null }
-
-        # Ping -> diagnose -> reload -> retry. "No ARP" = the board transmits
-        # nothing (PHY latch: reload helps); "ARP but no ping" = host side.
-        $up = $false
-        for ($try = 1; $try -le $MaxEthRetries; $try++) {
-            Start-Sleep -Seconds 5
-            if (Test-Connection -ComputerName $BoardIp -Count 3 -Quiet) {
-                $up = $true
-                break
-            }
-            $seen = (arp -a) | Select-String ([regex]::Escape($BoardIp))
-            if ($seen) {
-                Write-Warning ("$BoardIp answers ARP but not ping -- the board is " +
-                    "alive; check host side (VPN/firewall software, a second NIC " +
-                    "on 192.168.2.x).")
-            } else {
-                Write-Host ("==> No ARP from $BoardIp (PHY latch); reloading the " +
-                    "A53 app (retry $try/$MaxEthRetries)") -ForegroundColor Yellow
-            }
-            & $xsctExe "load_ps_eth_stream.tcl"
-            Start-Sleep -Seconds 10
+        # No PS command ran, so the MicroBlaze loaded above is still intact.
+        Write-Warning ("xsdb/xsct not found for $ver; Ethernet skipped. " +
+            "UART/XBar control remains available.")
+    } else {
+        $ethFailed = $false
+        # Run xsdb/xsct directly (NOT via quiet.tcl). Ethernet is optional: an
+        # A53/GEM/PHY failure must never abort before UART firmware is restored.
+        $ethArgs = @("load_ps_eth_stream.tcl")
+        if (-not $NoInit) { $ethArgs += "--init-ps" }
+        Write-Host "==> A53 PS-Ethernet app $($ethArgs -join ' ')   ($xsctExe)" -ForegroundColor Green
+        & $xsctExe @ethArgs
+        if ($LASTEXITCODE -ne 0) {
+            $ethFailed = $true
+            Write-Warning "Initial Ethernet load failed (exit $LASTEXITCODE); continuing with UART."
         }
-        if ($up) {
-            Write-Host "==> Board answering on $BoardIp" -ForegroundColor Green
-        } else {
-            Write-Warning "Still no ping after $MaxEthRetries A53 reloads. A53 mailbox:"
-            & $xsctExe "read_eth_mailbox.tcl"
-            Write-Warning ("Mailbox DA0000FF with word1 advancing = app alive, link/" +
-                "host problem (cable in the ZCU102 GEM3 RJ45? host on $HostIp/24?). " +
-                "DA000004/05 = PHY never came up. DAE000xx = app init error -- " +
-                "rerun this script. JTAG-only terminal? use -NoPing.")
+
+        # psu_init/PS reset may disturb the fabric-side MicroBlaze even when
+        # Ethernet subsequently fails. Restore UART immediately; later A53
+        # retries omit PS init and therefore cannot reset it again.
+        Write-Host "==> Restoring MicroBlaze UART firmware after PS initialization" -ForegroundColor Green
+        & $xsctExe "load_mb_firmware.tcl" $trackedElf "--no-ps-init"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "MicroBlaze UART restore failed (exit $LASTEXITCODE)."
             exit 1
+        }
+
+        # An A53 app started right after psu_init can latch a dead GEM/PHY
+        # autoneg state. Retry only if the initial load actually succeeded.
+        if (-not $ethFailed) {
+            Write-Host "==> Waiting for the PHY link to settle, then reloading the A53 app" -ForegroundColor Green
+            Start-Sleep -Seconds 10
+            & $xsctExe "load_ps_eth_stream.tcl"
+            if ($LASTEXITCODE -ne 0) {
+                $ethFailed = $true
+                Write-Warning "Ethernet reload failed (exit $LASTEXITCODE); continuing with UART."
+            }
+        }
+
+        if (-not $NoPing -and -not $ethFailed) {
+            if (-not $NoNicSetup) { Ensure-BoardNic $HostIp | Out-Null }
+
+            # Ping -> diagnose -> reload -> retry. "No ARP" = the board
+            # transmits nothing (PHY latch); "ARP but no ping" = host side.
+            $up = $false
+            for ($try = 1; $try -le $MaxEthRetries; $try++) {
+                Start-Sleep -Seconds 5
+                if (Test-Connection -ComputerName $BoardIp -Count 3 -Quiet) {
+                    $up = $true
+                    break
+                }
+                $seen = (arp -a) | Select-String ([regex]::Escape($BoardIp))
+                if ($seen) {
+                    Write-Warning ("$BoardIp answers ARP but not ping -- the board is " +
+                        "alive; check host side (VPN/firewall software, a second NIC " +
+                        "on 192.168.2.x).")
+                } else {
+                    Write-Host ("==> No ARP from $BoardIp (PHY latch); reloading the " +
+                        "A53 app (retry $try/$MaxEthRetries)") -ForegroundColor Yellow
+                }
+                & $xsctExe "load_ps_eth_stream.tcl"
+                if ($LASTEXITCODE -ne 0) {
+                    $ethFailed = $true
+                    break
+                }
+                Start-Sleep -Seconds 10
+            }
+            if ($up) {
+                Write-Host "==> Board answering on $BoardIp" -ForegroundColor Green
+            } else {
+                $ethFailed = $true
+                Write-Warning "Still no ping after Ethernet retries. A53 mailbox:"
+                & $xsctExe "read_eth_mailbox.tcl"
+                Write-Warning ("Ethernet is unavailable, but programming will " +
+                    "continue and restore UART/XBar control.")
+            }
+        }
+
+        if ($ethFailed) {
+            Write-Warning "Ethernet unavailable; UART capture and XBar control are ready."
         }
     }
 }
 
-Write-Host "==> Done. Launch the GUI: python scripts\dac_scope_qt.py --port COM10" -ForegroundColor Cyan
+Write-Host "==> UART/XBar control ready. Launch: python scripts\dac_scope_qt.py --port COM10" -ForegroundColor Cyan
