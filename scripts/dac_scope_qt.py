@@ -1568,6 +1568,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
             p = self.glw.addPlot(row=ch, col=0)
             p.showGrid(x=True, y=True, alpha=0.25)
             p.setLabel("left", f"ch{ch}", units="V")
+            # One shared time/frequency axis: zooming or panning any waveform
+            # moves every channel to the identical X window.  Y remains fully
+            # independent so Autoscale Y can fit each waveform separately.
+            if ch > 0:
+                p.setXLink(self.plots[0])
             if ch < 3:
                 p.getAxis("bottom").setStyle(showValues=False)
             self.plots.append(p)
@@ -1861,6 +1866,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "Display only -- saved .npz stays raw.\n"
             "Also removes true DC and the phase-locked fs/4 & fs/2 component.")
         self.auto_chk = QtWidgets.QCheckBox("Autoscale Y")
+        self.auto_chk.setToolTip(
+            "Fit each channel's Y axis independently to its own waveform.\n"
+            "All four X axes remain linked and use one common trigger origin.")
         self.auto_chk.toggled.connect(lambda v: setattr(self, "autoscale", v))
         self.trig_chk = QtWidgets.QCheckBox("Trigger")
         self.trig_chk.setChecked(True)
@@ -3076,8 +3084,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         the Time/FFT and Autoscale toggles (full rate, no decimation)."""
         if span is None:
             span = self.args.time_span
+        fulls = {ch: self._deint(chans[ch].astype(np.float64))
+                 for ch in range(4)}
+        time_slices = None if self.fft_view else self._aligned_time_slices(fulls, span)
         for ch in range(4):
-            full = self._deint(chans[ch].astype(np.float64))
+            full = fulls[ch]
             if self.fft_view:
                 v = full[-span:] * VOLTS_PER_COUNT
                 v = v - v.mean()
@@ -3089,13 +3100,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 if self.autoscale:
                     self.plots[ch].setYRange(db.max() - 100, db.max() + 5)
             else:
-                y = self._trig_slice(full, span) if self.trigger else full[-span:]
+                y = time_slices[ch]
                 t = np.arange(len(y)) / fs
                 v = y * VOLTS_PER_COUNT
                 self.curves[ch].setData(t, v)
                 if self.autoscale:
-                    m = max(0.02, np.abs(v).max() * 1.2)
-                    self.plots[ch].setYRange(-m, m)
+                    self._autoscale_waveform_y(self.plots[ch], v)
 
     def _show_burst(self, chans, cov, tries=1):
         nbytes = getattr(self, "_last_collect_bytes", 1 << 20)
@@ -3140,21 +3150,67 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 if ch == 3:
                     p.setLabel("bottom", "time", units="s")
 
-    def _trig_slice(self, yfull, span):
+    @staticmethod
+    def _autoscale_waveform_y(plot, values, min_span=0.04):
+        """Fit one plot to one waveform without affecting any other Y axis."""
+        finite = np.asarray(values)[np.isfinite(values)]
+        if finite.size == 0:
+            return
+        lo = float(finite.min())
+        hi = float(finite.max())
+        center = 0.5 * (lo + hi)
+        span = max(float(min_span), hi - lo)
+        pad = 0.10 * span
+        plot.setYRange(center - 0.5 * span - pad,
+                       center + 0.5 * span + pad,
+                       padding=0)
+
+    def _trig_start(self, yfull, span):
+        """Return one trigger start index; callers reuse it for every channel."""
         n = len(yfull)
         if n < span + 2:
-            return yfull[-span:]
+            return max(0, n - span)
         thr = yfull.mean()
         if yfull.std() < 8.0:
-            return yfull[-span:]
+            return max(0, n - span)
         lo = max(1, n - 2 * span)
         hi = n - span
         a, b = yfull[lo - 1:hi - 1], yfull[lo:hi]
         cross = np.where((a < thr) & (b >= thr))[0]
         if len(cross) == 0:
-            return yfull[-span:]
-        idx = lo + cross[-1]
-        return yfull[idx:idx + span]
+            return max(0, n - span)
+        return lo + int(cross[-1])
+
+    def _aligned_time_slices(self, fulls, span):
+        """Slice every channel at one shared sample origin.
+
+        The channel with the largest recent peak-to-peak swing supplies the
+        trigger because an open/quiet input is a poor reference.  Crucially,
+        its start index is then applied unchanged to all four channels, keeping
+        real inter-channel latency visible instead of triggering each trace
+        independently and accidentally erasing it.
+        """
+        common_n = min(len(fulls[ch]) for ch in range(4))
+        width = min(int(span), common_n)
+        if width <= 0:
+            return {ch: fulls[ch][:0] for ch in range(4)}
+        if self.trigger:
+            tail = min(common_n, max(width + 2, 2 * width))
+            scores = {
+                ch: float(np.ptp(fulls[ch][common_n - tail:common_n]))
+                for ch in range(4)
+            }
+            ref = max(scores, key=scores.get)
+            start = self._trig_start(fulls[ref][:common_n], width)
+        else:
+            start = common_n - width
+        start = max(0, min(int(start), common_n - width))
+        return {ch: fulls[ch][start:start + width] for ch in range(4)}
+
+    def _trig_slice(self, yfull, span):
+        """Legacy single-waveform helper; main plots use aligned slices."""
+        start = self._trig_start(yfull, span)
+        return yfull[start:start + span]
 
     def _update(self):
         if self.paused or self.tap is None:
@@ -3163,8 +3219,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
         decim = max(1, self.tap.decim)
         fs = 1.0e9 / decim
         span = self.args.time_span
+        fulls = {ch: snap[ch].astype(np.float64) for ch in range(4)}
+        time_slices = None if self.fft_view else self._aligned_time_slices(fulls, span)
         for ch in range(4):
-            full = snap[ch].astype(np.float64)
+            full = fulls[ch]
             if self.fft_view:
                 v = full[-span:] * VOLTS_PER_COUNT
                 v = v - v.mean()
@@ -3176,13 +3234,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 if self.autoscale:
                     self.plots[ch].setYRange(db.max() - 100, db.max() + 5)
             else:
-                y = self._trig_slice(full, span) if self.trigger else full[-span:]
+                y = time_slices[ch]
                 t = np.arange(len(y)) / fs
                 v = y * VOLTS_PER_COUNT
                 self.curves[ch].setData(t, v)
                 if self.autoscale:
-                    m = max(0.02, np.abs(v).max() * 1.2)
-                    self.plots[ch].setYRange(-m, m)
+                    self._autoscale_waveform_y(self.plots[ch], v)
         self.status.setText(
             f"decim={decim}  {1000.0/decim:.2f} MS/s/ch  "
             f"Nyq {500.0/decim:.3f} MHz | pkts={self.tap.packets} "
