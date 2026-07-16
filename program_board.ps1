@@ -4,18 +4,18 @@
   the A53 PS-Ethernet app. PowerShell-native equivalent of program_board.sh.
 
 .DESCRIPTION
-  Uses the project's validated Vivado/Vitis 2024.1 deployment tools (handles
-  both C:\Xilinx\<ver>\Vivado and C:\Xilinx\Vivado\<ver> layouts), pins Vivado
-  and xsdb/xsct to the same version, and puts the tools\ no-op xlsclients shim
-  on PATH so the Vitis launcher doesn't abort with "xlsclients not available".
-  Run after every board power-cycle.
+  Picks the newest installed Vivado (handles both C:\Xilinx\<ver>\Vivado and
+  C:\Xilinx\Vivado\<ver> layouts), pins Vivado and xsdb/xsct to that same
+  installed version, and puts the tools\ no-op xlsclients shim on PATH so the
+  Vitis launcher doesn't abort with "xlsclients not available". Run after
+  every board power-cycle.
 
 .EXAMPLE
   .\program_board.ps1
 .EXAMPLE
   .\program_board.ps1 -NoEth          # FPGA + MicroBlaze only (UART features)
 .EXAMPLE
-  .\program_board.ps1 -Vivado 2024.1  # validated/default deployment version
+  .\program_board.ps1 -Vivado 2024.1  # explicitly select an installed version
 .EXAMPLE
   .\program_board.ps1 -NoInit         # load A53 app without psu_init
 #>
@@ -111,20 +111,14 @@ function Ensure-BoardNic {
     }
 }
 
-$validatedVivado = "2024.1"
 $installedVersions = @(Get-XilinxVersions)
 $ver = if ($Vivado) {
     $Vivado
-} elseif ($installedVersions -contains $validatedVivado) {
-    $validatedVivado
 } else {
-    $null
+    $installedVersions | Select-Object -First 1
 }
 if (-not $ver) {
-    $found = if ($installedVersions.Count) { $installedVersions -join ", " } else { "none" }
-    Write-Error ("Vivado/Vitis $validatedVivado is required for the validated " +
-        "target-PC deployment. Installed versions: $found. Install $validatedVivado, " +
-        "or explicitly override at your own risk with -Vivado <version>.")
+    Write-Error "No Vivado found under C:\Xilinx. Pass -Vivado <ver> or check the install."
     exit 1
 }
 $found = $installedVersions -join ", "
