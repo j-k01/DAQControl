@@ -4,17 +4,18 @@
   the A53 PS-Ethernet app. PowerShell-native equivalent of program_board.sh.
 
 .DESCRIPTION
-  Picks the newest installed Vivado (handles both C:\Xilinx\<ver>\Vivado and
-  C:\Xilinx\Vivado\<ver> layouts), pins vivado + xsdb/xsct to that version, and
-  puts the tools\ no-op xlsclients shim on PATH so the Vitis launcher doesn't
-  abort with "xlsclients not available". Run after every board power-cycle.
+  Uses the project's validated Vivado/Vitis 2024.1 deployment tools (handles
+  both C:\Xilinx\<ver>\Vivado and C:\Xilinx\Vivado\<ver> layouts), pins Vivado
+  and xsdb/xsct to the same version, and puts the tools\ no-op xlsclients shim
+  on PATH so the Vitis launcher doesn't abort with "xlsclients not available".
+  Run after every board power-cycle.
 
 .EXAMPLE
   .\program_board.ps1
 .EXAMPLE
   .\program_board.ps1 -NoEth          # FPGA + MicroBlaze only (UART features)
 .EXAMPLE
-  .\program_board.ps1 -Vivado 2024.1  # pin a version (default: newest)
+  .\program_board.ps1 -Vivado 2024.1  # validated/default deployment version
 .EXAMPLE
   .\program_board.ps1 -NoInit         # load A53 app without psu_init
 #>
@@ -26,7 +27,7 @@ param(
     [switch]$NoNicSetup,              # never touch the host NIC config
     [string]$BoardIp = "192.168.2.10",
     [string]$HostIp = "192.168.2.1",  # what the board expects this PC to be
-    [int]$MaxEthRetries = 4,
+    [int]$MaxEthRetries = 0,          # opt-in only; A53 reloads can wedge EDITR
     [string]$Vivado
 )
 $ErrorActionPreference = "Stop"
@@ -110,12 +111,23 @@ function Ensure-BoardNic {
     }
 }
 
-$ver = if ($Vivado) { $Vivado } else { Get-XilinxVersions | Select-Object -First 1 }
+$validatedVivado = "2024.1"
+$installedVersions = @(Get-XilinxVersions)
+$ver = if ($Vivado) {
+    $Vivado
+} elseif ($installedVersions -contains $validatedVivado) {
+    $validatedVivado
+} else {
+    $null
+}
 if (-not $ver) {
-    Write-Error "No Vivado found under C:\Xilinx. Pass -Vivado <ver> or check the install."
+    $found = if ($installedVersions.Count) { $installedVersions -join ", " } else { "none" }
+    Write-Error ("Vivado/Vitis $validatedVivado is required for the validated " +
+        "target-PC deployment. Installed versions: $found. Install $validatedVivado, " +
+        "or explicitly override at your own risk with -Vivado <version>.")
     exit 1
 }
-$found = (Get-XilinxVersions) -join ", "
+$found = $installedVersions -join ", "
 Write-Host "Xilinx versions found: $found" -ForegroundColor DarkGray
 Write-Host "Using version: $ver" -ForegroundColor Cyan
 
@@ -196,19 +208,25 @@ if (-not $NoEth) {
                         "Preserving the running A53; check host firewall/VPN and run " +
                         "scripts\diagnose_board_ethernet.ps1.")
                 } else {
-                    for ($try = 1; $try -le $MaxEthRetries; $try++) {
-                        Write-Host ("==> No ping/ARP from initial A53; controlled " +
-                            "reload $try/$MaxEthRetries") -ForegroundColor Yellow
-                        & $xsctExe "load_ps_eth_stream.tcl" $trackedPsElf
-                        if ($LASTEXITCODE -ne 0) {
-                            $ethFailed = $true
-                            Write-Warning "Ethernet reload failed (exit $LASTEXITCODE); UART remains ready."
-                            break
-                        }
-                        Start-Sleep -Seconds 10
-                        if (Test-Connection -ComputerName $BoardIp -Count 3 -Quiet) {
-                            $up = $true
-                            break
+                    if ($MaxEthRetries -le 0) {
+                        Write-Warning ("No ping/ARP from the initial A53. Preserving it; " +
+                            "automatic A53 reloads are disabled because repeated XSDB " +
+                            "downloads can leave the core in EDITR-not-ready state.")
+                    } else {
+                        for ($try = 1; $try -le $MaxEthRetries; $try++) {
+                            Write-Host ("==> No ping/ARP from initial A53; explicit " +
+                                "reload $try/$MaxEthRetries") -ForegroundColor Yellow
+                            & $xsctExe "load_ps_eth_stream.tcl" $trackedPsElf
+                            if ($LASTEXITCODE -ne 0) {
+                                $ethFailed = $true
+                                Write-Warning "Ethernet reload failed (exit $LASTEXITCODE); UART remains ready."
+                                break
+                            }
+                            Start-Sleep -Seconds 10
+                            if (Test-Connection -ComputerName $BoardIp -Count 3 -Quiet) {
+                                $up = $true
+                                break
+                            }
                         }
                     }
                 }
