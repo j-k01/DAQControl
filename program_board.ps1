@@ -130,6 +130,7 @@ if (-not $vivadoExe) {
 
 $trackedBit = Join-Path $scriptDir "prebuilt\top.bit"
 $trackedElf = Join-Path $scriptDir "prebuilt\firmware.elf"
+$trackedPsElf = Join-Path $scriptDir "prebuilt\ps_eth_stream.elf"
 Write-Host "==> FPGA bitstream + MicroBlaze firmware   ($vivadoExe)" -ForegroundColor Green
 Write-Host "    bit: $trackedBit" -ForegroundColor DarkGray
 Write-Host "    elf: $trackedElf" -ForegroundColor DarkGray
@@ -153,7 +154,9 @@ if (-not $NoEth) {
         $ethFailed = $false
         # Run xsdb/xsct directly (NOT via quiet.tcl). Ethernet is optional: an
         # A53/GEM/PHY failure must never abort before UART firmware is restored.
-        $ethArgs = @("load_ps_eth_stream.tcl")
+        # Deployment must use the tracked PS ELF. An ignored local Vitis
+        # workspace may contain an older app/platform and must not override it.
+        $ethArgs = @("load_ps_eth_stream.tcl", $trackedPsElf)
         if (-not $NoInit) { $ethArgs += "--init-ps" }
         Write-Host "==> A53 PS-Ethernet app $($ethArgs -join ' ')   ($xsctExe)" -ForegroundColor Green
         & $xsctExe @ethArgs
@@ -172,55 +175,56 @@ if (-not $NoEth) {
             exit 1
         }
 
-        # An A53 app started right after psu_init can latch a dead GEM/PHY
-        # autoneg state. Retry only if the initial load actually succeeded.
-        if (-not $ethFailed) {
-            Write-Host "==> Waiting for the PHY link to settle, then reloading the A53 app" -ForegroundColor Green
-            Start-Sleep -Seconds 10
-            & $xsctExe "load_ps_eth_stream.tcl"
-            if ($LASTEXITCODE -ne 0) {
-                $ethFailed = $true
-                Write-Warning "Ethernet reload failed (exit $LASTEXITCODE); continuing with UART."
-            }
-        }
-
         if (-not $NoPing -and -not $ethFailed) {
             if (-not $NoNicSetup) { Ensure-BoardNic $HostIp | Out-Null }
 
-            # Ping -> diagnose -> reload -> retry. "No ARP" = the board
-            # transmits nothing (PHY latch); "ARP but no ping" = host side.
+            # Test the FIRST A53 instance before touching it. The old sequence
+            # stopped/reset a potentially working app for an unconditional
+            # second download; if that download hit EDITR timeout, Ethernet was
+            # left dead. A reload is now allowed only when the first app has
+            # neither ping nor an ARP presence.
             $up = $false
-            for ($try = 1; $try -le $MaxEthRetries; $try++) {
-                Start-Sleep -Seconds 5
-                if (Test-Connection -ComputerName $BoardIp -Count 3 -Quiet) {
-                    $up = $true
-                    break
-                }
+            Write-Host "==> Waiting for initial A53 PHY/autonegotiation" -ForegroundColor Green
+            Start-Sleep -Seconds 5
+            if (Test-Connection -ComputerName $BoardIp -Count 3 -Quiet) {
+                $up = $true
+            } else {
                 $seen = (arp -a) | Select-String ([regex]::Escape($BoardIp))
                 if ($seen) {
-                    Write-Warning ("$BoardIp answers ARP but not ping -- the board is " +
-                        "alive; check host side (VPN/firewall software, a second NIC " +
-                        "on 192.168.2.x).")
-                } else {
-                    Write-Host ("==> No ARP from $BoardIp (PHY latch); reloading the " +
-                        "A53 app (retry $try/$MaxEthRetries)") -ForegroundColor Yellow
-                }
-                & $xsctExe "load_ps_eth_stream.tcl"
-                if ($LASTEXITCODE -ne 0) {
                     $ethFailed = $true
-                    break
+                    Write-Warning ("$BoardIp is present in ARP but not pinging. " +
+                        "Preserving the running A53; check host firewall/VPN and run " +
+                        "scripts\diagnose_board_ethernet.ps1.")
+                } else {
+                    for ($try = 1; $try -le $MaxEthRetries; $try++) {
+                        Write-Host ("==> No ping/ARP from initial A53; controlled " +
+                            "reload $try/$MaxEthRetries") -ForegroundColor Yellow
+                        & $xsctExe "load_ps_eth_stream.tcl" $trackedPsElf
+                        if ($LASTEXITCODE -ne 0) {
+                            $ethFailed = $true
+                            Write-Warning "Ethernet reload failed (exit $LASTEXITCODE); UART remains ready."
+                            break
+                        }
+                        Start-Sleep -Seconds 10
+                        if (Test-Connection -ComputerName $BoardIp -Count 3 -Quiet) {
+                            $up = $true
+                            break
+                        }
+                    }
                 }
-                Start-Sleep -Seconds 10
             }
             if ($up) {
                 Write-Host "==> Board answering on $BoardIp" -ForegroundColor Green
-            } else {
+            } elseif (-not $ethFailed) {
                 $ethFailed = $true
                 Write-Warning "Still no ping after Ethernet retries. A53 mailbox:"
                 & $xsctExe "read_eth_mailbox.tcl"
                 Write-Warning ("Ethernet is unavailable, but programming will " +
                     "continue and restore UART/XBar control.")
             }
+        } elseif ($NoPing -and -not $ethFailed) {
+            Write-Host ("==> Ethernet load completed without a destructive reload; " +
+                "reachability skipped by -NoPing") -ForegroundColor Yellow
         }
 
         if ($ethFailed) {

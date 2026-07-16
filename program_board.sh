@@ -139,7 +139,7 @@ if [ "$DO_ETH" -eq 1 ]; then
         # when A53/GEM bring-up subsequently fails, so never let `set -e` abort
         # before the MicroBlaze UART firmware is restored below.
         echo "==> A53 PS-Ethernet app ${INIT_PS:-(no psu_init)}   ($XSCT)"
-        if ! run "$XSCT" load_ps_eth_stream.tcl $INIT_PS; then
+        if ! run "$XSCT" load_ps_eth_stream.tcl prebuilt/ps_eth_stream.elf $INIT_PS; then
             echo "WARNING: Ethernet bring-up failed; continuing with UART-only control." >&2
         fi
 
