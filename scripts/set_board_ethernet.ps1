@@ -70,6 +70,7 @@ if ($conflict) {
 $existing = Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 `
     -IPAddress $LocalIp -ErrorAction SilentlyContinue
 $reuseBackup = $false
+$alreadyBoard = $false
 if (Test-Path $BackupPath) {
     $saved = Get-Content $BackupPath -Raw | ConvertFrom-Json
     if ($saved.MacAddress -ne $adapter.MacAddress) {
@@ -87,12 +88,19 @@ if (Test-Path $BackupPath) {
         exit 3
     }
 } elseif ($existing) {
-    Write-Error ("$LocalIp is already assigned but no original internet backup exists. " +
-        "Refusing to pretend the current board configuration is the original state.")
-    exit 3
+    # The adapter is ALREADY in the board configuration (e.g. it was set by
+    # hand before this backup system existed). There is no original state left
+    # to snapshot, and nothing to change -- proceeding is a no-op, not a lie.
+    # We deliberately do NOT fabricate a backup; going back to internet later
+    # needs unset_board_ethernet.ps1 -AssumeDhcp (or manual reconfiguration).
+    $alreadyBoard = $true
+    Write-Host ("Adapter already carries $LocalIp and no original internet backup " +
+        "exists; continuing without one.") -ForegroundColor Yellow
+    Write-Host ("  NOTE: to return this adapter to the internet later, use " +
+        ".\scripts\unset_board_ethernet.ps1 -AssumeDhcp (no saved original).") -ForegroundColor Yellow
 }
 
-if (-not $reuseBackup) {
+if (-not $reuseBackup -and -not $alreadyBoard) {
     $ipIf = Get-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4
     $addresses = @(Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 `
         -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike "169.254.*" })
@@ -148,7 +156,7 @@ if (-not $reuseBackup) {
     New-NetIPAddress -InterfaceIndex $adapter.ifIndex -IPAddress $LocalIp `
         -PrefixLength $PrefixLength -AddressFamily IPv4 | Out-Null
     Write-Host "Assigned direct-link address $LocalIp/$PrefixLength with no gateway." -ForegroundColor Green
-} else {
+} elseif ($reuseBackup) {
     Write-Host "Preserving original backup: $BackupPath"
 }
 
