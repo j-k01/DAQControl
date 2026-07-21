@@ -71,6 +71,7 @@ $existing = Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv
     -IPAddress $LocalIp -ErrorAction SilentlyContinue
 $reuseBackup = $false
 $alreadyBoard = $false
+$reapply = $false
 if (Test-Path $BackupPath) {
     $saved = Get-Content $BackupPath -Raw | ConvertFrom-Json
     if ($saved.MacAddress -ne $adapter.MacAddress) {
@@ -82,10 +83,15 @@ if (Test-Path $BackupPath) {
         $reuseBackup = $true
         Write-Host "Direct-link configuration and its original backup already exist." -ForegroundColor Green
     } elseif (-not $ReplaceBackup) {
-        Write-Error ("Backup already exists at '$BackupPath', but the adapter is not " +
-            "currently configured for the board. Restore it with unset_board_ethernet.ps1, " +
-            "or explicitly replace it with -ReplaceBackup.")
-        exit 3
+        # The saved backup still holds the TRUE original internet config, but
+        # the adapter drifted out of board mode (cable swap + DHCP renew,
+        # driver reset, manual edits). Keep that older backup -- it is what
+        # the user wants restored later -- and just re-apply the board
+        # configuration. -ReplaceBackup re-snapshots the CURRENT state as the
+        # new original instead.
+        $reapply = $true
+        Write-Host ("Existing original-internet backup preserved; re-applying the " +
+            "board configuration to '$InterfaceAlias'.") -ForegroundColor Yellow
     }
 } elseif ($existing) {
     # The adapter is ALREADY in the board configuration (e.g. it was set by
@@ -100,7 +106,7 @@ if (Test-Path $BackupPath) {
         ".\scripts\unset_board_ethernet.ps1 -AssumeDhcp (no saved original).") -ForegroundColor Yellow
 }
 
-if (-not $reuseBackup -and -not $alreadyBoard) {
+if (-not $reuseBackup -and -not $alreadyBoard -and -not $reapply) {
     $ipIf = Get-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4
     $addresses = @(Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 `
         -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike "169.254.*" })
@@ -142,9 +148,14 @@ if (-not $reuseBackup -and -not $alreadyBoard) {
     $savedIps = @($state.Addresses | ForEach-Object { "$($_.IPAddress)/$($_.PrefixLength)" }) -join ", "
     $savedGateways = @($state.DefaultRoutes | ForEach-Object { $_.NextHop }) -join ", "
     Write-Host "  Mode: $mode; IP: $savedIps; gateway: $savedGateways"
+} elseif ($reuseBackup) {
+    Write-Host "Preserving original backup: $BackupPath"
+}
 
+if (-not $reuseBackup -and -not $alreadyBoard) {
     # The direct link must have one deterministic address and no internet
-    # default route. All removed state is captured above for exact restoration.
+    # default route. All removed state is captured in the backup (either
+    # freshly snapshotted above, or the preserved older original on reapply).
     Set-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -Dhcp Disabled
     Get-NetRoute -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 `
         -ErrorAction SilentlyContinue |
@@ -156,8 +167,6 @@ if (-not $reuseBackup -and -not $alreadyBoard) {
     New-NetIPAddress -InterfaceIndex $adapter.ifIndex -IPAddress $LocalIp `
         -PrefixLength $PrefixLength -AddressFamily IPv4 | Out-Null
     Write-Host "Assigned direct-link address $LocalIp/$PrefixLength with no gateway." -ForegroundColor Green
-} elseif ($reuseBackup) {
-    Write-Host "Preserving original backup: $BackupPath"
 }
 
 if (-not (Get-NetFirewallRule -DisplayName $FwName -ErrorAction SilentlyContinue)) {

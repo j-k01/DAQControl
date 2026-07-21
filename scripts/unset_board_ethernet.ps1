@@ -67,9 +67,25 @@ if (Test-Path $BackupPath) {
         exit 3
     }
 } elseif (-not $AssumeDhcp) {
-    Write-Error ("Original internet backup '$BackupPath' does not exist. Refusing " +
-        "to guess. If this adapter originally used DHCP, rerun with -AssumeDhcp.")
-    exit 3
+    # No backup. Falling back to DHCP is safe only when the adapter carries
+    # nothing but the board/link-local configuration -- that state is useless
+    # for the internet anyway. If it carries some OTHER static config (which
+    # might BE a working internet setup we never snapshotted), keep refusing.
+    $curAddrs = @(Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 `
+        -ErrorAction SilentlyContinue | Where-Object {
+            $_.IPAddress -notlike "169.254.*" -and $_.IPAddress -ne $LocalIp })
+    $curGw = @(Get-NetRoute -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 `
+        -ErrorAction SilentlyContinue | Where-Object { $_.DestinationPrefix -eq "0.0.0.0/0" })
+    if ($curAddrs.Count -or $curGw.Count) {
+        $what = @(@($curAddrs | ForEach-Object { $_.IPAddress }) +
+                  @($curGw | ForEach-Object { "gw " + $_.NextHop })) -join ", "
+        Write-Error ("No backup exists and '$InterfaceAlias' carries a non-board " +
+            "configuration ($what); refusing to wipe it. Rerun with -AssumeDhcp " +
+            "to force DHCP.")
+        exit 3
+    }
+    Write-Warning ("No backup exists; the adapter only carries the board/link-local " +
+        "configuration, so falling back to DHCP for normal network access.")
 }
 
 # Remove only this adapter's current board-mode addresses/routes before restore.
@@ -134,7 +150,8 @@ if ($saved) {
         Write-Host "Consumed and removed restored backup: $BackupPath"
     }
 } else {
-    # Explicit recovery only; never reached without the user's -AssumeDhcp.
+    # Reached with -AssumeDhcp, or via the safe automatic fallback (no backup
+    # and only the board/link-local configuration present on the adapter).
     Set-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -Dhcp Enabled
     Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ResetServerAddresses
     Get-NetFirewallRule -DisplayName $FwName -ErrorAction SilentlyContinue |
