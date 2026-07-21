@@ -109,7 +109,8 @@ module top #(
     // drive the fabric-sourced ("read-only") registers; regf_rdint pulses for
     // one cycle on a CPU read. Add new control/status regs by slicing regf_value
     // / driving regf_in[idx] -- all contiguous at byte offset idx*4.
-    localparam integer REGF_NUM = 48;   // 0-17 ctrl/status, 18 spike nbeats, 19 DDS step, 20 current DAC gain
+    localparam integer REGF_NUM = 48;   // 0-17 ctrl/status, 18 spike nbeats, 19 DDS step, 20 current DAC gain,
+                                        // 21-24 per-neuron spike cal {offset_s16, gain_q1_15}
     wire [REGF_NUM*32-1:0] regf_value;
     wire [REGF_NUM*32-1:0] regf_in;
     wire [REGF_NUM-1:0]    regf_we;
@@ -1348,6 +1349,37 @@ module top #(
         .shape_addr(spike_shape_addr_tx3), .shape_data(spike_shape_word_tx3),
         .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx3));
 
+    // Per-neuron spike calibration: regs 21..24 = {offset_s16, gain_q1_15} for
+    // neurons 0..3 (firmware SCAL).  Each shaped pulse is scaled to its
+    // calibrated height and rides on its calibrated DC baseline before
+    // entering the crossbar as source spike0..3; gain 0 = unity passthrough.
+    wire [31:0] spike_cal_tx0, spike_cal_tx1, spike_cal_tx2, spike_cal_tx3;
+    wire [63:0] neuron_cal_tx0, neuron_cal_tx1, neuron_cal_tx2, neuron_cal_tx3;
+    cdc_vector_sync #(.WIDTH(32)) u_spike_cal0_sync (
+        .dest_clk (gth_tx_usrclk2), .dest_rst (litejesd_reset),
+        .src (regf_value[21*32 +: 32]), .dest (spike_cal_tx0));
+    cdc_vector_sync #(.WIDTH(32)) u_spike_cal1_sync (
+        .dest_clk (gth_tx_usrclk2), .dest_rst (litejesd_reset),
+        .src (regf_value[22*32 +: 32]), .dest (spike_cal_tx1));
+    cdc_vector_sync #(.WIDTH(32)) u_spike_cal2_sync (
+        .dest_clk (gth_tx_usrclk2), .dest_rst (litejesd_reset),
+        .src (regf_value[23*32 +: 32]), .dest (spike_cal_tx2));
+    cdc_vector_sync #(.WIDTH(32)) u_spike_cal3_sync (
+        .dest_clk (gth_tx_usrclk2), .dest_rst (litejesd_reset),
+        .src (regf_value[24*32 +: 32]), .dest (spike_cal_tx3));
+    spike_calibrate u_spike_cal0 (
+        .clk(gth_tx_usrclk2), .rst(spike_shaper_rst), .cal(spike_cal_tx0),
+        .in_word(neuron_word_tx0), .out_word(neuron_cal_tx0));
+    spike_calibrate u_spike_cal1 (
+        .clk(gth_tx_usrclk2), .rst(spike_shaper_rst), .cal(spike_cal_tx1),
+        .in_word(neuron_word_tx1), .out_word(neuron_cal_tx1));
+    spike_calibrate u_spike_cal2 (
+        .clk(gth_tx_usrclk2), .rst(spike_shaper_rst), .cal(spike_cal_tx2),
+        .in_word(neuron_word_tx2), .out_word(neuron_cal_tx2));
+    spike_calibrate u_spike_cal3 (
+        .clk(gth_tx_usrclk2), .rst(spike_shaper_rst), .cal(spike_cal_tx3),
+        .in_word(neuron_word_tx3), .out_word(neuron_cal_tx3));
+
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     (* ASYNC_REG = "TRUE" *) reg [2:0] dac_program_req_sync = 3'b000;
     (* ASYNC_REG = "TRUE" *) reg [1:0] dac_program_enable_sync = 2'b00;
@@ -1489,10 +1521,10 @@ module top #(
         .program_word1    (dac_program_word1_async),
         .program_word2    (dac_program_word2_async),
         .program_word3    (dac_program_word3_async),
-        .neuron_word0     (neuron_word_tx0),
-        .neuron_word1     (neuron_word_tx1),
-        .neuron_word2     (neuron_word_tx2),
-        .neuron_word3     (neuron_word_tx3),
+        .neuron_word0     (neuron_cal_tx0),
+        .neuron_word1     (neuron_cal_tx1),
+        .neuron_word2     (neuron_cal_tx2),
+        .neuron_word3     (neuron_cal_tx3),
         .litejesd_ready   (litejesd_ready_async),
         .status           (litejesd_status_async),
         .triangle_word    (litejesd_triangle_async),

@@ -500,6 +500,29 @@ def clamp_s16(v):
     return max(-DAC_FULLSCALE, min(DAC_FULLSCALE, int(round(v))))
 
 
+def spike_cal_raw(height_v, offset_v):
+    """Convert per-neuron calibration volts -> (gain_q1_15, offset_counts) for
+    firmware SCAL.  Height is the pulse amplitude assuming a FULL-SCALE
+    programmed shape (it scales proportionally for smaller shapes).  Raises
+    ValueError for illegal combinations: values outside the DAC range, or a
+    height + |offset| sum that would clip the pulse."""
+    height_counts = int(round(max(0.0, float(height_v)) / VOLTS_PER_COUNT))
+    offset_counts = int(round(float(offset_v) / VOLTS_PER_COUNT))
+    if height_counts > DAC_FULLSCALE:
+        raise ValueError(f"height > {DAC_VMAX:.3f} V DAC range")
+    if abs(offset_counts) > DAC_FULLSCALE:
+        raise ValueError(f"|offset| > {DAC_VMAX:.3f} V DAC range")
+    if height_counts + abs(offset_counts) > DAC_FULLSCALE:
+        total = (height_counts + abs(offset_counts)) * VOLTS_PER_COUNT
+        raise ValueError(
+            f"height + |offset| = {total:.3f} V would clip the "
+            f"{DAC_VMAX:.3f} V DAC range")
+    # Q1.15: 0x8000 = 1.0x. Clamp to >= 1 because raw 0 means "unity" in HW.
+    gain = max(1, min(0xFFFF,
+                      int(round(height_counts / DAC_FULLSCALE * 32768.0))))
+    return gain, offset_counts
+
+
 # firmware boot-default spike shape, mirrored for the pulse editor (defined
 # here because build_trapezoid_pulse needs clamp_s16 at call time)
 PULSE_DEFAULT = build_trapezoid_pulse(PULSE_DEFAULT_LEN, PULSE_DEFAULT_PEAK,
@@ -797,6 +820,14 @@ class DacControl:
     def pulse_default(self):
         """Reload the boot-default spike shape (inverted 30 ns trapezoid)."""
         return self.cmd("PULS default", ok=("PULS", "ERR"))
+
+    def set_spike_cal(self, target, gain_q1_15, offset_counts):
+        """Per-neuron spike-pulse calibration (firmware SCAL): gain Q1.15
+        (0x8000 = 1.000x) scales the shaped pulse; offset (signed DAC counts)
+        trims that neuron's DAC resting baseline. target = 0..3 or 'all'."""
+        return self.cmd(
+            f"SCAL {target} 0x{gain_q1_15 & 0xFFFF:04X} {int(offset_counts)}",
+            ok=("OK SCAL", "ERR"))
 
     def _capture(self, cmd_str, frames):
         """Send a capture command, wait for the FE10CAFE sync, read
@@ -1532,6 +1563,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
     burst_progress = QtCore.pyqtSignal(int, int)  # (done, total) during a triggered burst
     msamp_result = QtCore.pyqtSignal(object)  # multisample Ethernet burst (BCPT) result
     config_done = QtCore.pyqtSignal(object)   # chattering-demo defaults result
+    scal_done = QtCore.pyqtSignal(str, bool, str)  # (neuron, ok, detail) spike-cal result
 
     def __init__(self, args):
         super().__init__()
@@ -1741,6 +1773,52 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.neuron_profile_btns[key] = btn
             self.neuron_status[key] = st
         right.addWidget(prof_box)
+
+        # Per-neuron spike calibration (firmware SCAL): height scales the
+        # shaped pulse (stated for a full-scale shape), offset trims that
+        # neuron's DAC resting baseline. Illegal (clipping) values are refused.
+        cal_box = QtWidgets.QGroupBox("Per-neuron spike calibration")
+        cal_grid = QtWidgets.QGridLayout(cal_box)
+        cal_grid.addWidget(QtWidgets.QLabel("height (V)"), 0, 1)
+        cal_grid.addWidget(QtWidgets.QLabel("offset (V)"), 0, 2)
+        self.scal_height = {}
+        self.scal_offset = {}
+        self.scal_btns = {}
+        self.scal_status = {}
+        for n in range(4):
+            key = str(n)
+            cal_grid.addWidget(QtWidgets.QLabel(f"neuron {n}"), n + 1, 0)
+            h = QtWidgets.QDoubleSpinBox()
+            h.setRange(0.0, DAC_VMAX)
+            h.setDecimals(3)
+            h.setSingleStep(0.010)
+            h.setValue(DAC_VMAX)
+            h.setToolTip("Pulse height for a full-scale programmed shape: "
+                         f"{DAC_VMAX:.3f} V = gain 1.000x (unchanged). "
+                         "Smaller shapes scale proportionally.")
+            o = QtWidgets.QDoubleSpinBox()
+            o.setRange(DAC_VMIN, DAC_VMAX)
+            o.setDecimals(3)
+            o.setSingleStep(0.010)
+            o.setValue(0.0)
+            o.setToolTip("DC baseline trim for this neuron's DAC output "
+                         "(applied continuously, between pulses too). "
+                         "height + |offset| must stay within the DAC range.")
+            b = QtWidgets.QPushButton("Apply")
+            b.setToolTip(f"Send SCAL {n} (gain Q1.15 + offset counts)")
+            b.clicked.connect(self._make_scal_cb(key))
+            st = QtWidgets.QLabel("-")
+            st.setStyleSheet("color:#9fb3c8; font-size:10px;")
+            st.setWordWrap(True)
+            cal_grid.addWidget(h, n + 1, 1)
+            cal_grid.addWidget(o, n + 1, 2)
+            cal_grid.addWidget(b, n + 1, 3)
+            cal_grid.addWidget(st, n + 1, 4)
+            self.scal_height[key] = h
+            self.scal_offset[key] = o
+            self.scal_btns[key] = b
+            self.scal_status[key] = st
+        right.addWidget(cal_box)
 
         # live Izhikevich parameters: tweak a/b/c/d/I and the neuron is
         # reprogrammed (config bank + reload pulse) immediately, so the loopback
@@ -2002,6 +2080,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.collected.connect(self._on_collected)
         self.msamp_result.connect(self._show_multisample)
         self.config_done.connect(self._on_config_done)
+        self.scal_done.connect(self._on_scal_done)
         self.stat_result.connect(self._show_stat)
         self.neuron_done.connect(self._on_neuron_done)
         self.dac_done.connect(self._on_dac_done)
@@ -2257,6 +2336,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
             cb.setEnabled(on)
         for b in self.dac_btns:
             b.setEnabled(on)
+        for key in self.scal_btns:
+            self.scal_btns[key].setEnabled(on)
+            self.scal_height[key].setEnabled(on)
+            self.scal_offset[key].setEnabled(on)
 
     def _show_stat(self, is_daq, health):
         port = self.dac.port if self.dac else self.port_cb.currentText()
@@ -2271,6 +2354,42 @@ class ScopeWindow(QtWidgets.QMainWindow):
     # ---- callbacks (UART off the GUI thread) ----
     def _bg(self, fn):
         threading.Thread(target=fn, daemon=True).start()
+
+    # ---- per-neuron spike calibration (SCAL) ----
+    def _make_scal_cb(self, key):
+        def cb():
+            self._apply_spike_cal(key)
+        return cb
+
+    def _apply_spike_cal(self, key):
+        if not self.dac:
+            return
+        try:
+            gain, off = spike_cal_raw(self.scal_height[key].value(),
+                                      self.scal_offset[key].value())
+        except ValueError as e:
+            self.scal_done.emit(key, False, str(e))
+            return
+        self.scal_btns[key].setEnabled(False)
+
+        def work():
+            try:
+                r = self.dac.set_spike_cal(key, gain, off)
+                self.scal_done.emit(
+                    key, bool(r) and r.startswith("OK SCAL"), r or "(no reply)")
+            except Exception as e:  # noqa: BLE001
+                self.scal_done.emit(key, False, f"{type(e).__name__}: {e}")
+        self._bg(work)
+
+    def _on_scal_done(self, key, ok, text):
+        if key not in self.scal_btns:
+            return
+        if self._controls_enabled:
+            self.scal_btns[key].setEnabled(True)
+        st = self.scal_status[key]
+        st.setText("OK" if ok else text)
+        st.setStyleSheet("color:#81C784; font-size:10px;" if ok
+                         else "color:#E57373; font-size:10px;")
 
     def _make_program_dac_cb(self, ch):
         def cb():
