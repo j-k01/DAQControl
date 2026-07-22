@@ -144,12 +144,21 @@ module adc_burst_capture_tb;
         // FIFO-reset-dependent delay.
         pulse_prepare(32'd4);
         wait_cycles = 0;
+        while (!status[19] && wait_cycles < 2000) begin
+            @(posedge clk);
+            wait_cycles = wait_cycles + 1;
+        end
+        if (!status[19])
+            fail("exported prepare-busy status never asserted");
+        wait_cycles = 0;
         while (!dut.prepared && wait_cycles < 2000) begin
             @(posedge clk);
             wait_cycles = wait_cycles + 1;
         end
         if (!dut.prepared)
             fail("pre-trigger prepare never became ready");
+        if (status[19] || status[23] || status[22] || status[18])
+            fail("exported status did not report prepared idle state");
         pulse_fire();
         wait_cycles = 0;
         while (!dut.fifo_wr_en && wait_cycles < 8) begin

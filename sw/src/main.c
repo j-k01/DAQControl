@@ -316,6 +316,12 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
  * BURST_FLUSH_GUARD) into one region up to this limit. */
 #define BURST_REGION_SPAN 0x01000000u    /* 16 MB/chip */
 #define BURST_MAGIC       0x42435054u    /* mailbox magic: burst armed        */
+#define BURST_STATUS_MAGIC_MASK  0xFF000000u
+#define BURST_STATUS_MAGIC       0xBC000000u
+#define BURST_STATUS_DONE        (1u << 23)
+#define BURST_STATUS_RUNNING     (1u << 22)
+#define BURST_STATUS_PREPARING   (1u << 19)
+#define BURST_STATUS_AXIS_ACTIVE (1u << 18)
 /* burst mailbox layout (at STRM_MAILBOX): 00=magic 04=bytes/chip 08=base0
  * 0C=base1 10=readout_req(MB++) 14=readout_done(A53 echo) 18=beats */
 
@@ -2713,6 +2719,28 @@ static int wait_burst_started(u32 *s0, u32 *s1)
     }
     return 0;
 }
+
+/* Wait until both async capture FIFOs have completed the prepare/clear phase.
+ * The arm request and cap_armed latch cross on the same ADC-domain edge, so
+ * this exported state is also a deterministic acknowledgement that the
+ * trigger arm reached the destination clock domain. */
+static int wait_burst_prepared(u32 *s0, u32 *s1)
+{
+    u32 timeout;
+    const u32 idle_mask = BURST_STATUS_DONE | BURST_STATUS_RUNNING |
+                          BURST_STATUS_PREPARING | BURST_STATUS_AXIS_ACTIVE;
+
+    for (timeout = 0; timeout < 1000000u; timeout++) {
+        *s0 = read_adc_debug(0u, 8u);
+        *s1 = read_adc_debug(1u, 8u);
+        if (((*s0 & BURST_STATUS_MAGIC_MASK) == BURST_STATUS_MAGIC) &&
+            ((*s1 & BURST_STATUS_MAGIC_MASK) == BURST_STATUS_MAGIC) &&
+            ((*s0 & idle_mask) == 0u) && ((*s1 & idle_mask) == 0u)) {
+            return 1;
+        }
+    }
+    return 0;
+}
 #endif /* HAS_BRAM_DATAPLANE */
 
 /* Pulse the ADC capture trigger (RW3[3] rising edge) WITHOUT disturbing the
@@ -2726,6 +2754,26 @@ static void pulse_adc_capture(void)
     short_delay();
     Xil_Out32(RW_REG3, rw3);
 }
+
+#if HAS_BRAM_DATAPLANE
+/* BCPT uses an acknowledged arm handshake, so it does not need the legacy
+ * million-iteration pulse delay. AXI writes are ordered; the readback and a
+ * handful of additional reads keep the level high/low across multiple clk_200
+ * cycles before wait_burst_prepared() verifies arrival in the ADC domain. */
+static void arm_adc_capture_triggered(void)
+{
+    u32 rw3 = Xil_In32(RW_REG3) & ~RW3_CAPTURE_START;
+    u32 i;
+
+    Xil_Out32(RW_REG3, rw3);
+    Xil_Out32(RW_REG3, rw3 | RW3_CAPTURE_START);
+    (void)Xil_In32(RW_REG3);
+    Xil_Out32(RW_REG3, rw3);
+    for (i = 0u; i < 64u; i++) {
+        (void)Xil_In32(RW_REG3);
+    }
+}
+#endif
 
 static void set_adc_capture_beats(u32 beats)
 {
@@ -3098,7 +3146,8 @@ static void cmd_burst_trig(char *args)
     /* arm-on-injection mode: the RW3[3] pulse only ARMS; the player's
      * cycle_start (CDC'd into the ADC clock) fires the capture. */
     Xil_Out32(RW_REG3, Xil_In32(RW_REG3) | RW3_CAPTURE_TRIG_MODE);
-    short_delay();
+    /* prepare_trigger_repetition() below is much longer than the two-flop
+     * mode CDC, so no blind software delay is needed here. */
 
     for (r = 0u; r < reps; r++) {
         u32 ctrl;
@@ -3115,8 +3164,20 @@ static void cmd_burst_trig(char *args)
          * miss the whole rep). */
         prepare_trigger_repetition();
 
-        pulse_adc_capture();                /* RW3[3] edge: arm (keep DAC bits) */
-        short_delay();
+        arm_adc_capture_triggered();        /* RW3[3] edge: arm (keep DAC bits) */
+        if (!wait_burst_prepared(&s0, &s1)) {
+            Xil_Out32(RW_REG3, Xil_In32(RW_REG3) & ~RW3_CAPTURE_TRIG_MODE);
+            dma_reset(0u);
+            dma_reset(1u);
+            send_str("ERR BCPT prepare timeout rep=");
+            send_uint(r);
+            send_str(" ");
+            print_named_hex("st0", s0);
+            send_str(" ");
+            print_named_hex("st1", s1);
+            send_str("\r\n");
+            return;
+        }
 
         /* restart the player to sample 0 with run=1 in one write; its
          * cycle_start fires this rep at the exact injection-window start

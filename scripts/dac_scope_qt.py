@@ -139,6 +139,7 @@ COLLECT_SIZE_DEFAULT_IDX = 0   # 64 KB/chip
 # stream). Small + fast so each grab comfortably finishes within the interval.
 AUTOSAMPLE_INTERVAL_MS = 1000   # one sample per second
 AUTOSAMPLE_BYTES = 64 * 1024    # bytes/chip per auto-sample (16k samples/ch)
+LIVEAVG_GHOST_MAX_POINTS = 2048
 # Neuron integration timestep (Q16.16): larger dt -> faster simulation.
 # The hex is the per-step dt in Q16.16 ms, so dt_ms = value / 65536; "1x
 # normal" (0x8000) = 0.5 ms, the classic Izhikevich integration step.
@@ -494,6 +495,32 @@ def trigger_offset_diagnostics(stack_by_ch, maxlag=64, max_samples=262144):
     return {"anchor": int(anchor), "offsets": offsets,
             "observable": True, "score": score,
             "signal_rms": signal_rms, "noise_rms": noise_rms}
+
+def peak_envelope(values, max_points=LIVEAVG_GHOST_MAX_POINTS):
+    """Return an extrema-preserving display envelope bounded by max_points.
+
+    Raw captures are retained for averaging. This representation is used only
+    for translucent live-history curves, where ordinary stride decimation can
+    completely miss a narrow neuron spike.
+    """
+    y = np.asarray(values)
+    n = y.size
+    limit = max(2, int(max_points))
+    if n <= limit:
+        return np.arange(n), y
+
+    bins = max(1, limit // 2)
+    width = int(np.ceil(n / bins))
+    starts = np.arange(0, n, width, dtype=np.int64)
+    lows = np.minimum.reduceat(y, starts)
+    highs = np.maximum.reduceat(y, starts)
+    centers = np.minimum(starts + width // 2, n - 1)
+    x = np.repeat(centers, 2)
+    envelope = np.empty(2 * starts.size, dtype=y.dtype)
+    envelope[0::2] = lows
+    envelope[1::2] = highs
+    return x, envelope
+
 
 
 # --------------------------------------------------------------- DAC content
@@ -3169,6 +3196,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self._liveavg_stacks = {ch: deque(maxlen=self._liveavg_window)
                                     for ch in range(4)}
             self._liveavg_total = 0
+            self._liveavg_ghost_data = {
+                ch: deque(maxlen=self._liveavg_window) for ch in range(4)}
             self._liveavg_errors = 0
             self._liveavg_busy = False
             self._liveavg_build_window()
@@ -3260,19 +3289,23 @@ class ScopeWindow(QtWidgets.QMainWindow):
         for ch in range(4):
             for i in range(n_new):
                 self._liveavg_stacks[ch].append(stack[ch][i])
+                self._liveavg_ghost_data[ch].append(
+                    peak_envelope(stack[ch][i]))
         self._liveavg_total += n_new
         t = None
         held = 0
         for ch in range(4):
             reps = list(self._liveavg_stacks[ch])
+            ghosts = list(self._liveavg_ghost_data[ch])
             if not reps:
                 continue
             held = len(reps)
             if t is None:
                 t = np.arange(len(reps[0]))
             for i, curve in enumerate(self._liveavg_ghosts[ch]):
-                if i < len(reps):
-                    curve.setData(t, reps[i] * VOLTS_PER_COUNT)
+                if i < len(ghosts):
+                    ghost_x, ghost_y = ghosts[i]
+                    curve.setData(ghost_x, ghost_y * VOLTS_PER_COUNT)
                 else:
                     curve.setData([], [])
             mean = np.mean(np.stack(reps), axis=0)
