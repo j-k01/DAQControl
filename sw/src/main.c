@@ -2699,14 +2699,14 @@ static int wait_burst_done(u32 *s0, u32 *s1)
 }
 
 /* Bound the time needed for clk_200 register writes and their two-flop ADC
- * clock crossings. MMIO reads cannot be optimized away and 4096 transactions
+ * clock crossings. MMIO reads cannot be optimized away and 65536 transactions
  * are orders of magnitude beyond the CDC requirement without imposing the
  * legacy million-iteration software delay. */
 static void capture_cdc_guard(void)
 {
     u32 i;
 
-    for (i = 0u; i < 4096u; i++)
+    for (i = 0u; i < 65536u; i++)
         (void)Xil_In32(RW_REG3);
 }
 
