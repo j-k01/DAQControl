@@ -2175,7 +2175,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._liveavg_busy = False
         self._liveavg_win = None
         self.liveavg_timer = QtCore.QTimer(self)
-        self.liveavg_timer.setInterval(150)
+        self.liveavg_timer.setInterval(25)
         self.liveavg_timer.timeout.connect(self._on_liveavg_tick)
 
     def _set_current_preview(self, kind, ys, cps, actual, programmed=False):
