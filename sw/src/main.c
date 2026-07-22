@@ -2727,14 +2727,23 @@ static int wait_burst_started(u32 *s0, u32 *s1)
 static int wait_burst_prepared(u32 *s0, u32 *s1)
 {
     u32 timeout;
+    u32 seen_preparing = 0u;
     const u32 idle_mask = BURST_STATUS_DONE | BURST_STATUS_RUNNING |
                           BURST_STATUS_PREPARING | BURST_STATUS_AXIS_ACTIVE;
 
     for (timeout = 0; timeout < 1000000u; timeout++) {
+        u32 valid0;
+        u32 valid1;
+
         *s0 = read_adc_debug(0u, 8u);
         *s1 = read_adc_debug(1u, 8u);
-        if (((*s0 & BURST_STATUS_MAGIC_MASK) == BURST_STATUS_MAGIC) &&
-            ((*s1 & BURST_STATUS_MAGIC_MASK) == BURST_STATUS_MAGIC) &&
+        valid0 = ((*s0 & BURST_STATUS_MAGIC_MASK) == BURST_STATUS_MAGIC);
+        valid1 = ((*s1 & BURST_STATUS_MAGIC_MASK) == BURST_STATUS_MAGIC);
+        if (valid0 && ((*s0 & BURST_STATUS_PREPARING) != 0u))
+            seen_preparing |= 1u;
+        if (valid1 && ((*s1 & BURST_STATUS_PREPARING) != 0u))
+            seen_preparing |= 2u;
+        if ((seen_preparing == 3u) && valid0 && valid1 &&
             ((*s0 & idle_mask) == 0u) && ((*s1 & idle_mask) == 0u)) {
             return 1;
         }
@@ -2757,21 +2766,17 @@ static void pulse_adc_capture(void)
 
 #if HAS_BRAM_DATAPLANE
 /* BCPT uses an acknowledged arm handshake, so it does not need the legacy
- * million-iteration pulse delay. AXI writes are ordered; the readback and a
- * handful of additional reads keep the level high/low across multiple clk_200
- * cycles before wait_burst_prepared() verifies arrival in the ADC domain. */
+ * million-iteration pulse delay. The readback orders the high write before
+ * the low write; wait_burst_prepared() then observes the complete busy-to-idle
+ * transaction in the ADC domain before the current source can restart. */
 static void arm_adc_capture_triggered(void)
 {
     u32 rw3 = Xil_In32(RW_REG3) & ~RW3_CAPTURE_START;
-    u32 i;
 
     Xil_Out32(RW_REG3, rw3);
     Xil_Out32(RW_REG3, rw3 | RW3_CAPTURE_START);
     (void)Xil_In32(RW_REG3);
     Xil_Out32(RW_REG3, rw3);
-    for (i = 0u; i < 64u; i++) {
-        (void)Xil_In32(RW_REG3);
-    }
 }
 #endif
 

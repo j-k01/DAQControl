@@ -270,6 +270,10 @@ def main():
                   f"score={score:.1f} request={meta['request']} "
                   f"drains={meta['drain_attempts']}")
             if any(offset != 0 for offset in offsets):
+                np.savez_compressed(
+                    "captures/neuron_shaper_alignment_failure.npz",
+                    **{f"{name}_ch{ch}": values
+                       for ch, values in stack.items()})
                 raise RuntimeError(f"{name}: nonzero raw trigger offsets {offsets}")
 
         raw_arrays = {}
