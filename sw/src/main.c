@@ -2698,6 +2698,18 @@ static int wait_burst_done(u32 *s0, u32 *s1)
     return 0;
 }
 
+/* Bound the time needed for clk_200 register writes and their two-flop ADC
+ * clock crossings. MMIO reads cannot be optimized away and 4096 transactions
+ * are orders of magnitude beyond the CDC requirement without imposing the
+ * legacy million-iteration software delay. */
+static void capture_cdc_guard(void)
+{
+    u32 i;
+
+    for (i = 0u; i < 4096u; i++)
+        (void)Xil_In32(RW_REG3);
+}
+
 #if HAS_BRAM_DATAPLANE
 /* Poll both capture engines until a NEW capture has begun (done bit LOW).
  * Needed for trigger-synchronized (RW3[7]) captures: the engine's `done` only
@@ -2727,23 +2739,14 @@ static int wait_burst_started(u32 *s0, u32 *s1)
 static int wait_burst_prepared(u32 *s0, u32 *s1)
 {
     u32 timeout;
-    u32 seen_preparing = 0u;
     const u32 idle_mask = BURST_STATUS_DONE | BURST_STATUS_RUNNING |
                           BURST_STATUS_PREPARING | BURST_STATUS_AXIS_ACTIVE;
 
     for (timeout = 0; timeout < 1000000u; timeout++) {
-        u32 valid0;
-        u32 valid1;
-
         *s0 = read_adc_debug(0u, 8u);
         *s1 = read_adc_debug(1u, 8u);
-        valid0 = ((*s0 & BURST_STATUS_MAGIC_MASK) == BURST_STATUS_MAGIC);
-        valid1 = ((*s1 & BURST_STATUS_MAGIC_MASK) == BURST_STATUS_MAGIC);
-        if (valid0 && ((*s0 & BURST_STATUS_PREPARING) != 0u))
-            seen_preparing |= 1u;
-        if (valid1 && ((*s1 & BURST_STATUS_PREPARING) != 0u))
-            seen_preparing |= 2u;
-        if ((seen_preparing == 3u) && valid0 && valid1 &&
+        if (((*s0 & BURST_STATUS_MAGIC_MASK) == BURST_STATUS_MAGIC) &&
+            ((*s1 & BURST_STATUS_MAGIC_MASK) == BURST_STATUS_MAGIC) &&
             ((*s0 & idle_mask) == 0u) && ((*s1 & idle_mask) == 0u)) {
             return 1;
         }
@@ -2765,10 +2768,8 @@ static void pulse_adc_capture(void)
 }
 
 #if HAS_BRAM_DATAPLANE
-/* BCPT uses an acknowledged arm handshake, so it does not need the legacy
- * million-iteration pulse delay. The readback orders the high write before
- * the low write; wait_burst_prepared() then observes the complete busy-to-idle
- * transaction in the ADC domain before the current source can restart. */
+/* BCPT uses a bounded CDC guard plus stable prepared-state readback instead of
+ * the legacy million-iteration pulse delay. */
 static void arm_adc_capture_triggered(void)
 {
     u32 rw3 = Xil_In32(RW_REG3) & ~RW3_CAPTURE_START;
@@ -2777,6 +2778,7 @@ static void arm_adc_capture_triggered(void)
     Xil_Out32(RW_REG3, rw3 | RW3_CAPTURE_START);
     (void)Xil_In32(RW_REG3);
     Xil_Out32(RW_REG3, rw3);
+    capture_cdc_guard();
 }
 #endif
 
@@ -2786,7 +2788,7 @@ static void set_adc_capture_beats(u32 beats)
     /* RW6 crosses into the ADC beat clock with a plain vector CDC.  Let the new
      * count settle before pulsing RW3[3], otherwise a just-cleared zero can be
      * sampled and the burst engine will wait forever with no TLAST. */
-    short_delay();
+    capture_cdc_guard();
 }
 
 static int wait_dma_done(u32 *s0, u32 *s1)
