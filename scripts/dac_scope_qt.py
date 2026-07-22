@@ -2867,27 +2867,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._bg(lambda: self.collected.emit(self._burst_collect(nbytes)))
 
     def _burst_collect(self, nbytes, attempts=4):
-        """Fresh full-rate capture (BCAP+BRDO) drained over UDP, with automatic
-        retry. The readout occasionally drops a single packet (~6%, chip 1), so on
-        an incomplete drain we re-run the WHOLE cycle (fresh socket + BRST register
-        + BCAP + BRDO) up to `attempts` times -- exactly the manual re-press that
-        already works -- with a settle between tries so the rapid re-issue does not
-        race the A53 request handshake. Returns {ch.., '_cov', '_attempts'} or
-        {'_err': str}."""
-        last = {"_err": "no attempts ran"}
-        for attempt in range(max(1, attempts)):
-            if attempt > 0:
-                time.sleep(0.4)        # human-paced settle; fast re-issue races A53
-            last = self._burst_once(nbytes)
-            if not (isinstance(last, dict) and "_err" in last):
-                last["_attempts"] = attempt + 1
-                return last
-        return last
+        """Capture once, then retry only the UDP drain of that same DDR image."""
+        return self._burst_once(nbytes, drain_attempts=attempts)
 
-    def _burst_once(self, nbytes):
-        """One fresh BCAP+BRDO+UDP drain (its own socket + BRST registration),
-        identical to a single manual Collect press. Returns {ch.., '_cov'} or
-        {'_err': str}."""
+    def _burst_once(self, nbytes, drain_attempts=1):
+        """One BCAP followed by one or more BRDO drains of the same DDR data."""
         try:
             from burst_capture import Reassembler, decode_chip, parse_brdo_request
         except Exception as exc:  # noqa: BLE001
@@ -2905,32 +2889,42 @@ class ScopeWindow(QtWidgets.QMainWindow):
             # a cyclic stream and a one-shot burst can't share the DMA, so stop
             # streaming before BCAP (no-op if off).
             self.dac.stop_stream()
-            if not asm.register(timeout=2.0):
-                return {"_err": "BRST registration timed out (no BRST_READY from A53)"}
             bcap = self.dac.cmd(f"BCAP {kb}k", ok=("OK BCAP", "ERR"))
             if not bcap.startswith("OK BCAP"):
                 return {"_err": f"BCAP failed: {bcap or '(no UART reply)'}"}
-            brdo = self.dac.cmd("BRDO", ok=("OK BRDO", "ERR"))
-            req = parse_brdo_request(brdo)
-            if not brdo.startswith("OK BRDO") or req is None:
-                return {"_err": f"BRDO failed: {brdo or '(no UART reply)'}"}
-            asm.set_request_id(req)
-            deadline = time.time() + max(8.0, (2.0 * bpc / 70.0e6) + 2.0)
-            while time.time() < deadline and not asm.complete():
-                # fast-exit only on a genuine mid-drain stall (a dropped packet
-                # never arrives); never before the first packet.
-                started = asm.coverage(0) > 0.0 or asm.coverage(1) > 0.0
-                if started and asm.idle(0.6):
+            tries = max(1, int(drain_attempts))
+            req = None
+            for attempt in range(tries):
+                if attempt:
+                    time.sleep(0.4)
+                if not asm.register(timeout=2.0):
+                    return {"_err": "BRST registration timed out "
+                                    "(no BRST_READY from A53)"}
+                brdo = self.dac.cmd("BRDO", ok=("OK BRDO", "ERR"))
+                req = parse_brdo_request(brdo)
+                if not brdo.startswith("OK BRDO") or req is None:
+                    return {"_err": f"BRDO failed: {brdo or '(no UART reply)'}"}
+                asm.set_request_id(req)
+                deadline = time.time() + max(8.0, (2.0 * bpc / 70.0e6) + 2.0)
+                while time.time() < deadline and not asm.complete():
+                    # Fast-exit only on a genuine mid-drain stall; never before
+                    # the first packet.
+                    started = asm.coverage(0) > 0.0 or asm.coverage(1) > 0.0
+                    if started and asm.idle(0.6):
+                        break
+                    time.sleep(0.05)
+                if asm.complete():
                     break
-                time.sleep(0.05)
             if not asm.complete():
-                return {"_err": (f"UDP drain incomplete for request {req}: "
+                return {"_err": (f"UDP drain incomplete after {tries} attempts "
+                                 f"(last request {req}): "
                                  f"chip0 {100 * asm.coverage(0):.1f}%, "
                                  f"chip1 {100 * asm.coverage(1):.1f}% coverage")}
             chans = {}
             chans.update(decode_chip(asm.buf[0], 0))
             chans.update(decode_chip(asm.buf[1], 2))
             chans["_cov"] = min(asm.coverage(0), asm.coverage(1))
+            chans["_attempts"] = attempt + 1
             return chans
         except Exception as exc:  # noqa: BLE001
             return {"_err": f"Ethernet collect exception: {exc}"}
@@ -3079,6 +3073,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             diag = trigger_offset_diagnostics(stack)
             offs = diag["offsets"]
             meta["cov"] = cov
+            meta["drain_attempts"] = attempt + 1
             return {"stack": stack, "offs": offs, "diag": diag, "meta": meta}
         except Exception as exc:  # noqa: BLE001
             import traceback

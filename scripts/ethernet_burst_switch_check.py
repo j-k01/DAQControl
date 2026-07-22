@@ -118,30 +118,36 @@ def collect_burst(args, ser: serial.Serial, label: str) -> dict:
     asm = Reassembler(args.board_ip, args.cmd_port, args.local_ip,
                       args.local_port, bpc, rcvbuf=args.rcvbuf)
     try:
-        if args.wait_brst_ready:
-            if not asm.register(timeout=2.0):
-                raise RuntimeError("BRST registration timed out")
-        else:
-            asm.sock.sendto(b"BRST", asm.board)
-            time.sleep(args.brst_settle)
-
         kb = bpc // 1024
         bcap = uart_cmd(ser, f"BCAP {kb}k", ("OK BCAP", "ERR"), timeout=30.0)
         if not bcap.startswith("OK BCAP"):
             raise RuntimeError(f"BCAP failed: {bcap or '(no reply)'}")
-
-        brdo = uart_cmd(ser, "BRDO", ("OK BRDO", "ERR"), timeout=10.0)
-        req = parse_brdo_request(brdo)
-        if not brdo.startswith("OK BRDO") or req is None:
-            raise RuntimeError(f"BRDO failed: {brdo or '(no request id)'}")
-        asm.set_request_id(req)
-
-        deadline = time.time() + max(args.timeout, (2.0 * bpc / 70.0e6) + 2.0)
-        while time.time() < deadline and not asm.complete():
-            time.sleep(0.05)
+        req = None
+        used = 0
+        for attempt in range(1 + max(0, args.retries)):
+            used = attempt + 1
+            if attempt:
+                time.sleep(0.4)
+            if args.wait_brst_ready:
+                if not asm.register(timeout=2.0):
+                    raise RuntimeError("BRST registration timed out")
+            else:
+                asm.sock.sendto(b"BRST", asm.board)
+                time.sleep(args.brst_settle)
+            brdo = uart_cmd(ser, "BRDO", ("OK BRDO", "ERR"), timeout=10.0)
+            req = parse_brdo_request(brdo)
+            if not brdo.startswith("OK BRDO") or req is None:
+                raise RuntimeError(f"BRDO failed: {brdo or '(no request id)'}")
+            asm.set_request_id(req)
+            deadline = time.time() + max(
+                args.timeout, (2.0 * bpc / 70.0e6) + 2.0)
+            while time.time() < deadline and not asm.complete():
+                time.sleep(0.05)
+            if asm.complete():
+                break
         if not asm.complete():
             raise RuntimeError(
-                f"UDP drain timeout req={req} "
+                f"UDP drain timeout after {used} attempts req={req} "
                 f"chip0={100 * asm.coverage(0):.1f}% "
                 f"chip1={100 * asm.coverage(1):.1f}%")
 
@@ -150,6 +156,7 @@ def collect_burst(args, ser: serial.Serial, label: str) -> dict:
         chans.update(decode_chip(asm.buf[1], 2))
         chans["_cov"] = min(asm.coverage(0), asm.coverage(1))
         chans["_request"] = req
+        chans["_attempts"] = used
         chans["_label"] = label
         return chans
     finally:
@@ -211,10 +218,12 @@ def run_case(args, ser: serial.Serial, label: str, setup) -> dict:
     time.sleep(args.settle)
     chans = collect_burst(args, ser, label)
     if args.no_save:
-        print(f"captured req={chans['_request']}  coverage={100 * chans['_cov']:.1f}%")
+        print(f"captured req={chans['_request']}  "
+              f"coverage={100 * chans['_cov']:.1f}% drains={chans['_attempts']}")
     else:
         path = save_capture(args.outdir, label, chans)
-        print(f"saved {path}  req={chans['_request']}  coverage={100 * chans['_cov']:.1f}%")
+        print(f"saved {path}  req={chans['_request']}  "
+              f"coverage={100 * chans['_cov']:.1f}% drains={chans['_attempts']}")
     for ch in range(4):
         f = channel_fingerprint(chans[ch])
         print(
@@ -239,6 +248,8 @@ def main() -> int:
     ap.add_argument("--wait-brst-ready", action="store_true",
                     help="Require BRST_READY before issuing BCAP/BRDO.")
     ap.add_argument("--rcvbuf", type=int, default=256 << 20)
+    ap.add_argument("--retries", type=int, default=3,
+                    help="extra BRDO drains of the same captured DDR image")
     ap.add_argument("--outdir", type=Path,
                     default=Path("captures") / time.strftime("eth_switch_%Y%m%d_%H%M%S"))
     ap.add_argument("--no-save", action="store_true",

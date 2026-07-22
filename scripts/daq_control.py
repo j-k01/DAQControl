@@ -802,16 +802,18 @@ def collect_ethernet_burst(
         # a cyclic stream and a one-shot burst can't share the DMA; stop it first
         # (STRM STOP always acks, even when idle).
         burst.uart_cmd(ser, "STRM STOP", ("OK STRM", "ERR"), timeout=uart_timeout)
-        # Each attempt is a fresh BCAP+BRDO; retry only if the UDP drain dropped
-        # packets (the data is in DDR, the loss is in readout). Breaks on the
-        # first 100%-coverage capture, so the common case costs one pass.
+        # Capture exactly once. If UDP drops a packet, retry only the A53 drain
+        # of that same DDR image so a successful result always describes one
+        # immutable ADC frame window.
+        bcap = burst.uart_cmd(ser, f"BCAP {kb}k", ("OK BCAP", "ERR"), timeout=30.0)
+        if not bcap.startswith("OK BCAP"):
+            raise DaqControlError(f"BCAP failed: {bcap or '(no UART reply)'}")
         for attempt in range(attempts):
             used = attempt + 1
+            if attempt:
+                time.sleep(0.4)
             if not asm.register(timeout=2.0):
                 raise DaqControlError("BRST registration timed out (no BRST_READY from A53)")
-            bcap = burst.uart_cmd(ser, f"BCAP {kb}k", ("OK BCAP", "ERR"), timeout=30.0)
-            if not bcap.startswith("OK BCAP"):
-                raise DaqControlError(f"BCAP failed: {bcap or '(no UART reply)'}")
             brdo = burst.uart_cmd(ser, "BRDO", ("OK BRDO", "ERR"), timeout=10.0)
             req = burst.parse_brdo_request(brdo)
             if not brdo.startswith("OK BRDO") or req is None:
