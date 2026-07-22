@@ -2985,24 +2985,35 @@ class ScopeWindow(QtWidgets.QMainWindow):
             except OSError as exc:
                 return {"_err": (f"UDP bind failed on {self.args.local_ip}:"
                                  f"{self.args.local_port}: {exc}")}
-            if not asm.register(timeout=2.0):
-                return {"_err": "BRST registration timed out (no BRST_READY from A53)"}
-            brdo = self.dac.cmd("BRDO", ok=("OK BRDO", "ERR"))
-            req = parse_brdo_request(brdo)
-            if not brdo.startswith("OK BRDO") or req is None:
-                return {"_err": f"BRDO failed: {brdo or '(no UART reply)'}"}
-            asm.set_request_id(req)
-            deadline = time.time() + max(10.0, (2.0 * total / 70.0e6) + 4.0)
-            while time.time() < deadline and not asm.complete():
-                started = asm.coverage(0) > 0.0 or asm.coverage(1) > 0.0
-                if started and asm.idle(0.8):
+            # Drain with retry: the UDP readout occasionally drops a packet
+            # (historically chip 1, same quirk _burst_collect retries around).
+            # The capture itself is intact in DDR -- BCAP/BCPT and BRDO are
+            # decoupled -- so a fresh BRST registration + BRDO re-drains the
+            # SAME repetitions without re-triggering anything.
+            drain_tries = 3
+            for attempt in range(drain_tries):
+                if attempt:
+                    time.sleep(0.4)   # human-paced settle; fast re-issue races the A53
+                if not asm.register(timeout=2.0):
+                    return {"_err": "BRST registration timed out (no BRST_READY from A53)"}
+                brdo = self.dac.cmd("BRDO", ok=("OK BRDO", "ERR"))
+                req = parse_brdo_request(brdo)
+                if not brdo.startswith("OK BRDO") or req is None:
+                    return {"_err": f"BRDO failed: {brdo or '(no UART reply)'}"}
+                asm.set_request_id(req)
+                deadline = time.time() + max(10.0, (2.0 * total / 70.0e6) + 4.0)
+                while time.time() < deadline and not asm.complete():
+                    started = asm.coverage(0) > 0.0 or asm.coverage(1) > 0.0
+                    if started and asm.idle(0.8):
+                        break
+                    time.sleep(0.05)
+                if asm.complete():
                     break
-                time.sleep(0.05)
             cov = min(asm.coverage(0), asm.coverage(1))
             if not asm.complete():
-                return {"_err": (f"UDP drain incomplete: chip0 "
-                                 f"{100 * asm.coverage(0):.1f}%, chip1 "
-                                 f"{100 * asm.coverage(1):.1f}% coverage")}
+                return {"_err": (f"UDP drain incomplete after {drain_tries} "
+                                 f"attempts: chip0 {100 * asm.coverage(0):.1f}%, "
+                                 f"chip1 {100 * asm.coverage(1):.1f}% coverage")}
             chans = {}
             chans.update(decode_chip(asm.buf[0], 0))
             chans.update(decode_chip(asm.buf[1], 2))
