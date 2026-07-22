@@ -75,6 +75,7 @@ import socket
 import struct
 import threading
 import time
+from collections import deque
 
 import numpy as np
 import serial
@@ -1567,6 +1568,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
     burst_result = QtCore.pyqtSignal(object)  # emits {'caps':[...], 'frames':int} triggered burst
     burst_progress = QtCore.pyqtSignal(int, int)  # (done, total) during a triggered burst
     msamp_result = QtCore.pyqtSignal(object)  # multisample Ethernet burst (BCPT) result
+    liveavg_result = QtCore.pyqtSignal(object)  # one live-averaging BCPT batch
     config_done = QtCore.pyqtSignal(object)   # chattering-demo defaults result
     scal_done = QtCore.pyqtSignal(str, bool, str)  # (neuron, ok, detail) spike-cal result
 
@@ -2031,6 +2033,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "Requires the current source to be configured and running "
             "(e.g. via the Chattering Demo Setup button or the current editor).")
         self.msamp_btn.clicked.connect(self._on_multisample)
+        # Live triggered averaging: back-to-back small BCPT batches feed a
+        # rolling window; a persistent plot shows the ghosts + running average.
+        self.liveavg_btn = QtWidgets.QPushButton("Start Live Trig Avg")
+        self.liveavg_btn.setCheckable(True)
+        self.liveavg_btn.setToolTip(
+            "Continuously run hardware-triggered BCPT batches and display the "
+            "running average of the last reps= captures (ghosts behind the "
+            "bold mean). Runs until toggled off; per-rep size = the Collect "
+            "size above. Requires the current player running.")
+        self.liveavg_btn.clicked.connect(self._on_liveavg_toggle)
         # One-click demo bring-up: chattering neurons, 10 mA step current,
         # current->DAC0 / neuron0 spike->DAC1, 50-sample trapezoid pulse.
         self.defaults_btn = QtWidgets.QPushButton("Chattering Demo Setup")
@@ -2066,7 +2078,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         ag.addWidget(self.burst_amp, 4, 1)
         ag.addWidget(self.msamp_reps, 5, 0)
         ag.addWidget(self.msamp_btn, 5, 1)
-        ag.addWidget(self.defaults_btn, 6, 0, 1, 2)
+        ag.addWidget(self.liveavg_btn, 6, 0, 1, 2)
+        ag.addWidget(self.defaults_btn, 7, 0, 1, 2)
         right_col.addWidget(acq)        # outside the scroll area -> always visible
 
         left.addStretch(1)
@@ -2091,6 +2104,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             lambda i, n: self.status.setText(f"Triggered burst: {i}/{n} captured..."))
         self.collected.connect(self._on_collected)
         self.msamp_result.connect(self._show_multisample)
+        self.liveavg_result.connect(self._on_liveavg_batch)
         self.config_done.connect(self._on_config_done)
         self.scal_done.connect(self._on_scal_done)
         self.stat_result.connect(self._show_stat)
@@ -2105,6 +2119,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.autosample_timer = QtCore.QTimer(self)
         self.autosample_timer.setInterval(AUTOSAMPLE_INTERVAL_MS)
         self.autosample_timer.timeout.connect(self._on_autosample_tick)
+        # Live triggered averaging: busy-gated ticks run BCPT batches
+        # back-to-back; the interval only paces the busy checks.
+        self._liveavg_busy = False
+        self._liveavg_win = None
+        self.liveavg_timer = QtCore.QTimer(self)
+        self.liveavg_timer.setInterval(150)
+        self.liveavg_timer.timeout.connect(self._on_liveavg_tick)
 
     def _set_current_preview(self, kind, ys, cps, actual, programmed=False):
         if not hasattr(self, "cur_preview_curve"):
@@ -2333,7 +2354,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         for w in (self.wf_btn, self.cic_chk, self.capt_btn, self.collect_btn,
                   self.collect_mb_cb, self.stream_btn, self.dt_cb,
                   self.burst_btn, self.burst_n, self.burst_step_chk, self.burst_amp,
-                  self.msamp_reps, self.msamp_btn, self.defaults_btn,
+                  self.msamp_reps, self.msamp_btn, self.liveavg_btn,
+                  self.defaults_btn,
                   self.np_loadprof, self.np_saveprof, self.cur_preview_btn):
             w.setEnabled(on)
         for b in self.np_btns.values():
@@ -3105,6 +3127,140 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.status.setText(
             f"Multisample: N={n} x {L} samp/ch, raw hardware alignment, "
             f"{health}.{where}")
+
+    # ---- live triggered averaging: continuous BCPT batches -> rolling mean --
+    def _on_liveavg_toggle(self, checked):
+        if not self.dac:
+            self.liveavg_btn.setChecked(False)
+            return
+        if checked:
+            # BCPT owns the DMA: pause auto-sample and the live stream tap
+            self._resume_autosample = self.autosample_timer.isActive()
+            if self._resume_autosample:
+                self.autosample_timer.stop()
+            self._liveavg_resume_tap = self.tap is not None
+            if self.tap:
+                self.tap.close()
+                self.tap = None
+            nbytes, lbl = COLLECT_SIZE_OPTIONS[self.collect_mb_cb.currentIndex()]
+            self._liveavg_bytes = nbytes
+            self._liveavg_window = max(2, self.msamp_reps.value())
+            self._liveavg_stacks = {ch: deque(maxlen=self._liveavg_window)
+                                    for ch in range(4)}
+            self._liveavg_total = 0
+            self._liveavg_errors = 0
+            self._liveavg_busy = False
+            self._liveavg_build_window()
+            self.liveavg_btn.setText("Stop Live Trig Avg")
+            for w in (self.msamp_btn, self.collect_btn, self.stream_btn,
+                      self.burst_btn):
+                w.setEnabled(False)
+            self.status.setText(f"Live Trig Avg: rolling window of "
+                                f"{self._liveavg_window}, {lbl} per rep ...")
+            self.liveavg_timer.start()
+        else:
+            self._stop_liveavg()
+
+    def _stop_liveavg(self):
+        self.liveavg_timer.stop()
+        self.liveavg_btn.setChecked(False)
+        self.liveavg_btn.setText("Start Live Trig Avg")
+        if getattr(self, "_controls_enabled", False):
+            for w in (self.msamp_btn, self.collect_btn, self.stream_btn,
+                      self.burst_btn):
+                w.setEnabled(True)
+        if getattr(self, "_resume_autosample", False) and self.dac \
+                and self.stream_btn.isChecked():
+            self._autosample_busy = False
+            self.autosample_timer.start()
+        self._resume_autosample = False
+        if getattr(self, "_liveavg_resume_tap", False) and self.dac:
+            self.dac.start_stream(self.args.decim, self.args.cic)
+            try:
+                self.tap = StreamTap(self.args.board_ip, self.args.cmd_port,
+                                     self.args.local_ip, self.args.local_port,
+                                     self.args.window, self.args.rcvbuf)
+            except OSError:
+                self.tap = None
+        self._liveavg_resume_tap = False
+
+    def _liveavg_build_window(self):
+        win = pg.GraphicsLayoutWidget()
+        win.setWindowTitle("Live triggered average")
+        win.setBackground("#101418")
+        win.resize(900, 720)
+        self._liveavg_ghosts = []
+        self._liveavg_means = []
+        for ch in range(4):
+            p = win.addPlot(row=ch, col=0)
+            p.showGrid(x=True, y=True, alpha=0.25)
+            p.setLabel("left", f"ch{ch}", units="V")
+            col = pg.mkColor(CH_COLORS[ch])
+            col.setAlpha(40)
+            self._liveavg_ghosts.append(
+                [p.plot([], [], pen=pg.mkPen(col, width=0.6))
+                 for _ in range(self._liveavg_window)])
+            self._liveavg_means.append(
+                p.plot([], [], pen=pg.mkPen("#ffffff", width=1.5)))
+        self._liveavg_label = win.addLabel("waiting for the first batch...",
+                                           row=4, col=0)
+        win.show()
+        self._liveavg_win = win
+
+    def _on_liveavg_tick(self):
+        if self._liveavg_busy or not self.dac:
+            return
+        if self._liveavg_win is None or not self._liveavg_win.isVisible():
+            self._stop_liveavg()            # closing the plot stops the mode
+            return
+        self._liveavg_busy = True
+        reps = max(2, min(4, self._liveavg_window))
+        nbytes = self._liveavg_bytes
+        self._bg(lambda: self.liveavg_result.emit(
+            self._multisample_once(nbytes, reps)))
+
+    def _on_liveavg_batch(self, res):
+        self._liveavg_busy = False
+        if not self.liveavg_btn.isChecked():
+            return
+        if not isinstance(res, dict) or "stack" not in res:
+            self._liveavg_errors += 1
+            msg = res.get("_err", "no data") if isinstance(res, dict) else "no data"
+            if self._liveavg_errors >= 3:
+                self.status.setText(f"Live Trig Avg stopped after 3 failed "
+                                    f"batches: {msg}")
+                self._stop_liveavg()
+            else:
+                self.status.setText(f"Live Trig Avg batch failed "
+                                    f"({self._liveavg_errors}/3): {msg}")
+            return
+        self._liveavg_errors = 0
+        stack = res["stack"]
+        n_new = stack[0].shape[0]
+        for ch in range(4):
+            for i in range(n_new):
+                self._liveavg_stacks[ch].append(stack[ch][i])
+        self._liveavg_total += n_new
+        t = None
+        held = 0
+        for ch in range(4):
+            reps = list(self._liveavg_stacks[ch])
+            if not reps:
+                continue
+            held = len(reps)
+            if t is None:
+                t = np.arange(len(reps[0]))
+            for i, curve in enumerate(self._liveavg_ghosts[ch]):
+                if i < len(reps):
+                    curve.setData(t, reps[i] * VOLTS_PER_COUNT)
+                else:
+                    curve.setData([], [])
+            mean = np.mean(np.stack(reps), axis=0)
+            self._liveavg_means[ch].setData(t, mean * VOLTS_PER_COUNT)
+        self._liveavg_label.setText(
+            f"running mean of the last {held} triggered captures "
+            f"(window {self._liveavg_window}) -- {self._liveavg_total} total "
+            f"(x = ns @ 1 GS/s)")
 
     # ---- one-click chattering demo bring-up ----
     def _on_default_config(self):
