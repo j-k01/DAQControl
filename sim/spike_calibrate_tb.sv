@@ -2,8 +2,8 @@
 
 // Self-checking testbench for spike_calibrate: drives random beats through
 // random (gain, offset) settings and compares against a golden model of
-// y = sat16((sample * gain) >>> 15 + offset), including the gain==0 -> unity
-// default and both saturation rails.
+// y = sat16((sample * gain_q2_14) >>> 14 + offset), including the gain==0 ->
+// unity default, NEGATIVE (inverting) gains, and both saturation rails.
 
 module spike_calibrate_tb;
     reg         clk = 1'b0;
@@ -33,11 +33,11 @@ module spike_calibrate_tb;
     function [15:0] golden;
         input [15:0] sample;
         input [31:0] c;
-        reg [15:0] g;
+        reg signed [15:0] g;
         integer sum;
         begin
-            g = (c[15:0] == 16'd0) ? 16'h8000 : c[15:0];
-            sum = ($signed(sample) * $signed({1'b0, g})) >>> 15;
+            g = (c[15:0] == 16'd0) ? 16'sh4000 : $signed(c[15:0]);
+            sum = ($signed(sample) * g) >>> 14;
             sum = sum + $signed(c[31:16]);
             if (sum > 32767)       golden = 16'h7FFF;
             else if (sum < -32768) golden = 16'h8000;
@@ -57,12 +57,14 @@ module spike_calibrate_tb;
         for (n = 0; n < 20000; n = n + 1) begin
             // random data; bias some cases to the corners
             in_word = {$random, $random};
-            case (n % 7)
+            case (n % 9)
                 0: cal = 32'd0;                              // unity, no offset
-                1: cal = {16'd0, 16'h8000};                  // explicit unity
-                2: cal = {16'h7FFF, 16'hFFFF};               // max gain + max offset
-                3: cal = {16'h8000, 16'hFFFF};               // max gain + min offset
-                4: begin rnd = $random; cal = {rnd[15:0], 16'h0001}; end // near-zero gain
+                1: cal = {16'd0, 16'h4000};                  // explicit unity
+                2: cal = {16'd0, 16'hC000};                  // exact -1.0x (invert)
+                3: cal = {16'h7FFF, 16'h7FFF};               // ~+2x gain + max offset
+                4: cal = {16'h8000, 16'h8000};               // -2x gain + min offset
+                5: begin rnd = $random; cal = {rnd[15:0], 16'h0001}; end // near-zero gain
+                6: begin rnd = $random; cal = {rnd[15:0], 16'hFFFF}; end // tiny negative gain
                 default: cal = $random;
             endcase
             @(posedge clk);

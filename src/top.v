@@ -110,7 +110,7 @@ module top #(
     // one cycle on a CPU read. Add new control/status regs by slicing regf_value
     // / driving regf_in[idx] -- all contiguous at byte offset idx*4.
     localparam integer REGF_NUM = 48;   // 0-17 ctrl/status, 18 spike nbeats, 19 DDS step, 20 current DAC gain,
-                                        // 21-24 per-neuron spike cal {offset_s16, gain_q1_15}
+                                        // 21-24 per-neuron spike cal {offset_s16, gain_q2_14}
     wire [REGF_NUM*32-1:0] regf_value;
     wire [REGF_NUM*32-1:0] regf_in;
     wire [REGF_NUM-1:0]    regf_we;
@@ -1349,7 +1349,7 @@ module top #(
         .shape_addr(spike_shape_addr_tx3), .shape_data(spike_shape_word_tx3),
         .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx3));
 
-    // Per-neuron spike calibration: regs 21..24 = {offset_s16, gain_q1_15} for
+    // Per-neuron spike calibration: regs 21..24 = {offset_s16, gain_q2_14} for
     // neurons 0..3 (firmware SCAL).  Each shaped pulse is scaled to its
     // calibrated height and rides on its calibrated DC baseline before
     // entering the crossbar as source spike0..3; gain 0 = unity passthrough.

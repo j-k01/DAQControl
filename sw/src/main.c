@@ -157,10 +157,11 @@
 #define DAC_XBAR_SEL_REG   (REG_BASE + 0x44)   /* reg17 */
 #define DDS_PHASE_INC_REG  (REG_BASE + 19u*4u) /* reg19[23:0], 0 = HDL default */
 #define CUR_DAC_GAIN_REG   (REG_BASE + 20u*4u) /* reg20[15:0], Q8.8 DAC-only current gain */
-/* regs 21..24: per-neuron spike-pulse calibration {offset_s16, gain_q1_15}
- * (firmware SCAL).  gain 0x8000 = 1.000x; raw 0 = unity passthrough. */
+/* regs 21..24: per-neuron spike-pulse calibration {offset_s16, gain_q2_14}
+ * (firmware SCAL).  gain is SIGNED Q2.14: 0x4000 = +1.000x, 0xC000 = -1.000x
+ * (inverted); raw 0 = unity passthrough. */
 #define SPIKE_CAL_REG(n)   (REG_BASE + (21u + (n)) * 4u)
-#define SPIKE_CAL_GAIN_ONE 0x8000u
+#define SPIKE_CAL_GAIN_ONE 0x4000u
 #define CUR_DAC_GAIN_ONE   0x0100u
 #define XSRC_OFF     0u
 #define XSRC_DDS     1u    /* broadcast sine (single entry, any DAC) */
@@ -1618,7 +1619,8 @@ static void cmd_puls(void)
 /* SCAL [ch|all] [<gain> <offset>] -- per-neuron spike-pulse calibration.
  * The shaped pulse of neuron n is scaled and offset before entering the
  * crossbar as source spike<n>:  y = sat16(sample * gain + offset).
- *   gain   = unsigned Q1.15 (0x8000 = 1.000x; raw 0 selects unity, so an
+ *   gain   = SIGNED Q2.14 (0x4000 = +1.000x, 0xC000 = -1.000x: negative
+ *            gain INVERTS the pulse; raw 0 selects unity, so an
  *            unprogrammed register passes the shape through unchanged)
  *   offset = signed DAC counts -32768..32767, applied CONTINUOUSLY (between
  *            pulses too) -- it trims that neuron's DAC resting baseline.
@@ -1656,7 +1658,7 @@ static void cmd_scal(void)
             v = Xil_In32(SPIKE_CAL_REG(n));
             send_str("SCAL ch=");
             send_uint(n);
-            send_str(" gain_q1_15=");
+            send_str(" gain_q2_14=");
             send_hex(v & 0xFFFFu);
             send_str(" offset=");
             send_int((s32)(s16)(v >> 16));
@@ -1671,7 +1673,7 @@ static void cmd_scal(void)
         advance_token(&p);
     } else {
         if (!parse_u32_arg(&p, &gain) || gain > 0xFFFFu) {
-            send_str("ERR SCAL expects default|<gain 0..0xFFFF Q1.15> <offset -32768..32767>\r\n");
+            send_str("ERR SCAL expects default|<gain 0..0xFFFF signed Q2.14> <offset -32768..32767>\r\n");
             return;
         }
         if (!parse_s32_arg(&p, &offset) || offset < -32768 || offset > 32767) {
@@ -1693,7 +1695,7 @@ static void cmd_scal(void)
         send_str("ch=");
         send_uint(channel);
     }
-    send_str(" gain_q1_15=");
+    send_str(" gain_q2_14=");
     send_hex(gain & 0xFFFFu);
     send_str(" offset=");
     send_int(offset);
@@ -3392,7 +3394,7 @@ static void cmd_help(void)
     send_str("  CURW <cps> <count> [hold]  current player: load host LE Q16.16 samples; optional hold plays once then holds last\r\n");
     send_str("  CURS <cps> <zero> <high> <amp_q16> [hold|loop]  current step via cur_wave BRAM/player\r\n");
     send_str("  PULS default | bin <count> | <s0..sN>  spike pulse: binary up to 4096 signed s16 samples; text up to 32\r\n");
-    send_str("  SCAL [ch|all] [default|<gain> <offset>]  per-neuron spike cal: gain Q1.15 (0x8000=1x), offset s16 counts\r\n");
+    send_str("  SCAL [ch|all] [default|<gain> <offset>]  per-neuron spike cal: gain signed Q2.14 (0x4000=1x, 0xC000=-1x), offset s16 counts\r\n");
 #endif
     send_str("  NEUR ch param value  set IZH Q16.16 param on ch=0..3 or all (writes config-bank BRAM)\r\n");
     send_str("                 params: a,b,c,d,i/current,iconst/bias (per-neuron); dt,period (global); reset,default\r\n");

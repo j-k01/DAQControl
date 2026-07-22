@@ -500,12 +500,13 @@ def clamp_s16(v):
     return max(-DAC_FULLSCALE, min(DAC_FULLSCALE, int(round(v))))
 
 
-def spike_cal_raw(height_v, offset_v):
-    """Convert per-neuron calibration volts -> (gain_q1_15, offset_counts) for
+def spike_cal_raw(height_v, offset_v, invert=False):
+    """Convert per-neuron calibration volts -> (gain_q2_14, offset_counts) for
     firmware SCAL.  Height is the pulse amplitude assuming a FULL-SCALE
-    programmed shape (it scales proportionally for smaller shapes).  Raises
-    ValueError for illegal combinations: values outside the DAC range, or a
-    height + |offset| sum that would clip the pulse."""
+    programmed shape (it scales proportionally for smaller shapes); invert
+    flips the pulse polarity (negative Q2.14 gain).  Raises ValueError for
+    illegal combinations: values outside the DAC range, or a height + |offset|
+    sum that would clip the pulse."""
     height_counts = int(round(max(0.0, float(height_v)) / VOLTS_PER_COUNT))
     offset_counts = int(round(float(offset_v) / VOLTS_PER_COUNT))
     if height_counts > DAC_FULLSCALE:
@@ -517,10 +518,13 @@ def spike_cal_raw(height_v, offset_v):
         raise ValueError(
             f"height + |offset| = {total:.3f} V would clip the "
             f"{DAC_VMAX:.3f} V DAC range")
-    # Q1.15: 0x8000 = 1.0x. Clamp to >= 1 because raw 0 means "unity" in HW.
-    gain = max(1, min(0xFFFF,
-                      int(round(height_counts / DAC_FULLSCALE * 32768.0))))
-    return gain, offset_counts
+    # Signed Q2.14: 0x4000 = +1.0x, 0xC000 = -1.0x. Clamp magnitude to >= 1
+    # because raw 0 means "unity" in HW.
+    gain = max(1, min(0x7FFF,
+                      int(round(height_counts / DAC_FULLSCALE * 16384.0))))
+    if invert:
+        gain = -gain
+    return gain & 0xFFFF, offset_counts
 
 
 # firmware boot-default spike shape, mirrored for the pulse editor (defined
@@ -821,12 +825,13 @@ class DacControl:
         """Reload the boot-default spike shape (inverted 30 ns trapezoid)."""
         return self.cmd("PULS default", ok=("PULS", "ERR"))
 
-    def set_spike_cal(self, target, gain_q1_15, offset_counts):
-        """Per-neuron spike-pulse calibration (firmware SCAL): gain Q1.15
-        (0x8000 = 1.000x) scales the shaped pulse; offset (signed DAC counts)
-        trims that neuron's DAC resting baseline. target = 0..3 or 'all'."""
+    def set_spike_cal(self, target, gain_q2_14, offset_counts):
+        """Per-neuron spike-pulse calibration (firmware SCAL): gain signed
+        Q2.14 (0x4000 = +1.000x, 0xC000 = -1.000x = inverted) scales the
+        shaped pulse; offset (signed DAC counts) trims that neuron's DAC
+        resting baseline. target = 0..3 or 'all'."""
         return self.cmd(
-            f"SCAL {target} 0x{gain_q1_15 & 0xFFFF:04X} {int(offset_counts)}",
+            f"SCAL {target} 0x{gain_q2_14 & 0xFFFF:04X} {int(offset_counts)}",
             ok=("OK SCAL", "ERR"))
 
     def _capture(self, cmd_str, frames):
@@ -1781,8 +1786,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
         cal_grid = QtWidgets.QGridLayout(cal_box)
         cal_grid.addWidget(QtWidgets.QLabel("height (V)"), 0, 1)
         cal_grid.addWidget(QtWidgets.QLabel("offset (V)"), 0, 2)
+        cal_grid.addWidget(QtWidgets.QLabel("inv"), 0, 3)
         self.scal_height = {}
         self.scal_offset = {}
+        self.scal_invert = {}
         self.scal_btns = {}
         self.scal_status = {}
         for n in range(4):
@@ -1804,18 +1811,23 @@ class ScopeWindow(QtWidgets.QMainWindow):
             o.setToolTip("DC baseline trim for this neuron's DAC output "
                          "(applied continuously, between pulses too). "
                          "height + |offset| must stay within the DAC range.")
+            inv = QtWidgets.QCheckBox()
+            inv.setToolTip("Invert this neuron's pulse polarity "
+                           "(negative Q2.14 gain)")
             b = QtWidgets.QPushButton("Apply")
-            b.setToolTip(f"Send SCAL {n} (gain Q1.15 + offset counts)")
+            b.setToolTip(f"Send SCAL {n} (signed Q2.14 gain + offset counts)")
             b.clicked.connect(self._make_scal_cb(key))
             st = QtWidgets.QLabel("-")
             st.setStyleSheet("color:#9fb3c8; font-size:10px;")
             st.setWordWrap(True)
             cal_grid.addWidget(h, n + 1, 1)
             cal_grid.addWidget(o, n + 1, 2)
-            cal_grid.addWidget(b, n + 1, 3)
-            cal_grid.addWidget(st, n + 1, 4)
+            cal_grid.addWidget(inv, n + 1, 3)
+            cal_grid.addWidget(b, n + 1, 4)
+            cal_grid.addWidget(st, n + 1, 5)
             self.scal_height[key] = h
             self.scal_offset[key] = o
+            self.scal_invert[key] = inv
             self.scal_btns[key] = b
             self.scal_status[key] = st
         right.addWidget(cal_box)
@@ -2340,6 +2352,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.scal_btns[key].setEnabled(on)
             self.scal_height[key].setEnabled(on)
             self.scal_offset[key].setEnabled(on)
+            self.scal_invert[key].setEnabled(on)
 
     def _show_stat(self, is_daq, health):
         port = self.dac.port if self.dac else self.port_cb.currentText()
@@ -2366,7 +2379,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return
         try:
             gain, off = spike_cal_raw(self.scal_height[key].value(),
-                                      self.scal_offset[key].value())
+                                      self.scal_offset[key].value(),
+                                      invert=self.scal_invert[key].isChecked())
         except ValueError as e:
             self.scal_done.emit(key, False, str(e))
             return
