@@ -75,6 +75,7 @@ def capture_multisample(ser, kb, reps, board_ip, cmd_port, local_ip, local_port,
 
     asm = burst_capture.Reassembler(board_ip, cmd_port, local_ip, local_port, total)
     try:
+        asm.begin_request()
         if not asm.register(timeout=2.0):
             raise RuntimeError("BRST registration timed out (no BRST_READY)")
         brdo = burst_capture.uart_cmd(ser, "BRDO", ("OK BRDO", "ERR"), timeout=10.0)

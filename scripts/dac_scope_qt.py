@@ -2897,6 +2897,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             for attempt in range(tries):
                 if attempt:
                     time.sleep(0.4)
+                asm.begin_request()
                 if not asm.register(timeout=2.0):
                     return {"_err": "BRST registration timed out "
                                     "(no BRST_READY from A53)"}
@@ -3034,6 +3035,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             for attempt in range(drain_tries):
                 if attempt:
                     time.sleep(0.4)   # human-paced settle; fast re-issue races the A53
+                asm.begin_request()
                 if not asm.register(timeout=2.0):
                     return {"_err": "BRST registration timed out (no BRST_READY from A53)"}
                 brdo = self.dac.cmd("BRDO", ok=("OK BRDO", "ERR"))

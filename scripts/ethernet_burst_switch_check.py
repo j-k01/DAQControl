@@ -128,6 +128,7 @@ def collect_burst(args, ser: serial.Serial, label: str) -> dict:
             used = attempt + 1
             if attempt:
                 time.sleep(0.4)
+            asm.begin_request()
             if args.wait_brst_ready:
                 if not asm.register(timeout=2.0):
                     raise RuntimeError("BRST registration timed out")

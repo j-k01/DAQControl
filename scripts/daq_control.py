@@ -812,6 +812,7 @@ def collect_ethernet_burst(
             used = attempt + 1
             if attempt:
                 time.sleep(0.4)
+            asm.begin_request()
             if not asm.register(timeout=2.0):
                 raise DaqControlError("BRST registration timed out (no BRST_READY from A53)")
             brdo = burst.uart_cmd(ser, "BRDO", ("OK BRDO", "ERR"), timeout=10.0)

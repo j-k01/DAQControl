@@ -94,6 +94,18 @@ class Reassembler:
         self.cov = [np.zeros(self.nslot, dtype=bool), np.zeros(self.nslot, dtype=bool)]
         self.last_t = time.time()
 
+    def begin_request(self):
+        """Prepare for a BRDO whose request ID is not known yet.
+
+        The A53 can transmit chip 0 before the UART BRDO acknowledgement reaches
+        the host. Temporarily accepting the first observed tag preserves those
+        early packets; set_request_id() confirms the tag once UART reports it.
+        """
+        with self.lock:
+            self.request_id = None
+            self.observed_request_id = None
+            self._clear_locked()
+
     def set_request_id(self, request_id):
         with self.lock:
             self.request_id = request_id & 0xFFFFFFFF
