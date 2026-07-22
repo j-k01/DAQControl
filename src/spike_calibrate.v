@@ -19,7 +19,7 @@
 module spike_calibrate (
     input  wire        clk,
     input  wire        rst,
-    input  wire [31:0] cal,        // {offset_s16, gain_q1_15}
+    input  wire [31:0] cal,        // {offset_s16, gain_q2_14}
     input  wire [63:0] in_word,    // 4 x s16 shaped samples per beat
     output reg  [63:0] out_word
 );

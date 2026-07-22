@@ -40,6 +40,7 @@ set common_sources [list \
     ../../src/izh_current_player.v \
     ../../src/izh_spike_trapezoid.v \
     ../../src/izh_spike_shaper.v \
+    ../../src/spike_calibrate.v \
     ../../src/izh_dac_channel.v \
     ../../src/izh_dac_bank.sv \
     ../../src/spike_shape_bram_bank.sv \

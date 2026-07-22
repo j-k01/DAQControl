@@ -51,6 +51,13 @@ run_tb spike_shape_bram_integration_tb [list \
     ../spike_shape_bram_integration_tb.sv \
 ]
 
+run_tb spike_shape_per_neuron_tb [list \
+    ../../src/izh_spike_shaper.v \
+    ../../src/spike_calibrate.v \
+    ../../src/spike_shape_bram_bank.sv \
+    ../spike_shape_per_neuron_tb.sv \
+]
+
 run_tb izh_dac_integration_tb [list \
     $izh_neuron_file \
     ../../src/izh_dac_bank.sv \

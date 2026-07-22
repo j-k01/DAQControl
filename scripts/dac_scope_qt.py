@@ -807,13 +807,14 @@ class DacControl:
         """Stop the current player (i_external held; CURP off)."""
         return self.cmd("CURP off", ok=("CURP", "ERR"))
 
-    def program_pulse(self, counts):
-        """Set the spike-pulse shape to signed DAC counts via binary PULS."""
+    def program_pulse(self, counts, target="all"):
+        """Program one independent neuron shaper, or broadcast to all four."""
         vals = [max(-32768, min(32767, int(round(v)))) for v in counts]
         n = len(vals)
+        target = str(target).lower()
         with self.lock:
             self.s.reset_input_buffer()
-            self.s.write(f"PULS bin {n}\n".encode("ascii"))
+            self.s.write(f"PULS ch {target} bin {n}\n".encode("ascii"))
             self.s.flush()
             ack = self._readuntil(("PBRD", "ERR"))
             if not ack.startswith("PBRD"):
@@ -822,9 +823,9 @@ class DacControl:
             self.s.flush()
             return self._readuntil(("PULS", "ERR"))
 
-    def pulse_default(self):
-        """Reload the boot-default spike shape (inverted 30 ns trapezoid)."""
-        return self.cmd("PULS default", ok=("PULS", "ERR"))
+    def pulse_default(self, target="all"):
+        """Reload the boot-default shape on one neuron or all four."""
+        return self.cmd(f"PULS ch {target} default", ok=("PULS", "ERR"))
 
     def set_spike_cal(self, target, gain_q2_14, offset_counts):
         """Per-neuron spike-pulse calibration (firmware SCAL): gain signed
@@ -1082,6 +1083,19 @@ class PulseShapeWindow(QtWidgets.QWidget):
         self.plot.addItem(self.editor)
         lay.addWidget(self.plot, stretch=1)
 
+        target_row = QtWidgets.QHBoxLayout()
+        target_row.addWidget(QtWidgets.QLabel("program shaper"))
+        self.target_cb = QtWidgets.QComboBox()
+        self.target_cb.addItem("All neurons", "all")
+        for neuron in range(4):
+            self.target_cb.addItem(f"Neuron {neuron}", neuron)
+        self.target_cb.setToolTip(
+            "Each neuron has an independent 4096-point waveform bank and pulse length.")
+        self.target_cb.currentIndexChanged.connect(self._info)
+        target_row.addWidget(self.target_cb)
+        target_row.addStretch(1)
+        lay.addLayout(target_row)
+
         ctl = QtWidgets.QHBoxLayout()
         ctl.addWidget(QtWidgets.QLabel("samples"))
         self.len_spin = QtWidgets.QSpinBox()
@@ -1181,7 +1195,8 @@ class PulseShapeWindow(QtWidgets.QWidget):
         ramp = min(self.ramp_spin.value(), max(1, len(ys) // 2))
         hold = max(0, len(ys) - 2 * ramp)
         self.info.setText(
-            f"{len(ys)} samples ({len(ys)} ns), nbeats={nb}, peak |{pk}| counts "
+            f"{self.target_cb.currentText()}: {len(ys)} samples ({len(ys)} ns), "
+            f"nbeats={nb}, peak |{pk}| counts "
             f"({pk * VOLTS_PER_COUNT:.3f} V), trapezoid ramp/hold/ramp = "
             f"{ramp}/{hold}/{ramp}.  Drag points up/down to edit; "
             f"route a Spike source on a DAC to emit this pulse.")
@@ -1192,10 +1207,11 @@ class PulseShapeWindow(QtWidgets.QWidget):
             self.info.setText("connect a board first")
             return
         counts = self.editor.values()
+        target = self.target_cb.currentData()
         self.prog_btn.setEnabled(False)
 
         def work():
-            r = dac.program_pulse(counts)
+            r = dac.program_pulse(counts, target)
             self.done.emit(bool(r and not r.startswith("ERR")), r or "(no reply)")
         threading.Thread(target=work, daemon=True).start()
 
@@ -2039,10 +2055,17 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.liveavg_btn.setCheckable(True)
         self.liveavg_btn.setToolTip(
             "Continuously run hardware-triggered BCPT batches and display the "
-            "running average of the last reps= captures (ghosts behind the "
+            "running average of the selected 8-16 captures (ghosts behind the "
             "bold mean). Runs until toggled off; per-rep size = the Collect "
             "size above. Requires the current player running.")
         self.liveavg_btn.clicked.connect(self._on_liveavg_toggle)
+        self.liveavg_window = QtWidgets.QSpinBox()
+        self.liveavg_window.setRange(8, 16)
+        self.liveavg_window.setValue(16)
+        self.liveavg_window.setPrefix("window=")
+        self.liveavg_window.setToolTip(
+            "Number of most recent trigger-aligned captures retained in the "
+            "rolling average; old captures are discarded continuously.")
         # One-click demo bring-up: chattering neurons, 10 mA step current,
         # current->DAC0 / neuron0 spike->DAC1, 50-sample trapezoid pulse.
         self.defaults_btn = QtWidgets.QPushButton("Chattering Demo Setup")
@@ -2078,7 +2101,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         ag.addWidget(self.burst_amp, 4, 1)
         ag.addWidget(self.msamp_reps, 5, 0)
         ag.addWidget(self.msamp_btn, 5, 1)
-        ag.addWidget(self.liveavg_btn, 6, 0, 1, 2)
+        ag.addWidget(self.liveavg_window, 6, 0)
+        ag.addWidget(self.liveavg_btn, 6, 1)
         ag.addWidget(self.defaults_btn, 7, 0, 1, 2)
         right_col.addWidget(acq)        # outside the scroll area -> always visible
 
@@ -3144,7 +3168,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 self.tap = None
             nbytes, lbl = COLLECT_SIZE_OPTIONS[self.collect_mb_cb.currentIndex()]
             self._liveavg_bytes = nbytes
-            self._liveavg_window = max(2, self.msamp_reps.value())
+            self._liveavg_window = self.liveavg_window.value()
             self._liveavg_stacks = {ch: deque(maxlen=self._liveavg_window)
                                     for ch in range(4)}
             self._liveavg_total = 0
@@ -3157,7 +3181,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 w.setEnabled(False)
             self.status.setText(f"Live Trig Avg: rolling window of "
                                 f"{self._liveavg_window}, {lbl} per rep ...")
+            self.liveavg_window.setEnabled(False)
             self.liveavg_timer.start()
+            self._on_liveavg_tick()
         else:
             self._stop_liveavg()
 
@@ -3165,6 +3191,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.liveavg_timer.stop()
         self.liveavg_btn.setChecked(False)
         self.liveavg_btn.setText("Start Live Trig Avg")
+        self.liveavg_window.setEnabled(True)
         if getattr(self, "_controls_enabled", False):
             for w in (self.msamp_btn, self.collect_btn, self.stream_btn,
                       self.burst_btn):
@@ -3226,13 +3253,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if not isinstance(res, dict) or "stack" not in res:
             self._liveavg_errors += 1
             msg = res.get("_err", "no data") if isinstance(res, dict) else "no data"
-            if self._liveavg_errors >= 3:
-                self.status.setText(f"Live Trig Avg stopped after 3 failed "
-                                    f"batches: {msg}")
-                self._stop_liveavg()
-            else:
-                self.status.setText(f"Live Trig Avg batch failed "
-                                    f"({self._liveavg_errors}/3): {msg}")
+            self.status.setText(
+                f"Live Trig Avg: transient batch failure "
+                f"({self._liveavg_errors} consecutive), retrying: {msg}")
             return
         self._liveavg_errors = 0
         stack = res["stack"]
@@ -3549,6 +3572,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
     def closeEvent(self, ev):
         self.timer.stop()
         self.autosample_timer.stop()
+        self.liveavg_timer.stop()
         for w in (self._cur_win, self._pulse_win):
             if w is not None:
                 w.close()

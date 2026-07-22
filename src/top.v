@@ -276,7 +276,11 @@ module top #(
     wire [31:0] sysref_count;
     wire [5:0]  neuron_cfg_fabric_addr;
     wire [31:0] neuron_cfg_fabric_dout;
-    wire [10:0] spike_nbeats_tx;    // spike pulse length in beats (reg18[10:0], 1..1024) in GT domain
+    wire [10:0] spike_nbeats_legacy_tx;
+    wire [10:0] spike_nbeats_cfg_tx0, spike_nbeats_cfg_tx1;
+    wire [10:0] spike_nbeats_cfg_tx2, spike_nbeats_cfg_tx3;
+    wire [10:0] spike_nbeats_tx0, spike_nbeats_tx1;
+    wire [10:0] spike_nbeats_tx2, spike_nbeats_tx3;
     wire [9:0]  spike_shape_addr_tx0, spike_shape_addr_tx1;
     wire [9:0]  spike_shape_addr_tx2, spike_shape_addr_tx3;
     wire [63:0] spike_shape_word_tx0, spike_shape_word_tx1;
@@ -1257,17 +1261,37 @@ module top #(
         .dest     (dac_src_sel_tx)
     );
 
-    // Programmable spike-pulse length into the DAC domain.  The shape samples
-    // themselves live in the pulse-shape BRAM; reg18[10:0] is the beat count
-    // (1..1024), one beat = four 16-bit DAC samples.
+    // Per-neuron pulse lengths. Regs 25..28 hold one beat count per neuron;
+    // zero preserves compatibility with the legacy global count in reg18.
     cdc_vector_sync #(
         .WIDTH (11)
-    ) u_spike_nbeats_sync (
+    ) u_spike_nbeats_legacy_sync (
         .dest_clk (gth_tx_usrclk2),
         .dest_rst (litejesd_reset),
         .src      (regf_value[18*32 +: 11]),
-        .dest     (spike_nbeats_tx)
+        .dest     (spike_nbeats_legacy_tx)
     );
+    cdc_vector_sync #(.WIDTH(11)) u_spike_nbeats0_sync (
+        .dest_clk(gth_tx_usrclk2), .dest_rst(litejesd_reset),
+        .src(regf_value[25*32 +: 11]), .dest(spike_nbeats_cfg_tx0));
+    cdc_vector_sync #(.WIDTH(11)) u_spike_nbeats1_sync (
+        .dest_clk(gth_tx_usrclk2), .dest_rst(litejesd_reset),
+        .src(regf_value[26*32 +: 11]), .dest(spike_nbeats_cfg_tx1));
+    cdc_vector_sync #(.WIDTH(11)) u_spike_nbeats2_sync (
+        .dest_clk(gth_tx_usrclk2), .dest_rst(litejesd_reset),
+        .src(regf_value[27*32 +: 11]), .dest(spike_nbeats_cfg_tx2));
+    cdc_vector_sync #(.WIDTH(11)) u_spike_nbeats3_sync (
+        .dest_clk(gth_tx_usrclk2), .dest_rst(litejesd_reset),
+        .src(regf_value[28*32 +: 11]), .dest(spike_nbeats_cfg_tx3));
+
+    assign spike_nbeats_tx0 = (spike_nbeats_cfg_tx0 == 11'd0) ?
+                              spike_nbeats_legacy_tx : spike_nbeats_cfg_tx0;
+    assign spike_nbeats_tx1 = (spike_nbeats_cfg_tx1 == 11'd0) ?
+                              spike_nbeats_legacy_tx : spike_nbeats_cfg_tx1;
+    assign spike_nbeats_tx2 = (spike_nbeats_cfg_tx2 == 11'd0) ?
+                              spike_nbeats_legacy_tx : spike_nbeats_cfg_tx2;
+    assign spike_nbeats_tx3 = (spike_nbeats_cfg_tx3 == 11'd0) ?
+                              spike_nbeats_legacy_tx : spike_nbeats_cfg_tx3;
 
     cdc_vector_sync #(
         .WIDTH (16)
@@ -1327,27 +1351,26 @@ module top #(
 
     // Programmable spike-pulse shapers (one per neuron).  These live here -- NOT
     // in the JESD wrapper -- and their outputs are just four of the crossbar's
-    // inputs.  Each turns a neuron spike into the programmable pulse.  The shape
-    // RAM is replicated behind one AXI write port so these four shapers can read
-    // independent addresses when neurons spike at different times.
+    // inputs. Each turns a neuron spike into its own independently programmed
+    // pulse; four BRAM banks allow unrelated shapes, lengths, and read addresses.
     wire [63:0] neuron_word_tx0, neuron_word_tx1, neuron_word_tx2, neuron_word_tx3;
     wire        spike_shaper_rst = litejesd_reset | ~litejesd_active_async;
     izh_spike_shaper #(.ADDR_W(10)) u_spike_shaper0 (
         .clk(gth_tx_usrclk2), .reset(spike_shaper_rst), .spike(izh_spike_flags_tx[0]),
         .shape_addr(spike_shape_addr_tx0), .shape_data(spike_shape_word_tx0),
-        .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx0));
+        .nbeats(spike_nbeats_tx0), .active(), .dac_word(neuron_word_tx0));
     izh_spike_shaper #(.ADDR_W(10)) u_spike_shaper1 (
         .clk(gth_tx_usrclk2), .reset(spike_shaper_rst), .spike(izh_spike_flags_tx[1]),
         .shape_addr(spike_shape_addr_tx1), .shape_data(spike_shape_word_tx1),
-        .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx1));
+        .nbeats(spike_nbeats_tx1), .active(), .dac_word(neuron_word_tx1));
     izh_spike_shaper #(.ADDR_W(10)) u_spike_shaper2 (
         .clk(gth_tx_usrclk2), .reset(spike_shaper_rst), .spike(izh_spike_flags_tx[2]),
         .shape_addr(spike_shape_addr_tx2), .shape_data(spike_shape_word_tx2),
-        .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx2));
+        .nbeats(spike_nbeats_tx2), .active(), .dac_word(neuron_word_tx2));
     izh_spike_shaper #(.ADDR_W(10)) u_spike_shaper3 (
         .clk(gth_tx_usrclk2), .reset(spike_shaper_rst), .spike(izh_spike_flags_tx[3]),
         .shape_addr(spike_shape_addr_tx3), .shape_data(spike_shape_word_tx3),
-        .nbeats(spike_nbeats_tx), .active(), .dac_word(neuron_word_tx3));
+        .nbeats(spike_nbeats_tx3), .active(), .dac_word(neuron_word_tx3));
 
     // Per-neuron spike calibration: regs 21..24 = {offset_s16, gain_q2_14} for
     // neurons 0..3 (firmware SCAL).  Each shaped pulse is scaled to its
@@ -1683,7 +1706,11 @@ module top #(
     assign dac_src_sel_tx = 16'd0;
     assign mon_words_tx = 256'd0;
     assign cur_source_word_tx = 64'd0;
-    assign spike_nbeats_tx = 11'd0;
+    assign spike_nbeats_legacy_tx = 11'd0;
+    assign spike_nbeats_cfg_tx0 = 11'd0;
+    assign spike_nbeats_cfg_tx1 = 11'd0;
+    assign spike_nbeats_cfg_tx2 = 11'd0;
+    assign spike_nbeats_cfg_tx3 = 11'd0;
     assign dac_program_status_async = 32'd0;
 `ifdef DAQ_WITH_BRAM_DATAPLANE
     assign dac0_bram_addr = 32'd0;

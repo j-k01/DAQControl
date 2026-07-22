@@ -131,20 +131,24 @@ module spike_shape_bram_integration_tb;
     endfunction
 
     task axi_write_word(input integer word_addr, input [31:0] data);
+        integer bank;
         begin
-            @(negedge axi_clk);
-            axi_addr = word_addr << 2;
-            axi_din  = data;
-            axi_en   = 1'b1;
-            axi_we   = 4'hF;
-            @(negedge axi_clk);
-            axi_en   = 1'b0;
-            axi_we   = 4'h0;
+            // Legacy/global programming is now an explicit broadcast into the
+            // four independent 8 KB banks.
+            for (bank = 0; bank < 4; bank = bank + 1) begin
+                @(negedge axi_clk);
+                axi_addr = (bank << (AW + 3)) + (word_addr << 2);
+                axi_din  = data;
+                axi_en   = 1'b1;
+                axi_we   = 4'hF;
+                @(negedge axi_clk);
+                axi_en   = 1'b0;
+                axi_we   = 4'h0;
+            end
             axi_addr = 32'd0;
             axi_din  = 32'd0;
         end
     endtask
-
     task program_shape(input integer sample_count);
         integer i;
         integer sidx;

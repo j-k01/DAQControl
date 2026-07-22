@@ -3,9 +3,9 @@
 // Board spike-pulse waveform RAM.
 //
 // Port A is the MicroBlaze/AXI BRAM-controller side: signed s16 DAC samples are
-// packed two per 32-bit word.  Port B is replicated four times and presents one
-// 64-bit DAC beat word per read ({s3,s2,s1,s0}), one independent read stream per
-// neuron spike shaper.
+// packed two per 32-bit word.  The 32 KB AXI aperture contains four independent
+// 8 KB banks (bank = axi_addr[14:13] for ADDR_W=10), one per neuron.  Each bank
+// has its own 64-bit Port B read stream ({s3,s2,s1,s0}).
 module spike_shape_bram_bank #(
     parameter integer ADDR_W = 10              // 1024 beats * 4 = 4096 samples
 ) (
@@ -40,7 +40,14 @@ module spike_shape_bram_bank #(
     assign fabric_dout1 = spike_shape_fabric_dout_rep[1];
     assign fabric_dout2 = spike_shape_fabric_dout_rep[2];
     assign fabric_dout3 = spike_shape_fabric_dout_rep[3];
-    assign axi_dout = spike_shape_axi_dout_rep[0];
+
+    wire [1:0] axi_bank = axi_addr[ADDR_W+4:ADDR_W+3];
+    reg  [1:0] axi_bank_q = 2'd0;
+    always @(posedge axi_clk) begin
+        if (axi_en)
+            axi_bank_q <= axi_bank;
+    end
+    assign axi_dout = spike_shape_axi_dout_rep[axi_bank_q];
 
     genvar pulse_rep;
     generate
@@ -63,8 +70,8 @@ module spike_shape_bram_bank #(
                 .WRITE_MODE_B        ("read_first")
             ) u_spike_shape_bram (
                 .clka           (axi_clk),
-                .ena            (axi_en),
-                .wea            (axi_we),
+                .ena            (axi_en && (axi_bank == pulse_rep[1:0])),
+                .wea            ((axi_bank == pulse_rep[1:0]) ? axi_we : 4'b0),
                 .addra          (axi_addr[ADDR_W+2:2]),
                 .dina           (axi_din),
                 .douta          (spike_shape_axi_dout_rep[pulse_rep]),

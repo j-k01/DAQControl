@@ -187,18 +187,18 @@
 #define CUR_WAVE_BRAM_BASE     XPAR_CUR_WAVE_BRAM_CTRL_S_AXI_BASEADDR /* 1024 x Q16.16 */
 #define CUR_WAVE_DEPTH         1024u
 
-/* Programmable spike-pulse shape: samples live in a BRAM loaded by PULS.  The
- * BRAM stores signed s16 DAC samples packed two per u32.  Reg 18 holds the
- * pulse length in 64-bit DAC beat-words (1 beat = 4 samples).  The HDL
- * replicates the RAM four times behind one AXI write port so each neuron pulse
- * source can read an independent address while sharing the same programmed
- * shape. */
-#define SPIKE_NBEATS_REG       (REG_BASE + 18u*4u)   /* reg 18[10:0]: pulse beat count */
+/* Programmable per-neuron spike-pulse shapes. The 32 KB BRAM aperture contains
+ * four independent 8 KB banks of packed signed s16 samples. Regs 25..28 hold
+ * the respective pulse lengths in 64-bit DAC beats (four samples/beat). Reg18
+ * remains the legacy global fallback when a per-neuron length is zero. */
+#define SPIKE_NBEATS_LEGACY_REG (REG_BASE + 18u*4u)
+#define SPIKE_NBEATS_REG(n)     (REG_BASE + (25u + (n))*4u)
 #if HAS_BRAM_DATAPLANE
-#define SPIKE_SHAPE_BRAM_BASE  XPAR_SPIKE_SHAPE_BRAM_CTRL_S_AXI_BASEADDR
-#define SPIKE_MAX_SAMPLES      4096u
-#define SPIKE_MAX_BEATS        (SPIKE_MAX_SAMPLES / 4u)
-#define SPIKE_SHAPE_WORDS      (SPIKE_MAX_SAMPLES / 2u)
+#define SPIKE_SHAPE_BRAM_BASE   XPAR_SPIKE_SHAPE_BRAM_CTRL_S_AXI_BASEADDR
+#define SPIKE_MAX_SAMPLES       4096u
+#define SPIKE_MAX_BEATS         (SPIKE_MAX_SAMPLES / 4u)
+#define SPIKE_SHAPE_WORDS       (SPIKE_MAX_SAMPLES / 2u)
+#define SPIKE_SHAPE_BANK_BYTES  (SPIKE_MAX_SAMPLES * 2u)
 #else
 #define SPIKE_MAX_SAMPLES      0u
 #define SPIKE_MAX_BEATS        0u
@@ -1438,19 +1438,49 @@ static int parse_s32_arg(char **cursor, s32 *value)
 
 #define SPIKE_TEXT_MAX_SAMPLES 32u
 
+/* Write selected neurons' independent shape banks. */
+#if HAS_BRAM_DATAPLANE
+static void spike_shape_write_mask_word(u32 target_mask, u32 word_index, u32 word)
+{
+    u32 channel;
+
+    for (channel = 0u; channel < 4u; channel++) {
+        if (target_mask & (1u << channel)) {
+            Xil_Out32(SPIKE_SHAPE_BRAM_BASE +
+                       channel * SPIKE_SHAPE_BANK_BYTES + word_index * 4u, word);
+        }
+    }
+}
+
+static void spike_shape_set_nbeats(u32 target_mask, u32 nbeats)
+{
+    u32 channel;
+
+    for (channel = 0u; channel < 4u; channel++) {
+        if (target_mask & (1u << channel))
+            Xil_Out32(SPIKE_NBEATS_REG(channel), nbeats);
+    }
+    if ((target_mask & 0xFu) == 0xFu)
+        Xil_Out32(SPIKE_NBEATS_LEGACY_REG, nbeats);
+}
+#endif
+
 /* Write signed s16 samples as the spike-pulse shape: two samples per AXI word,
  * zero-pad the final 64-bit DAC beat, and set nbeats = ceil(count/4). */
-static void spike_shape_write(const s16 *samples, u32 count)
+static void spike_shape_write(const s16 *samples, u32 count, u32 target_mask)
 {
 #if HAS_BRAM_DATAPLANE
     u32 i, nb, total_words, word;
 
+    target_mask &= 0xFu;
+    if (target_mask == 0u)
+        return;
     if (count > SPIKE_MAX_SAMPLES)
         count = SPIKE_MAX_SAMPLES;
-    nb = (count + 3u) >> 2;                 /* ceil(count/4) beats */
+    nb = (count + 3u) >> 2;
     if (nb == 0u) nb = 1u;
     if (nb > SPIKE_MAX_BEATS) nb = SPIKE_MAX_BEATS;
-    total_words = nb * 2u;                  /* 2 AXI u32 words per 64-bit beat */
+    total_words = nb * 2u;
 
     for (i = 0; i < total_words; i++) {
         u32 sidx = i * 2u;
@@ -1459,22 +1489,24 @@ static void spike_shape_write(const s16 *samples, u32 count)
             word |= (u32)(u16)samples[sidx];
         if ((sidx + 1u) < count)
             word |= (u32)(u16)samples[sidx + 1u] << 16;
-        Xil_Out32(SPIKE_SHAPE_BRAM_BASE + i * 4u, word);
+        spike_shape_write_mask_word(target_mask, i, word);
     }
 
-    Xil_Out32(SPIKE_NBEATS_REG, nb);
+    spike_shape_set_nbeats(target_mask, nb);
 #else
     (void)samples;
     (void)count;
+    (void)target_mask;
 #endif
 }
 
-static u32 spike_shape_recv_binary(u32 rx_count)
+static u32 spike_shape_recv_binary(u32 rx_count, u32 target_mask)
 {
 #if HAS_BRAM_DATAPLANE
     u32 store_count = rx_count;
     u32 nb, total_words, i, word_index, word = 0u;
 
+    target_mask &= 0xFu;
     if (store_count > SPIKE_MAX_SAMPLES)
         store_count = SPIKE_MAX_SAMPLES;
 
@@ -1488,7 +1520,7 @@ static u32 spike_shape_recv_binary(u32 rx_count)
         if (i < store_count) {
             if (i & 1u) {
                 word |= (u32)sample << 16;
-                Xil_Out32(SPIKE_SHAPE_BRAM_BASE + (i >> 1) * 4u, word);
+                spike_shape_write_mask_word(target_mask, i >> 1, word);
                 word = 0u;
             } else {
                 word = (u32)sample;
@@ -1496,22 +1528,23 @@ static u32 spike_shape_recv_binary(u32 rx_count)
         }
     }
     if (store_count & 1u)
-        Xil_Out32(SPIKE_SHAPE_BRAM_BASE + (store_count >> 1) * 4u, word);
+        spike_shape_write_mask_word(target_mask, store_count >> 1, word);
 
-    for (word_index = (store_count + 1u) >> 1; word_index < total_words; word_index++)
-        Xil_Out32(SPIKE_SHAPE_BRAM_BASE + word_index * 4u, 0u);
+    for (word_index = (store_count + 1u) >> 1;
+         word_index < total_words; word_index++)
+        spike_shape_write_mask_word(target_mask, word_index, 0u);
 
-    Xil_Out32(SPIKE_NBEATS_REG, nb);
+    spike_shape_set_nbeats(target_mask, nb);
     return store_count;
 #else
     u32 i;
     for (i = 0; i < rx_count; i++)
         (void)recv_le16_blocking();
+    (void)target_mask;
     return 0u;
 #endif
 }
-
-static void spike_shape_init_default(void)
+static void spike_shape_init_default(u32 target_mask)
 {
     /* Default: INVERTED trapezoid -- 30 ns flat top at negative full-scale
      * (0 -> -32767) with 5-sample ramps, 40 samples total at 1 GS/s.  Ramp
@@ -1529,7 +1562,7 @@ static void spike_shape_init_default(void)
     for (i = 5; i < 35; i++) {
         shape[i] = (s16)-32767;
     }
-    spike_shape_write(shape, 40u);
+    spike_shape_write(shape, 40u, target_mask);
 }
 
 #if HAS_BRAM_DATAPLANE
@@ -1564,21 +1597,42 @@ static void dac_bram_init_default(void)
 }
 #endif
 
-/* PULS default                  -> reload the default (inverted 30 ns trapezoid)
- * PULS <s0> <s1> ... <sN>        -> set a short pulse from text (<=32 samples)
- * PULS bin <count> + LE s16 data -> set a long pulse (<=4096 samples)
- *   Samples are full-range signed s16; nbeats auto = ceil(N/4). */
+/* Legacy PULS forms broadcast to all neurons. Prefix with "ch N" to program
+ * only one independent shaper:
+ *   PULS [ch <0..3|all>] default
+ *   PULS [ch <0..3|all>] <s0> ... <sN>
+ *   PULS [ch <0..3|all>] bin <count> + LE s16 payload */
 static void cmd_puls(void)
 {
     char *p = &cmd[4];
     s16 samples[SPIKE_TEXT_MAX_SAMPLES];
     u32 count = 0u;
+    u32 target_mask = 0xFu;
     s32 v;
 
     while (*p == ' ' || *p == '\t')
         p++;
+    if (token_eq_ci(p, "ch") || token_eq_ci(p, "channel") ||
+        token_eq_ci(p, "neuron")) {
+        u32 channel;
+
+        advance_token(&p);
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (token_eq_ci(p, "all")) {
+            advance_token(&p);
+        } else if (!parse_u32_arg(&p, &channel) || channel > 3u) {
+            send_str("ERR PULS ch expects 0..3 or all\r\n");
+            return;
+        } else {
+            target_mask = 1u << channel;
+        }
+        while (*p == ' ' || *p == '\t')
+            p++;
+    }
+
     if (token_eq_ci(p, "default")) {
-        spike_shape_init_default();
+        spike_shape_init_default(target_mask);
         send_str("PULS default (inverted 30 ns trapezoid, 40 samples)\r\n");
         return;
     }
@@ -1586,13 +1640,13 @@ static void cmd_puls(void)
         u32 rx_count, stored;
         advance_token(&p);
         if (!parse_u32_arg(&p, &rx_count) || rx_count == 0u) {
-            send_str("ERR PULS bin <count>, then <count> little-endian s16 samples\r\n");
+            send_str("ERR PULS [ch N|all] bin <count>, then LE s16 samples\r\n");
             return;
         }
         send_str("PBRD count=");
         send_uint(rx_count);
         send_str("\r\n");
-        stored = spike_shape_recv_binary(rx_count);
+        stored = spike_shape_recv_binary(rx_count, target_mask);
         send_str("PULS loaded ");
         send_uint(stored);
         send_str(" samples, nbeats=");
@@ -1605,10 +1659,10 @@ static void cmd_puls(void)
     while (count < SPIKE_TEXT_MAX_SAMPLES && parse_s32_arg(&p, &v))
         samples[count++] = (s16)v;
     if (count == 0u) {
-        send_str("ERR PULS [default | bin <count> | s0 s1 ... up to 32 signed samples]\r\n");
+        send_str("ERR PULS [ch N|all] [default | bin <count> | signed samples]\r\n");
         return;
     }
-    spike_shape_write(samples, count);
+    spike_shape_write(samples, count, target_mask);
     send_str("PULS loaded ");
     send_uint(count);
     send_str(" samples, nbeats=");
@@ -3393,7 +3447,7 @@ static void cmd_help(void)
     send_str("  CURP off | <cps> <last> <amp_q16>  current player: triangle into i_external; f=50MHz/(cps*(last+1))\r\n");
     send_str("  CURW <cps> <count> [hold]  current player: load host LE Q16.16 samples; optional hold plays once then holds last\r\n");
     send_str("  CURS <cps> <zero> <high> <amp_q16> [hold|loop]  current step via cur_wave BRAM/player\r\n");
-    send_str("  PULS default | bin <count> | <s0..sN>  spike pulse: binary up to 4096 signed s16 samples; text up to 32\r\n");
+    send_str("  PULS [ch 0..3|all] default|bin <count>|<samples>  independent spike shapes; omitted ch broadcasts\r\n");
     send_str("  SCAL [ch|all] [default|<gain> <offset>]  per-neuron spike cal: gain signed Q2.14 (0x4000=1x, 0xC000=-1x), offset s16 counts\r\n");
 #endif
     send_str("  NEUR ch param value  set IZH Q16.16 param on ch=0..3 or all (writes config-bank BRAM)\r\n");
@@ -3754,7 +3808,7 @@ int main(void)
     neuron_image_init();
     dac_bram_init_default();      /* boot default DAC BRAMs = 10 MHz sine */
 #endif
-    spike_shape_init_default();   /* boot default spike-pulse shape = inverted 30 ns trapezoid */
+    spike_shape_init_default(0xFu); /* boot default for all four independent shapers */
     firmware_marker(2);
 
     XUartNs550_Initialize(&uart, XPAR_AXI_UART16550_0_DEVICE_ID);
