@@ -160,7 +160,19 @@ function Resolve-Xsdb {
         Get-ChildItem "C:\Xilinx\Vivado\*\bin\xsdb.bat" -ErrorAction SilentlyContinue
         Get-ChildItem "C:\Xilinx\*\Vitis\bin\xsdb.bat" -ErrorAction SilentlyContinue
         Get-ChildItem "C:\Xilinx\Vitis\*\bin\xsdb.bat" -ErrorAction SilentlyContinue
-    ) | Sort-Object FullName -Descending
+    ) | Sort-Object -Property @{
+        Expression = {
+            if ($_.FullName -match '(\d{4}\.\d+)') {
+                [version]$matches[1]
+            } else {
+                [version]"0.0"
+            }
+        }
+        Descending = $true
+    }, @{
+        Expression = { $_.FullName }
+        Descending = $true
+    }
     if ($candidates.Count) { return $candidates[0].FullName }
     $command = Get-Command xsdb.bat,xsdb -ErrorAction SilentlyContinue |
         Select-Object -First 1
@@ -173,8 +185,10 @@ function Invoke-ChildPowerShell {
         [Parameter(Mandatory=$true)][string]$Script,
         [string[]]$Arguments = @()
     )
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script @Arguments
-    return $LASTEXITCODE
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script @Arguments |
+        ForEach-Object { Write-Host $_ }
+    $childExitCode = $LASTEXITCODE
+    return [int]$childExitCode
 }
 
 function Configure-HostPath {
