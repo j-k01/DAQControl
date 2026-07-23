@@ -27,7 +27,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$InterfaceAlias,
+    [string]$InterfaceAlias = "Ethernet",
     [string]$LocalIp = "192.168.2.1",
     [string]$BoardIp = "192.168.2.10",
     [int]$CmdPort = 5006,
