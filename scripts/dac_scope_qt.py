@@ -46,7 +46,8 @@ on connect -- acquisition is opt-in:
       * Pulse shape: shows the spike pulse (<=4096 signed DAC samples) and lets you
         drag individual points up/down; "Program pulse" sends it via PULS. The
         shaped pulse is one crossbar input -- route a Spike source to emit it.
-  - CIC anti-alias (chip 1) toggle, autoscale, rising-edge trigger, Time/FFT.
+  - CIC anti-alias (chip 1), one-shot autoscale, fixed per-channel Y ranges,
+    rising-edge trigger, and Time/FFT views.
   - Legacy mod-4 baseline removal: optional display-time diagnostic for old
     captures or genuine small per-core offsets. Corrected FPGA images assemble
     LMFS=4211 transport bytes directly and do not need it to remove the former
@@ -139,7 +140,7 @@ COLLECT_SIZE_DEFAULT_IDX = 0   # 64 KB/chip
 # stream). Small + fast so each grab comfortably finishes within the interval.
 AUTOSAMPLE_INTERVAL_MS = 1000   # one sample per second
 AUTOSAMPLE_BYTES = 64 * 1024    # bytes/chip per auto-sample (16k samples/ch)
-LIVEAVG_GHOST_MAX_POINTS = 2048
+LIVEAVG_DISPLAY_MAX_POINTS = 2048
 # Neuron integration timestep (Q16.16): larger dt -> faster simulation.
 # The hex is the per-step dt in Q16.16 ms, so dt_ms = value / 65536; "1x
 # normal" (0x8000) = 0.5 ms, the classic Izhikevich integration step.
@@ -496,12 +497,12 @@ def trigger_offset_diagnostics(stack_by_ch, maxlag=64, max_samples=262144):
             "observable": True, "score": score,
             "signal_rms": signal_rms, "noise_rms": noise_rms}
 
-def peak_envelope(values, max_points=LIVEAVG_GHOST_MAX_POINTS):
+def peak_envelope(values, max_points=LIVEAVG_DISPLAY_MAX_POINTS):
     """Return an extrema-preserving display envelope bounded by max_points.
 
     Raw captures are retained for averaging. This representation is used only
-    for translucent live-history curves, where ordinary stride decimation can
-    completely miss a narrow neuron spike.
+    for live display, where ordinary stride decimation can completely miss a
+    narrow neuron spike.
     """
     y = np.asarray(values)
     n = y.size
@@ -1621,8 +1622,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.dac = None
         self.tap = None
         self.paused = False
-        self.autoscale = False
         self.fft_view = False
+        self.time_y_ranges = [(-0.95, 0.95) for _ in range(4)]
+        self.fft_y_ranges = [(-90.0, 5.0) for _ in range(4)]
         self.trigger = True
         self._popup = None
         self._cur_win = None        # CurrentSourceWindow (lazily created)
@@ -1652,7 +1654,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             p.setLabel("left", f"ch{ch}", units="V")
             # One shared time/frequency axis: zooming or panning any waveform
             # moves every channel to the identical X window.  Y remains fully
-            # independent so Autoscale Y can fit each waveform separately.
+            # independent so each ADC can use its own fixed Y range.
             if ch > 0:
                 p.setXLink(self.plots[0])
             if ch < 3:
@@ -2000,11 +2002,15 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "byte mapping does not need it for the old +/-7 mV artifact.\n"
             "Display only -- saved .npz stays raw.\n"
             "Also removes true DC and the phase-locked fs/4 & fs/2 component.")
-        self.auto_chk = QtWidgets.QCheckBox("Autoscale Y")
-        self.auto_chk.setToolTip(
-            "Fit each channel's Y axis independently to its own waveform.\n"
-            "All four X axes remain linked and use one common trigger origin.")
-        self.auto_chk.toggled.connect(lambda v: setattr(self, "autoscale", v))
+        self.auto_btn = QtWidgets.QPushButton("Autoscale once")
+        self.auto_btn.setToolTip(
+            "Fit each channel to the traces currently on screen, then keep "
+            "those Y ranges fixed.")
+        self.auto_btn.clicked.connect(self._on_autoscale_once)
+        self.range_btn = QtWidgets.QPushButton("Y ranges...")
+        self.range_btn.setToolTip(
+            "Set independent fixed Y-axis limits for ADC0-3 in Time and FFT views.")
+        self.range_btn.clicked.connect(self._on_y_ranges)
         self.trig_chk = QtWidgets.QCheckBox("Trigger")
         self.trig_chk.setChecked(True)
         self.trig_chk.toggled.connect(lambda v: setattr(self, "trigger", v))
@@ -2077,13 +2083,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "(e.g. via the Chattering Demo Setup button or the current editor).")
         self.msamp_btn.clicked.connect(self._on_multisample)
         # Live triggered averaging: back-to-back small BCPT batches feed a
-        # rolling window; a persistent plot shows the ghosts + running average.
+        # rolling window; a persistent plot shows the mean and optional ghosts.
         self.liveavg_btn = QtWidgets.QPushButton("Start Live Trig Avg")
         self.liveavg_btn.setCheckable(True)
         self.liveavg_btn.setToolTip(
             "Continuously run hardware-triggered BCPT batches and display the "
-            "running average of the selected 8-16 captures (ghosts behind the "
-            "bold mean). Runs until toggled off; per-rep size = the Collect "
+            "running average of the selected 8-16 captures (with optional "
+            "ghosts). Runs until toggled off; per-rep size = the Collect "
             "size above. Requires the current player running.")
         self.liveavg_btn.clicked.connect(self._on_liveavg_toggle)
         self.liveavg_window = QtWidgets.QSpinBox()
@@ -2093,6 +2099,19 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.liveavg_window.setToolTip(
             "Number of most recent trigger-aligned captures retained in the "
             "rolling average; old captures are discarded continuously.")
+        self.liveavg_downsample_chk = QtWidgets.QCheckBox("Downsample plot")
+        self.liveavg_downsample_chk.setChecked(True)
+        self.liveavg_downsample_chk.setToolTip(
+            "Use a peak-preserving display envelope. Raw captures and the "
+            "rolling average remain full resolution.")
+        self.liveavg_downsample_chk.toggled.connect(
+            self._on_liveavg_display_options)
+        self.liveavg_ghosts_chk = QtWidgets.QCheckBox("Show ghosts")
+        self.liveavg_ghosts_chk.setChecked(False)
+        self.liveavg_ghosts_chk.setToolTip(
+            "Overlay the individual captures retained in the rolling window.")
+        self.liveavg_ghosts_chk.toggled.connect(
+            self._on_liveavg_display_options)
         # One-click demo bring-up: chattering neurons, 10 mA step current,
         # current->DAC0 / neuron0 spike->DAC1, 50-sample trapezoid pulse.
         self.defaults_btn = QtWidgets.QPushButton("Chattering Demo Setup")
@@ -2105,11 +2124,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.defaults_btn.clicked.connect(self._on_default_config)
         og.addWidget(self.cic_chk, 0, 0, 1, 2)
         og.addWidget(self.deint_chk, 1, 0, 1, 2)
-        og.addWidget(self.auto_chk, 2, 0)
-        og.addWidget(self.trig_chk, 2, 1)
-        og.addWidget(self.rb_time, 3, 0)
-        og.addWidget(self.rb_fft, 3, 1)
-        og.addWidget(self.run_btn, 4, 0, 1, 2)
+        og.addWidget(self.auto_btn, 2, 0)
+        og.addWidget(self.range_btn, 2, 1)
+        og.addWidget(self.trig_chk, 3, 0, 1, 2)
+        og.addWidget(self.rb_time, 4, 0)
+        og.addWidget(self.rb_fft, 4, 1)
+        og.addWidget(self.run_btn, 5, 0, 1, 2)
         capture_lay.addWidget(opt)
 
         # Acquisition controls live OUTSIDE the tabs (added to `outer`) so the
@@ -2130,7 +2150,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         ag.addWidget(self.msamp_btn, 5, 1)
         ag.addWidget(self.liveavg_window, 6, 0)
         ag.addWidget(self.liveavg_btn, 6, 1)
-        ag.addWidget(self.defaults_btn, 7, 0, 1, 2)
+        ag.addWidget(self.liveavg_downsample_chk, 7, 0)
+        ag.addWidget(self.liveavg_ghosts_chk, 7, 1)
+        ag.addWidget(self.defaults_btn, 8, 0, 1, 2)
         right_col.addWidget(acq)        # outside the scroll area -> always visible
 
         left.addStretch(1)
@@ -2170,9 +2192,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.autosample_timer = QtCore.QTimer(self)
         self.autosample_timer.setInterval(AUTOSAMPLE_INTERVAL_MS)
         self.autosample_timer.timeout.connect(self._on_autosample_tick)
-        # Live triggered averaging: busy-gated ticks run BCPT batches
-        # back-to-back; the interval only paces the busy checks.
+        # Live triggered averaging: one background capture thread at a time.
         self._liveavg_busy = False
+        self._liveavg_last_snapshot = None
         self._liveavg_win = None
         self.liveavg_timer = QtCore.QTimer(self)
         self.liveavg_timer.setInterval(25)
@@ -2406,6 +2428,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                   self.collect_mb_cb, self.stream_btn, self.dt_cb,
                   self.burst_btn, self.burst_n, self.burst_step_chk, self.burst_amp,
                   self.msamp_reps, self.msamp_btn, self.liveavg_btn,
+                  self.liveavg_downsample_chk, self.liveavg_ghosts_chk,
                   self.defaults_btn,
                   self.np_loadprof, self.np_saveprof, self.cur_preview_btn):
             w.setEnabled(on)
@@ -2544,6 +2567,76 @@ class ScopeWindow(QtWidgets.QMainWindow):
     def _on_view(self, _checked):
         self.fft_view = self.rb_fft.isChecked()
         self._apply_view_ranges()
+
+    def _on_autoscale_once(self):
+        ranges = list(self.fft_y_ranges if self.fft_view else self.time_y_ranges)
+        min_span = 10.0 if self.fft_view else 0.04
+        for ch, curve in enumerate(self.curves):
+            _x, values = curve.getData()
+            fitted = self._fitted_y_range(values, min_span=min_span)
+            if fitted is not None:
+                ranges[ch] = fitted
+        if self.fft_view:
+            self.fft_y_ranges = ranges
+        else:
+            self.time_y_ranges = ranges
+        self._apply_view_ranges()
+
+    def _on_y_ranges(self):
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Fixed Y-axis ranges")
+        layout = QtWidgets.QVBoxLayout(dlg)
+        tabs = QtWidgets.QTabWidget()
+        editors = {}
+
+        for mode, ranges, suffix, bounds, decimals, step in (
+                ("Time", self.time_y_ranges, " V", (-100.0, 100.0), 4, 0.05),
+                ("FFT", self.fft_y_ranges, " dB", (-300.0, 100.0), 1, 5.0)):
+            page = QtWidgets.QWidget()
+            grid = QtWidgets.QGridLayout(page)
+            grid.addWidget(QtWidgets.QLabel("Channel"), 0, 0)
+            grid.addWidget(QtWidgets.QLabel("Minimum"), 0, 1)
+            grid.addWidget(QtWidgets.QLabel("Maximum"), 0, 2)
+            mode_editors = []
+            for ch, (lo, hi) in enumerate(ranges):
+                lo_box = QtWidgets.QDoubleSpinBox()
+                hi_box = QtWidgets.QDoubleSpinBox()
+                for box, value in ((lo_box, lo), (hi_box, hi)):
+                    box.setRange(*bounds)
+                    box.setDecimals(decimals)
+                    box.setSingleStep(step)
+                    box.setSuffix(suffix)
+                    box.setValue(value)
+                grid.addWidget(QtWidgets.QLabel(f"ADC{ch}"), ch + 1, 0)
+                grid.addWidget(lo_box, ch + 1, 1)
+                grid.addWidget(hi_box, ch + 1, 2)
+                mode_editors.append((lo_box, hi_box))
+            editors[mode] = mode_editors
+            tabs.addTab(page, mode)
+        tabs.setCurrentIndex(1 if self.fft_view else 0)
+        layout.addWidget(tabs)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        values = {}
+        for mode, mode_editors in editors.items():
+            values[mode] = [(lo.value(), hi.value()) for lo, hi in mode_editors]
+            if any(lo >= hi for lo, hi in values[mode]):
+                QtWidgets.QMessageBox.warning(
+                    self, "Invalid Y range",
+                    f"Every {mode} minimum must be below its maximum.")
+                return
+        self.time_y_ranges = values["Time"]
+        self.fft_y_ranges = values["FFT"]
+        self._apply_view_ranges()
+        if getattr(self, "_liveavg_plots", None):
+            for ch, plot in enumerate(self._liveavg_plots):
+                self._apply_time_plot_range(plot, ch)
 
     def _on_program(self):
         if not self.dac:
@@ -2707,6 +2800,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             p = win.addPlot(row=ch, col=0)
             p.showGrid(x=True, y=True, alpha=0.25)
             p.setLabel("left", f"ch{ch}", units="V")
+            self._apply_time_plot_range(p, ch)
             t = np.arange(len(chans[ch]))  # ns at 1 GS/s
             p.plot(t, self._deint(chans[ch]) * VOLTS_PER_COUNT,
                    pen=pg.mkPen(CH_COLORS[ch], width=1.0))
@@ -2820,6 +2914,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             p = win.addPlot(row=ch, col=0)
             p.showGrid(x=True, y=True, alpha=0.25)
             p.setLabel("left", f"ch{ch}", units="V")
+            self._apply_time_plot_range(p, ch)
             for i in range(n):                       # faint raw bursts
                 col = pg.mkColor(CH_COLORS[ch]); col.setAlpha(45)
                 p.plot(t, stack[ch][i] * VOLTS_PER_COUNT,
@@ -3148,6 +3243,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             p = win.addPlot(row=ch, col=0)
             p.showGrid(x=True, y=True, alpha=0.25)
             p.setLabel("left", f"ch{ch}", units="V")
+            self._apply_time_plot_range(p, ch)
             if draw_reps:
                 for i in range(n):
                     col = pg.mkColor(CH_COLORS[ch]); col.setAlpha(45)
@@ -3182,7 +3278,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.liveavg_btn.setChecked(False)
             return
         if checked:
-            # BCPT owns the DMA: pause auto-sample and the live stream tap
             self._resume_autosample = self.autosample_timer.isActive()
             if self._resume_autosample:
                 self.autosample_timer.stop()
@@ -3193,20 +3288,22 @@ class ScopeWindow(QtWidgets.QMainWindow):
             nbytes, lbl = COLLECT_SIZE_OPTIONS[self.collect_mb_cb.currentIndex()]
             self._liveavg_bytes = nbytes
             self._liveavg_window = self.liveavg_window.value()
-            self._liveavg_stacks = {ch: deque(maxlen=self._liveavg_window)
-                                    for ch in range(4)}
-            self._liveavg_total = 0
-            self._liveavg_ghost_data = {
+            self._liveavg_stacks = {
                 ch: deque(maxlen=self._liveavg_window) for ch in range(4)}
+            self._liveavg_total = 0
             self._liveavg_errors = 0
             self._liveavg_busy = False
+            self._liveavg_started = time.perf_counter()
+            self._liveavg_render_count = 0
+            self._liveavg_last_snapshot = None
             self._liveavg_build_window()
             self.liveavg_btn.setText("Stop Live Trig Avg")
             for w in (self.msamp_btn, self.collect_btn, self.stream_btn,
                       self.burst_btn):
                 w.setEnabled(False)
-            self.status.setText(f"Live Trig Avg: rolling window of "
-                                f"{self._liveavg_window}, {lbl} per rep ...")
+            self.status.setText(
+                f"Live Trig Avg: rolling window of {self._liveavg_window}, "
+                f"{lbl} per rep...")
             self.liveavg_window.setEnabled(False)
             self.liveavg_timer.start()
             self._on_liveavg_tick()
@@ -3222,8 +3319,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             for w in (self.msamp_btn, self.collect_btn, self.stream_btn,
                       self.burst_btn):
                 w.setEnabled(True)
-        if getattr(self, "_resume_autosample", False) and self.dac \
-                and self.stream_btn.isChecked():
+        if (getattr(self, "_resume_autosample", False)
+                and self.dac and self.stream_btn.isChecked()):
             self._autosample_busy = False
             self.autosample_timer.start()
         self._resume_autosample = False
@@ -3242,29 +3339,81 @@ class ScopeWindow(QtWidgets.QMainWindow):
         win.setWindowTitle("Live triggered average")
         win.setBackground("#101418")
         win.resize(900, 720)
-        self._liveavg_ghosts = []
+        self._liveavg_plots = []
+        self._liveavg_ghosts = [[] for _ in range(4)]
         self._liveavg_means = []
         for ch in range(4):
             p = win.addPlot(row=ch, col=0)
             p.showGrid(x=True, y=True, alpha=0.25)
             p.setLabel("left", f"ch{ch}", units="V")
-            col = pg.mkColor(CH_COLORS[ch])
-            col.setAlpha(40)
-            self._liveavg_ghosts.append(
-                [p.plot([], [], pen=pg.mkPen(col, width=0.6))
-                 for _ in range(self._liveavg_window)])
-            self._liveavg_means.append(
-                p.plot([], [], pen=pg.mkPen("#ffffff", width=1.5)))
+            self._apply_time_plot_range(p, ch)
+            self._liveavg_plots.append(p)
+            mean_curve = p.plot([], [], pen=pg.mkPen("#ffffff", width=1.5))
+            mean_curve.setZValue(10)
+            self._liveavg_means.append(mean_curve)
         self._liveavg_label = win.addLabel("waiting for the first batch...",
                                            row=4, col=0)
         win.show()
         self._liveavg_win = win
 
+    def _ensure_liveavg_ghosts(self):
+        for ch, curves in enumerate(self._liveavg_ghosts):
+            if curves:
+                continue
+            col = pg.mkColor(CH_COLORS[ch])
+            col.setAlpha(40)
+            self._liveavg_ghosts[ch] = [
+                self._liveavg_plots[ch].plot(
+                    [], [], pen=pg.mkPen(col, width=0.6))
+                for _ in range(self._liveavg_window)]
+            for curve in self._liveavg_ghosts[ch]:
+                curve.setZValue(0)
+
+    def _on_liveavg_display_options(self, *_):
+        if not hasattr(self, "_liveavg_ghosts"):
+            return
+        show_ghosts = self.liveavg_ghosts_chk.isChecked()
+        if show_ghosts:
+            self._ensure_liveavg_ghosts()
+        for curves in self._liveavg_ghosts:
+            for curve in curves:
+                curve.setVisible(show_ghosts)
+        if self._liveavg_last_snapshot is not None:
+            self._render_liveavg(self._liveavg_last_snapshot)
+
+    def _render_liveavg(self, snapshot):
+        if not snapshot or not snapshot.get("held"):
+            return 0
+        show_ghosts = self.liveavg_ghosts_chk.isChecked()
+        if show_ghosts:
+            self._ensure_liveavg_ghosts()
+        held = snapshot["held"]
+        mean_traces = snapshot.get("mean_traces", {})
+        ghost_traces = snapshot.get("ghost_traces", {})
+        for ch in range(4):
+            if show_ghosts:
+                traces = ghost_traces.get(ch, [])
+                for i, curve in enumerate(self._liveavg_ghosts[ch]):
+                    if i < len(traces):
+                        ghost_x, ghost_y = traces[i]
+                        curve.setData(
+                            ghost_x, ghost_y * VOLTS_PER_COUNT,
+                            skipFiniteCheck=True)
+                    else:
+                        curve.setData([], [])
+            trace = mean_traces.get(ch)
+            if trace is not None:
+                mean_x, mean_y = trace
+                self._liveavg_means[ch].setData(
+                    mean_x, mean_y * VOLTS_PER_COUNT,
+                    skipFiniteCheck=True)
+        return held
+
     def _on_liveavg_tick(self):
         if self._liveavg_busy or not self.dac:
             return
         if self._liveavg_win is None or not self._liveavg_win.isVisible():
-            self._stop_liveavg()            # closing the plot stops the mode
+            self._stop_liveavg()
             return
         self._liveavg_busy = True
         reps = max(2, min(4, self._liveavg_window))
@@ -3278,42 +3427,65 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return
         if not isinstance(res, dict) or "stack" not in res:
             self._liveavg_errors += 1
-            msg = res.get("_err", "no data") if isinstance(res, dict) else "no data"
+            message = (
+                res.get("_err", "no data")
+                if isinstance(res, dict) else "invalid capture result")
             self.status.setText(
                 f"Live Trig Avg: transient batch failure "
-                f"({self._liveavg_errors} consecutive), retrying: {msg}")
+                f"({self._liveavg_errors} consecutive), retrying: {message}")
             return
+
         self._liveavg_errors = 0
         stack = res["stack"]
         n_new = stack[0].shape[0]
         for ch in range(4):
             for i in range(n_new):
-                self._liveavg_stacks[ch].append(stack[ch][i])
-                self._liveavg_ghost_data[ch].append(
-                    peak_envelope(stack[ch][i]))
+                self._liveavg_stacks[ch].append(
+                    np.asarray(stack[ch][i], dtype=np.int16).copy())
         self._liveavg_total += n_new
-        t = None
-        held = 0
+
+        held = len(self._liveavg_stacks[0])
+        use_downsample = self.liveavg_downsample_chk.isChecked()
+        include_ghosts = self.liveavg_ghosts_chk.isChecked()
+        mean_traces = {}
+        ghost_traces = {}
         for ch in range(4):
             reps = list(self._liveavg_stacks[ch])
-            ghosts = list(self._liveavg_ghost_data[ch])
-            if not reps:
-                continue
-            held = len(reps)
-            if t is None:
-                t = np.arange(len(reps[0]))
-            for i, curve in enumerate(self._liveavg_ghosts[ch]):
-                if i < len(ghosts):
-                    ghost_x, ghost_y = ghosts[i]
-                    curve.setData(ghost_x, ghost_y * VOLTS_PER_COUNT)
-                else:
-                    curve.setData([], [])
             mean = np.mean(np.stack(reps), axis=0)
-            self._liveavg_means[ch].setData(t, mean * VOLTS_PER_COUNT)
-        self._liveavg_label.setText(
-            f"running mean of the last {held} triggered captures "
-            f"(window {self._liveavg_window}) -- {self._liveavg_total} total "
-            f"(x = ns @ 1 GS/s)")
+            if use_downsample:
+                mean_traces[ch] = peak_envelope(mean)
+            else:
+                mean_traces[ch] = (
+                    np.arange(mean.size, dtype=np.int64), mean)
+            if include_ghosts:
+                ghost_traces[ch] = [
+                    peak_envelope(rep) if use_downsample else (
+                        np.arange(rep.size, dtype=np.int64), rep)
+                    for rep in reps]
+
+        elapsed = max(
+            1.0e-9, time.perf_counter() - self._liveavg_started)
+        snapshot = {
+            "kind": "data",
+            "held": held,
+            "mean_traces": mean_traces,
+            "ghost_traces": ghost_traces,
+            "total": self._liveavg_total,
+            "capture_rate": self._liveavg_total / elapsed,
+            "downsample": use_downsample,
+            "ghosts": include_ghosts,
+        }
+        self._liveavg_last_snapshot = snapshot
+        rendered = self._render_liveavg(snapshot)
+        if rendered:
+            self._liveavg_render_count += 1
+            display_rate = self._liveavg_render_count / elapsed
+            self._liveavg_label.setText(
+                f"running mean of the last {rendered} triggered captures "
+                f"(window {self._liveavg_window}) -- "
+                f"{self._liveavg_total} total -- capture "
+                f"{snapshot['capture_rate']:.1f}/s, display "
+                f"{display_rate:.1f} FPS (x = ns @ 1 GS/s)")
 
     # ---- one-click chattering demo bring-up ----
     def _on_default_config(self):
@@ -3433,8 +3605,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         return x
 
     def _render_main(self, chans, fs, span=None):
-        """Draw a captured {ch: int16[]} set into the 4 main plots, honoring
-        the Time/FFT and Autoscale toggles (full rate, no decimation)."""
+        """Draw a captured {ch: int16[]} set into the four main plots."""
         if span is None:
             span = self.args.time_span
         fulls = {ch: self._deint(chans[ch].astype(np.float64))
@@ -3450,15 +3621,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 f = np.fft.rfftfreq(len(v), 1.0 / fs)
                 db = 20.0 * np.log10(np.maximum(Y, 1e-9))
                 self.curves[ch].setData(f, db)
-                if self.autoscale:
-                    self.plots[ch].setYRange(db.max() - 100, db.max() + 5)
+
             else:
                 y = time_slices[ch]
                 t = np.arange(len(y)) / fs
                 v = y * VOLTS_PER_COUNT
                 self.curves[ch].setData(t, v)
-                if self.autoscale:
-                    self._autoscale_waveform_y(self.plots[ch], v)
+
 
     def _show_burst(self, chans, cov, tries=1):
         nbytes = getattr(self, "_last_collect_bytes", 1 << 20)
@@ -3472,6 +3641,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             p = win.addPlot(row=ch, col=0)
             p.showGrid(x=True, y=True, alpha=0.25)
             p.setLabel("left", f"ch{ch}", units="V")
+            self._apply_time_plot_range(p, ch)
             p.setDownsampling(auto=True, mode="peak")   # big arrays render smoothly
             p.setClipToView(True)
             y = self._deint(chans[ch].astype(np.float64)).astype(np.float32) \
@@ -3491,32 +3661,36 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     # ---- display ----
     def _apply_view_ranges(self):
+        ranges = self.fft_y_ranges if self.fft_view else self.time_y_ranges
         for ch, p in enumerate(self.plots):
             p.enableAutoRange("y", False)
             if self.fft_view:
                 p.setLabel("left", f"ch{ch}", units="dB")
-                p.setYRange(-90, 5)
                 p.setLabel("bottom", "frequency", units="Hz")
             else:
                 p.setLabel("left", f"ch{ch}", units="V")
-                p.setYRange(-0.95, 0.95)
                 if ch == 3:
                     p.setLabel("bottom", "time", units="s")
+            p.setYRange(*ranges[ch], padding=0)
+
+    def _apply_time_plot_range(self, plot, ch):
+        plot.enableAutoRange("y", False)
+        plot.setYRange(*self.time_y_ranges[ch], padding=0)
 
     @staticmethod
-    def _autoscale_waveform_y(plot, values, min_span=0.04):
-        """Fit one plot to one waveform without affecting any other Y axis."""
+    def _fitted_y_range(values, min_span=0.04):
+        """Return a padded finite-data range suitable for one fixed Y axis."""
+        if values is None:
+            return None
         finite = np.asarray(values)[np.isfinite(values)]
         if finite.size == 0:
-            return
+            return None
         lo = float(finite.min())
         hi = float(finite.max())
         center = 0.5 * (lo + hi)
         span = max(float(min_span), hi - lo)
         pad = 0.10 * span
-        plot.setYRange(center - 0.5 * span - pad,
-                       center + 0.5 * span + pad,
-                       padding=0)
+        return (center - 0.5 * span - pad, center + 0.5 * span + pad)
 
     def _trig_start(self, yfull, span):
         """Return one trigger start index; callers reuse it for every channel."""
@@ -3584,15 +3758,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 f = np.fft.rfftfreq(len(v), 1.0 / fs)
                 db = 20.0 * np.log10(np.maximum(Y, 1e-9))
                 self.curves[ch].setData(f, db)
-                if self.autoscale:
-                    self.plots[ch].setYRange(db.max() - 100, db.max() + 5)
+
             else:
                 y = time_slices[ch]
                 t = np.arange(len(y)) / fs
                 v = y * VOLTS_PER_COUNT
                 self.curves[ch].setData(t, v)
-                if self.autoscale:
-                    self._autoscale_waveform_y(self.plots[ch], v)
+
         self.status.setText(
             f"decim={decim}  {1000.0/decim:.2f} MS/s/ch  "
             f"Nyq {500.0/decim:.3f} MHz | pkts={self.tap.packets} "
@@ -3603,7 +3775,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.timer.stop()
         self.autosample_timer.stop()
         self.liveavg_timer.stop()
-        for w in (self._cur_win, self._pulse_win):
+        for w in (self._cur_win, self._pulse_win, self._liveavg_win):
             if w is not None:
                 w.close()
         if self.tap:
@@ -3611,7 +3783,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if self.dac:
             self.dac.close()
         super().closeEvent(ev)
-
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,

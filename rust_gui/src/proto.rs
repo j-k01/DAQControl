@@ -2,11 +2,15 @@
 //! here so the egui UI thread never blocks. Mirrors DacControl + burst flow.
 
 use std::io::{Read, Write};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{
+    mpsc::{Receiver, Sender, TryRecvError},
+    Arc, RwLock,
+};
 use std::time::{Duration, Instant};
 
-use crate::burst::{decode_chip, decode_pcap, parse_brdo_request, Reassembler};
+use crate::burst_async::{decode_chip, decode_pcap, parse_brdo_request, Reassembler};
 use crate::dsp;
+use crate::rolling::{Capture, RollingAverage};
 
 #[derive(Clone)]
 pub struct BoardCfg {
@@ -15,6 +19,31 @@ pub struct BoardCfg {
     pub local_ip: String,
     pub local_port: u16,
     pub capture_dir: String,
+}
+
+#[derive(Clone, Default)]
+pub struct LiveSnapshot {
+    pub sequence: u64,
+    pub running: bool,
+    pub average: [Vec<f32>; 4],
+    pub held: usize,
+    pub total: u64,
+    pub samples_per_rep: usize,
+    pub capture_hz: f64,
+    pub batch_hz: f64,
+    pub coverage: f32,
+    pub drain_attempts: u32,
+    pub failures: u64,
+    pub last_error: String,
+}
+
+pub type LiveShared = Arc<RwLock<LiveSnapshot>>;
+
+#[derive(Clone, Copy)]
+struct LiveConfig {
+    bytes: usize,
+    reps_per_batch: usize,
+    window: usize,
 }
 
 impl Default for BoardCfg {
@@ -60,6 +89,12 @@ pub enum Cmd {
         bytes: usize,
         save: bool,
     },
+    StartLiveAverage {
+        bytes: usize,
+        reps_per_batch: usize,
+        window: usize,
+    },
+    StopLiveAverage,
     ProgramBram {
         chans: Vec<u8>,
         words: Vec<u32>,
@@ -73,7 +108,11 @@ pub enum Evt {
     Connected(Result<String, String>),
     Disconnected,
     Reply(String),
-    Stat { ok: bool, health: String, raw: String },
+    Stat {
+        ok: bool,
+        health: String,
+        raw: String,
+    },
     Capture {
         kind: String,
         chans: [Vec<i16>; 4],
@@ -88,7 +127,11 @@ pub enum Evt {
         profile: Option<String>,
         neuron: Option<u8>,
     },
-    NeuronDone { target: String, ok: bool, profile: String },
+    NeuronDone {
+        target: String,
+        ok: bool,
+        profile: String,
+    },
     Status(String),
     Error(String),
 }
@@ -106,7 +149,10 @@ impl Link {
             .open()
             .map_err(|e| e.to_string())?;
         std::thread::sleep(Duration::from_millis(200));
-        let mut me = Self { port, rx: Vec::new() };
+        let mut me = Self {
+            port,
+            rx: Vec::new(),
+        };
         me.flush_input();
         Ok(me)
     }
@@ -150,9 +196,7 @@ impl Link {
                 if line.is_empty() {
                     continue;
                 }
-                if line.starts_with("ERR")
-                    || prefixes.iter().any(|p| line.starts_with(p))
-                {
+                if line.starts_with("ERR") || prefixes.iter().any(|p| line.starts_with(p)) {
                     return Some(line);
                 }
             }
@@ -219,48 +263,191 @@ impl Link {
     }
 }
 
-pub fn spawn(ctx: egui::Context, cfg: BoardCfg) -> (Sender<Cmd>, Receiver<Evt>) {
+pub fn spawn(ctx: egui::Context, cfg: BoardCfg) -> (Sender<Cmd>, Receiver<Evt>, LiveShared) {
     let (ctx_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
     let (evt_tx, evt_rx) = std::sync::mpsc::channel::<Evt>();
-    std::thread::spawn(move || worker(ctx, cfg, cmd_rx, evt_tx));
-    (ctx_tx, evt_rx)
+    let live = Arc::new(RwLock::new(LiveSnapshot::default()));
+    let worker_live = Arc::clone(&live);
+    std::thread::spawn(move || worker(ctx, cfg, cmd_rx, evt_tx, worker_live));
+    (ctx_tx, evt_rx, live)
 }
 
-fn worker(ctx: egui::Context, cfg: BoardCfg, rx: Receiver<Cmd>, tx: Sender<Evt>) {
+fn worker(
+    ctx: egui::Context,
+    cfg: BoardCfg,
+    rx: Receiver<Cmd>,
+    tx: Sender<Evt>,
+    shared: LiveShared,
+) {
     let mut link: Option<Link> = None;
-    let emit = |tx: &Sender<Evt>, ctx: &egui::Context, e: Evt| {
-        let _ = tx.send(e);
+    let mut live_cfg: Option<LiveConfig> = None;
+    let mut rolling: Option<RollingAverage> = None;
+    let mut live_started = Instant::now();
+    let mut batches = 0u64;
+    let emit = |tx: &Sender<Evt>, ctx: &egui::Context, event: Evt| {
+        let _ = tx.send(event);
         ctx.request_repaint();
     };
 
-    while let Ok(cmd) = rx.recv() {
-        match cmd {
-            Cmd::Shutdown => break,
-            Cmd::Connect(port) => match Link::open(&port) {
-                Ok(mut l) => {
-                    // board init (no stream) + default DDS route
-                    l.cmd("WRTE 2 0x01000018", &["OK", "RW"], Duration::from_secs(2));
-                    for (ch, prof) in dsp::BUILTIN_PROFILES.iter().enumerate() {
-                        l.cmd(&format!("NEUR {ch} {prof}"), &["OK NEUR"], Duration::from_secs(1));
-                    }
-                    for ch in 0..4 {
-                        l.cmd(&format!("NSRC {ch} dds"), &["DAC xbar"], Duration::from_secs(1));
-                    }
-                    link = Some(l);
-                    emit(&tx, &ctx, Evt::Connected(Ok(port)));
-                }
-                Err(e) => emit(&tx, &ctx, Evt::Connected(Err(e))),
-            },
-            Cmd::Disconnect => {
-                link = None;
-                emit(&tx, &ctx, Evt::Disconnected);
+    loop {
+        let command = if live_cfg.is_some() && link.is_some() {
+            match rx.try_recv() {
+                Ok(command) => Some(command),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => break,
             }
-            other => {
-                if let Some(l) = link.as_mut() {
-                    handle(l, &cfg, other, &tx, &ctx);
-                } else {
-                    emit(&tx, &ctx, Evt::Error("not connected".into()));
+        } else {
+            match rx.recv() {
+                Ok(command) => Some(command),
+                Err(_) => break,
+            }
+        };
+
+        if let Some(command) = command {
+            match command {
+                Cmd::Shutdown => break,
+                Cmd::Connect(port) => {
+                    live_cfg = None;
+                    rolling = None;
+                    match Link::open(&port) {
+                        Ok(opened) => {
+                            link = Some(opened);
+                            emit(&tx, &ctx, Evt::Connected(Ok(port)));
+                        }
+                        Err(error) => emit(&tx, &ctx, Evt::Connected(Err(error))),
+                    }
                 }
+                Cmd::Disconnect => {
+                    live_cfg = None;
+                    rolling = None;
+                    if let Ok(mut snapshot) = shared.write() {
+                        snapshot.running = false;
+                        snapshot.sequence += 1;
+                    }
+                    link = None;
+                    emit(&tx, &ctx, Evt::Disconnected);
+                }
+                Cmd::StartLiveAverage {
+                    bytes,
+                    reps_per_batch,
+                    window,
+                } => {
+                    if let Some(opened) = link.as_mut() {
+                        opened.cmd("STRM STOP", &["OK STRM", "ERR"], Duration::from_secs(2));
+                        let config = LiveConfig {
+                            bytes: bytes.max(1024),
+                            reps_per_batch: reps_per_batch.clamp(1, 16),
+                            window: window.clamp(2, 256),
+                        };
+                        live_cfg = Some(config);
+                        rolling = Some(RollingAverage::new(config.window));
+                        live_started = Instant::now();
+                        batches = 0;
+                        if let Ok(mut snapshot) = shared.write() {
+                            *snapshot = LiveSnapshot {
+                                sequence: snapshot.sequence + 1,
+                                running: true,
+                                ..LiveSnapshot::default()
+                            };
+                        }
+                        emit(
+                            &tx,
+                            &ctx,
+                            Evt::Status(format!(
+                                "live trigger average started: window {}, {} reps/batch",
+                                config.window, config.reps_per_batch
+                            )),
+                        );
+                    } else {
+                        emit(&tx, &ctx, Evt::Error("not connected".into()));
+                    }
+                }
+                Cmd::StopLiveAverage => {
+                    live_cfg = None;
+                    rolling = None;
+                    if let Ok(mut snapshot) = shared.write() {
+                        snapshot.running = false;
+                        snapshot.sequence += 1;
+                    }
+                    emit(
+                        &tx,
+                        &ctx,
+                        Evt::Status("live trigger average stopped".into()),
+                    );
+                }
+                other => {
+                    if live_cfg.is_some() {
+                        emit(
+                            &tx,
+                            &ctx,
+                            Evt::Error(
+                                "stop live trigger averaging before issuing another board command"
+                                    .into(),
+                            ),
+                        );
+                    } else if let Some(opened) = link.as_mut() {
+                        handle(opened, &cfg, other, &tx, &ctx);
+                    } else {
+                        emit(&tx, &ctx, Evt::Error("not connected".into()));
+                    }
+                }
+            }
+            continue;
+        }
+
+        let config = match live_cfg {
+            Some(config) => config,
+            None => continue,
+        };
+        let result = collect_bcpt_batch(
+            link.as_mut().expect("live capture requires an open link"),
+            &cfg,
+            config.bytes,
+            config.reps_per_batch,
+        );
+        match result {
+            Ok((captures, coverage, drain_attempts)) => {
+                let rolling = rolling
+                    .as_mut()
+                    .expect("live capture requires a rolling accumulator");
+                let mut push_error = None;
+                for capture in captures {
+                    if let Err(error) = rolling.push(capture) {
+                        push_error = Some(error);
+                        break;
+                    }
+                }
+                if let Some(error) = push_error {
+                    if let Ok(mut snapshot) = shared.write() {
+                        snapshot.sequence += 1;
+                        snapshot.failures += 1;
+                        snapshot.last_error = error;
+                    }
+                    continue;
+                }
+                batches += 1;
+                let elapsed = live_started.elapsed().as_secs_f64().max(1.0e-9);
+                if let Ok(mut snapshot) = shared.write() {
+                    snapshot.sequence += 1;
+                    snapshot.running = true;
+                    snapshot.average = rolling.mean();
+                    snapshot.held = rolling.len();
+                    snapshot.total = rolling.total_seen();
+                    snapshot.samples_per_rep = snapshot.average[0].len();
+                    snapshot.capture_hz = snapshot.total as f64 / elapsed;
+                    snapshot.batch_hz = batches as f64 / elapsed;
+                    snapshot.coverage = coverage;
+                    snapshot.drain_attempts = drain_attempts;
+                    snapshot.last_error.clear();
+                }
+            }
+            Err(error) => {
+                if let Ok(mut snapshot) = shared.write() {
+                    snapshot.sequence += 1;
+                    snapshot.failures += 1;
+                    snapshot.last_error = error;
+                }
+                std::thread::sleep(Duration::from_millis(200));
             }
         }
     }
@@ -273,8 +460,16 @@ fn handle(l: &mut Link, cfg: &BoardCfg, cmd: Cmd, tx: &Sender<Evt>, ctx: &egui::
     };
     match cmd {
         Cmd::Raw(s) => {
-            let r = l.cmd(&s, &["OK", "ERR", "DAC xbar", "STRM", "DDS", "RO", "RW", "UART:"], Duration::from_secs(3));
-            emit(Evt::Reply(if r.is_empty() { "(no reply)".into() } else { r }));
+            let r = l.cmd(
+                &s,
+                &["OK", "ERR", "DAC xbar", "STRM", "DDS", "RO", "RW", "UART:"],
+                Duration::from_secs(3),
+            );
+            emit(Evt::Reply(if r.is_empty() {
+                "(no reply)".into()
+            } else {
+                r
+            }));
         }
         Cmd::Stat => {
             l.send_line("STAT");
@@ -297,14 +492,26 @@ fn handle(l: &mut Link, cfg: &BoardCfg, cmd: Cmd, tx: &Sender<Evt>, ctx: &egui::
                 .collect();
             emit(Evt::Stat {
                 ok,
-                health: if health.is_empty() { "link not ready".into() } else { health.join(", ") },
+                health: if health.is_empty() {
+                    "link not ready".into()
+                } else {
+                    health.join(", ")
+                },
                 raw: blob,
             });
         }
-        Cmd::ApplyRoute { ch, src_idx, profile } => {
+        Cmd::ApplyRoute {
+            ch,
+            src_idx,
+            profile,
+        } => {
             let token = dsp::source_token(src_idx);
             let neuron = dsp::source_neuron_idx(src_idx);
-            let r = l.cmd(&format!("NSRC {ch} {token}"), &["DAC xbar"], Duration::from_secs(2));
+            let r = l.cmd(
+                &format!("NSRC {ch} {token}"),
+                &["DAC xbar"],
+                Duration::from_secs(2),
+            );
             let mut ok = !r.is_empty() && !r.starts_with("ERR");
             if let Some(n) = neuron {
                 let r2 = apply_profile(l, &n.to_string(), &profile);
@@ -319,30 +526,67 @@ fn handle(l: &mut Link, cfg: &BoardCfg, cmd: Cmd, tx: &Sender<Evt>, ctx: &egui::
             });
         }
         Cmd::SetDds(inc) => {
-            let r = l.cmd(&format!("DDSI 0x{inc:06X}"), &["DDS inc="], Duration::from_secs(2));
-            emit(Evt::Reply(if r.is_empty() { "(no reply)".into() } else { r }));
+            let r = l.cmd(
+                &format!("DDSI 0x{inc:06X}"),
+                &["DDS inc="],
+                Duration::from_secs(2),
+            );
+            emit(Evt::Reply(if r.is_empty() {
+                "(no reply)".into()
+            } else {
+                r
+            }));
         }
-        Cmd::ProgramNeuron { target, profile, params, profile_label } => {
+        Cmd::ProgramNeuron {
+            target,
+            profile,
+            params,
+            profile_label,
+        } => {
             let mut ok = true;
             if let Some(p) = &profile {
                 ok &= apply_profile(l, &target, p);
             }
             for (name, q16) in &params {
-                let r = l.cmd(&format!("NEUR {target} {name} 0x{q16:08X}"), &["OK NEUR"], Duration::from_secs(1));
+                let r = l.cmd(
+                    &format!("NEUR {target} {name} 0x{q16:08X}"),
+                    &["OK NEUR"],
+                    Duration::from_secs(1),
+                );
                 ok &= !r.is_empty() && !r.starts_with("ERR");
             }
-            emit(Evt::NeuronDone { target, ok, profile: profile_label });
+            emit(Evt::NeuronDone {
+                target,
+                ok,
+                profile: profile_label,
+            });
         }
         Cmd::SetNeuronDt(dt) => {
-            let _ = l.cmd(&format!("NEUR all dt 0x{dt:X}"), &["OK NEUR"], Duration::from_secs(1));
+            let _ = l.cmd(
+                &format!("NEUR all dt 0x{dt:X}"),
+                &["OK NEUR"],
+                Duration::from_secs(1),
+            );
         }
         Cmd::SetCic(on) => {
-            let r = l.cmd(&format!("STRM CIC {}", if on { "on" } else { "off" }), &["OK STRM"], Duration::from_secs(1));
-            emit(Evt::Status(format!("CIC {}: {}", if on { "on" } else { "off" }, r)));
+            let r = l.cmd(
+                &format!("STRM CIC {}", if on { "on" } else { "off" }),
+                &["OK STRM"],
+                Duration::from_secs(1),
+            );
+            emit(Evt::Status(format!(
+                "CIC {}: {}",
+                if on { "on" } else { "off" },
+                r
+            )));
         }
         Cmd::StartStream { decim, cic } => {
             let c = if cic { " cic" } else { "" };
-            let r = l.cmd(&format!("STRM {decim}{c}"), &["OK STRM"], Duration::from_secs(2));
+            let r = l.cmd(
+                &format!("STRM {decim}{c}"),
+                &["OK STRM"],
+                Duration::from_secs(2),
+            );
             emit(Evt::Status(format!("stream: {r}")));
         }
         Cmd::StopStream => {
@@ -355,19 +599,39 @@ fn handle(l: &mut Link, cfg: &BoardCfg, cmd: Cmd, tx: &Sender<Evt>, ctx: &egui::
                 Some(data) if data.len() >= need => {
                     let chans = decode_pcap(&data, frames as usize);
                     let saved = save_capture(cfg, "uart", &chans);
-                    emit(Evt::Capture { kind: "uart".into(), chans, cov: 1.0, tries: 1, saved });
+                    emit(Evt::Capture {
+                        kind: "uart".into(),
+                        chans,
+                        cov: 1.0,
+                        tries: 1,
+                        saved,
+                    });
                 }
                 _ => emit(Evt::Error("UART capture: no sync / short read".into())),
             }
         }
         Cmd::CollectEth { bytes, save } => match collect_eth(l, cfg, bytes) {
             Ok((chans, cov, tries)) => {
-                let saved = if save { save_capture(cfg, "eth", &chans) } else { None };
-                emit(Evt::Capture { kind: "eth".into(), chans, cov, tries, saved });
+                let saved = if save {
+                    save_capture(cfg, "eth", &chans)
+                } else {
+                    None
+                };
+                emit(Evt::Capture {
+                    kind: "eth".into(),
+                    chans,
+                    cov,
+                    tries,
+                    saved,
+                });
             }
             Err(e) => emit(Evt::Error(format!("Collect Ethernet: {e}"))),
         },
-        Cmd::ProgramBram { chans, words, loop_frames } => {
+        Cmd::ProgramBram {
+            chans,
+            words,
+            loop_frames,
+        } => {
             for ch in chans {
                 program_bram_channel(l, ch, &words, loop_frames);
             }
@@ -380,13 +644,21 @@ fn handle(l: &mut Link, cfg: &BoardCfg, cmd: Cmd, tx: &Sender<Evt>, ctx: &egui::
 fn apply_profile(l: &mut Link, target: &str, profile: &str) -> bool {
     // built-in name -> NEUR <t> <profile>; else assume caller sent params.
     if dsp::BUILTIN_PROFILES.contains(&profile) {
-        let r = l.cmd(&format!("NEUR {target} {profile}"), &["OK NEUR"], Duration::from_secs(1));
+        let r = l.cmd(
+            &format!("NEUR {target} {profile}"),
+            &["OK NEUR"],
+            Duration::from_secs(1),
+        );
         !r.is_empty() && !r.starts_with("ERR")
     } else if let Some(vals) = dsp::builtin_profile_values(profile) {
         let mut ok = true;
         for (name, v) in vals {
             let q = dsp::izh_to_q16(v);
-            let r = l.cmd(&format!("NEUR {target} {name} 0x{q:08X}"), &["OK NEUR"], Duration::from_secs(1));
+            let r = l.cmd(
+                &format!("NEUR {target} {name} 0x{q:08X}"),
+                &["OK NEUR"],
+                Duration::from_secs(1),
+            );
             ok &= !r.is_empty() && !r.starts_with("ERR");
         }
         ok
@@ -406,53 +678,186 @@ fn program_bram_channel(l: &mut Link, ch: u8, words: &[u32], loop_frames: u32) {
     let _ = l.port.flush();
     let _ = l.read_until(&[&format!("OK PROG ch={ch}")], Duration::from_secs(3));
     let rw3 = ((loop_frames & 0xFFFFFF) << 8) | 0x60;
-    l.cmd(&format!("WRTE 3 0x{rw3:08X}"), &["OK", "RW"], Duration::from_secs(1));
+    l.cmd(
+        &format!("WRTE 3 0x{rw3:08X}"),
+        &["OK", "RW"],
+        Duration::from_secs(1),
+    );
 }
 
-/// BCAP + BRDO + UDP drain, retrying the whole fresh cycle on incomplete drain.
-fn collect_eth(l: &mut Link, cfg: &BoardCfg, bytes: usize) -> Result<([Vec<i16>; 4], f32, u32), String> {
-    let kb = bytes / 1024;
-    let attempts = 4;
-    let mut last = String::from("no attempts");
-    for attempt in 0..attempts {
+/// BCAP captures once; failed UDP drains re-read the same DDR contents.
+fn collect_eth(
+    link: &mut Link,
+    cfg: &BoardCfg,
+    bytes: usize,
+) -> Result<([Vec<i16>; 4], f32, u32), String> {
+    let kb = bytes.max(1024) / 1024;
+    link.cmd("STRM STOP", &["OK STRM", "ERR"], Duration::from_secs(2));
+    let reply = link.cmd(
+        &format!("BCAP {kb}k"),
+        &["OK BCAP", "ERR"],
+        Duration::from_secs(30),
+    );
+    if !reply.starts_with("OK BCAP") {
+        return Err(format!("BCAP failed: {reply}"));
+    }
+    let (buffers, coverage, attempts) = drain_ddr(link, cfg, bytes, 3)?;
+    let (ch0, ch1) = decode_chip(&buffers[0]);
+    let (ch2, ch3) = decode_chip(&buffers[1]);
+    Ok(([ch0, ch1, ch2, ch3], coverage, attempts))
+}
+
+#[derive(Clone, Copy)]
+struct BcptMeta {
+    reps: usize,
+    bytes_per_rep: usize,
+    stride: usize,
+    total_per_chip: usize,
+}
+
+fn parse_bcpt_reply(line: &str) -> Result<BcptMeta, String> {
+    let mut reps = None;
+    let mut bytes_per_rep = None;
+    let mut stride = None;
+    let mut total_per_chip = None;
+    for token in line.split_whitespace() {
+        let Some((key, value)) = token.split_once('=') else {
+            continue;
+        };
+        let parsed = if let Some(hex) = value
+            .strip_prefix("0x")
+            .or_else(|| value.strip_prefix("0X"))
+        {
+            usize::from_str_radix(hex, 16).ok()
+        } else {
+            value.parse::<usize>().ok()
+        };
+        match key {
+            "reps" => reps = parsed,
+            "bytes_per_rep" => bytes_per_rep = parsed,
+            "stride" => stride = parsed,
+            "total_per_chip" => total_per_chip = parsed,
+            _ => {}
+        }
+    }
+    match (reps, bytes_per_rep, stride, total_per_chip) {
+        (Some(reps), Some(bytes_per_rep), Some(stride), Some(total_per_chip)) => Ok(BcptMeta {
+            reps,
+            bytes_per_rep,
+            stride,
+            total_per_chip,
+        }),
+        _ => Err(format!("unparseable BCPT reply: {line}")),
+    }
+}
+
+fn collect_bcpt_batch(
+    link: &mut Link,
+    cfg: &BoardCfg,
+    bytes: usize,
+    reps: usize,
+) -> Result<(Vec<Capture>, f32, u32), String> {
+    let kb = bytes.max(1024) / 1024;
+    let reply = link.cmd(
+        &format!("BCPT {kb}k {reps}"),
+        &["OK BCPT", "ERR"],
+        Duration::from_secs(180),
+    );
+    if !reply.starts_with("OK BCPT") {
+        return Err(format!(
+            "BCPT failed: {reply}; the current player must be configured and running"
+        ));
+    }
+    let meta = parse_bcpt_reply(&reply)?;
+    let (buffers, coverage, attempts) = drain_ddr(link, cfg, meta.total_per_chip, 3)?;
+    let (ch0, ch1) = decode_chip(&buffers[0]);
+    let (ch2, ch3) = decode_chip(&buffers[1]);
+    let channels = [ch0, ch1, ch2, ch3];
+
+    let captures = slice_bcpt_channels(channels, meta)?;
+    Ok((captures, coverage, attempts))
+}
+
+fn slice_bcpt_channels(channels: [Vec<i16>; 4], meta: BcptMeta) -> Result<Vec<Capture>, String> {
+    let samples_per_rep = meta.bytes_per_rep / 4;
+    let sample_stride = meta.stride / 4;
+    if samples_per_rep == 0 || sample_stride < samples_per_rep {
+        return Err(format!(
+            "invalid BCPT layout: bytes_per_rep={} stride={}",
+            meta.bytes_per_rep, meta.stride
+        ));
+    }
+    let mut captures = Vec::with_capacity(meta.reps);
+    for rep in 0..meta.reps {
+        let start = rep * sample_stride;
+        let end = start + samples_per_rep;
+        if channels.iter().any(|channel| end > channel.len()) {
+            return Err(format!(
+                "BCPT layout exceeds decoded data at repetition {rep}: end={end}"
+            ));
+        }
+        captures.push(std::array::from_fn(|channel| {
+            channels[channel][start..end].to_vec()
+        }));
+    }
+    Ok(captures)
+}
+
+fn drain_ddr(
+    link: &mut Link,
+    cfg: &BoardCfg,
+    total_per_chip: usize,
+    max_attempts: u32,
+) -> Result<([Vec<u8>; 2], f32, u32), String> {
+    let assembler = Reassembler::new(
+        &cfg.local_ip,
+        cfg.local_port,
+        &cfg.board_ip,
+        cfg.cmd_port,
+        total_per_chip,
+    )
+    .map_err(|error| format!("UDP bind: {error}"))?;
+
+    let mut last = String::from("no drain attempt");
+    for attempt in 0..max_attempts {
         if attempt > 0 {
             std::thread::sleep(Duration::from_millis(400));
         }
-        let mut asm = Reassembler::new(&cfg.local_ip, cfg.local_port, &cfg.board_ip, cfg.cmd_port, bytes)
-            .map_err(|e| format!("UDP bind: {e}"))?;
-        l.cmd("STRM STOP", &["OK STRM"], Duration::from_secs(2));
-        if !asm.register(Duration::from_secs(2)) {
+        assembler.begin_request();
+        if !assembler.register(Duration::from_secs(2)) {
             last = "BRST registration timed out".into();
             continue;
         }
-        let bcap = l.cmd(&format!("BCAP {kb}k"), &["OK BCAP"], Duration::from_secs(30));
-        if !bcap.starts_with("OK BCAP") {
-            last = format!("BCAP failed: {bcap}");
+        let reply = link.cmd("BRDO", &["OK BRDO", "ERR"], Duration::from_secs(10));
+        let Some(request_id) = parse_brdo_request(&reply) else {
+            last = format!("BRDO failed: {reply}");
+            continue;
+        };
+        if !reply.starts_with("OK BRDO") {
+            last = format!("BRDO failed: {reply}");
             continue;
         }
-        let brdo = l.cmd("BRDO", &["OK BRDO"], Duration::from_secs(10));
-        let req = parse_brdo_request(&brdo);
-        match req {
-            Some(r) if brdo.starts_with("OK BRDO") => {
-                asm.set_request(r);
-                let drain_secs = (2.0 * bytes as f64 / 70.0e6 + 2.0).max(8.0);
-                let deadline = Instant::now() + Duration::from_secs_f64(drain_secs);
-                asm.drain(deadline, Duration::from_millis(600));
-                if asm.complete() {
-                    let (c0, c1) = decode_chip(&asm.buf[0]);
-                    let (c2, c3) = decode_chip(&asm.buf[1]);
-                    return Ok(([c0, c1, c2, c3], 1.0, attempt + 1));
-                }
-                last = format!(
-                    "drain incomplete chip0 {:.1}% chip1 {:.1}%",
-                    100.0 * asm.coverage(0),
-                    100.0 * asm.coverage(1)
-                );
+        assembler.set_request_id(request_id);
+
+        let drain_seconds = (2.0 * total_per_chip as f64 / 70.0e6 + 4.0).max(10.0);
+        let deadline = Instant::now() + Duration::from_secs_f64(drain_seconds);
+        while Instant::now() < deadline && !assembler.complete() {
+            let started = assembler.coverage(0) > 0.0 || assembler.coverage(1) > 0.0;
+            if started && assembler.idle(Duration::from_millis(800)) {
+                break;
             }
-            _ => last = format!("BRDO failed: {brdo}"),
+            std::thread::sleep(Duration::from_millis(5));
         }
+        if assembler.complete() {
+            return Ok((assembler.buffers(), 1.0, attempt + 1));
+        }
+        last = format!(
+            "UDP drain incomplete: chip0 {:.1}%, chip1 {:.1}%",
+            100.0 * assembler.coverage(0),
+            100.0 * assembler.coverage(1)
+        );
     }
-    Err(format!("{last} (after {attempts} attempts)"))
+    Err(format!("{last} after {max_attempts} attempts"))
 }
 
 fn save_capture(cfg: &BoardCfg, kind: &str, chans: &[Vec<i16>; 4]) -> Option<String> {
@@ -479,4 +884,25 @@ fn save_capture(cfg: &BoardCfg, kind: &str, chans: &[Vec<i16>; 4]) -> Option<Str
     }
     std::fs::write(&path, out).ok()?;
     Some(path.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_and_slices_strided_bcpt_layout_without_using_padding() {
+        let meta = parse_bcpt_reply("OK BCPT reps=3 bytes_per_rep=16 stride=32 total_per_chip=96")
+            .unwrap();
+        let channels: [Vec<i16>; 4] = std::array::from_fn(|channel| {
+            (0..24)
+                .map(|sample| (channel * 100 + sample) as i16)
+                .collect()
+        });
+        let captures = slice_bcpt_channels(channels, meta).unwrap();
+        assert_eq!(captures.len(), 3);
+        assert_eq!(captures[0][0], vec![0, 1, 2, 3]);
+        assert_eq!(captures[1][0], vec![8, 9, 10, 11]);
+        assert_eq!(captures[2][3], vec![316, 317, 318, 319]);
+    }
 }

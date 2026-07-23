@@ -32,6 +32,11 @@ this app is the host-side control/scope, same as the Python GUI.
   FPGA images do not need it for the former +/-7 mV byte-pairing artifact.
 - **Always-visible Capture bar** — UART Capture (`PCAP`), Collect Ethernet
   (`BCAP`/`BRDO` burst with auto-retry on dropped-packet drains), Auto-Sample.
+- **Continuous trigger average** — a dedicated acquisition thread repeatedly
+  runs hardware-aligned `BCPT` batches, maintains an incremental fixed-window
+  average, and publishes only the newest result to the viewer. The plot is
+  peak-preserving and capped at 4096 points/channel, so rendering never paces
+  acquisition.
 - **Raw firmware command** box, STAT view, live-stream `STRM` start/stop.
 
 ## Layout
@@ -39,13 +44,14 @@ this app is the host-side control/scope, same as the Python GUI.
 | file | role |
 |------|------|
 | `src/dsp.rs`   | pure DSP + constants (DDS/Q16 conv, de-interleave, waveforms, FFT) — unit tested |
-| `src/burst.rs` | UDP burst reassembler + PCAP/chip decode |
+| `src/burst_async.rs` | race-safe concurrent UDP reassembler + PCAP/chip decode |
+| `src/rolling.rs` | fixed-memory add-new/subtract-old rolling accumulator |
 | `src/proto.rs` | serial worker thread; command/event channels; board I/O off the UI thread |
 | `src/app.rs`   | egui UI: scope, crossbar painter, control panels |
 | `src/main.rs`  | eframe bootstrap |
 
-`cargo test` covers the DSP (DDS round-trip, Q16.16, de-interleave, waveform
-framing).
+`cargo test` covers the DSP, early-packet/request-ID race, strided BCPT layout,
+rolling eviction arithmetic, and spike-preserving display reduction.
 
 ## Not yet ported
 

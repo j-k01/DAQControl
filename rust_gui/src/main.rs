@@ -5,9 +5,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-mod burst;
+mod burst_async;
 mod dsp;
 mod proto;
+mod rolling;
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {

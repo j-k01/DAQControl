@@ -2,13 +2,10 @@
 #   pip install -r requirements.txt
 #
 # GUI scope (scripts/dac_scope_qt.py) uses PyQtGraph on a Qt5 backend.
-# Note: the anaconda base env ships Qt 5.9.7; pyqtgraph 0.13.x prints a
-# "Qt >= 5.15" warning there but renders fine. A fresh `pip install PyQt5`
-# pulls Qt 5.15 and the warning goes away. pyqtgraph 0.12.x HARD-FAILS on
-# Qt 5.9, so do not pin below 0.13 unless you also upgrade Qt.
+# Run setup_gui_env.ps1 to create the isolated, supported Qt 5.15 runtime.
 
 numpy>=1.20
 pyserial>=3.4
 matplotlib>=3.3
-PyQt5>=5.12
-pyqtgraph>=0.13.3
+PyQt5>=5.15,<5.16
+pyqtgraph>=0.13.7,<0.14

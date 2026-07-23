@@ -152,7 +152,13 @@ fn pack_pair(s0: i32, s1: i32) -> u32 {
 
 /// Build a seamless BRAM loop and its RW3[31:8] frame count for one shape.
 /// Returns (packed u32 words, loop_frames).
-pub fn gen_waveform(kind: &str, period_ns: usize, width_ns: usize, vlo: f64, vhi: f64) -> (Vec<u32>, u32) {
+pub fn gen_waveform(
+    kind: &str,
+    period_ns: usize,
+    width_ns: usize,
+    vlo: f64,
+    vhi: f64,
+) -> (Vec<u32>, u32) {
     let period = period_ns.clamp(2, PROGRAM_SAMPLES);
     let width = width_ns.clamp(1, period);
     let mut shape = vec![0.0f64; period];
@@ -300,6 +306,43 @@ pub fn magnitude_db(counts: &[f64], fs: f64) -> Vec<[f64; 2]> {
         .collect()
 }
 
+/// Extrema-preserving time-domain reduction for live plots.
+pub fn peak_envelope(counts: &[f64], fs: f64, max_points: usize) -> Vec<[f64; 2]> {
+    if counts.is_empty() || max_points == 0 {
+        return Vec::new();
+    }
+    if counts.len() <= max_points {
+        return counts
+            .iter()
+            .enumerate()
+            .map(|(index, &value)| [index as f64 / fs, value * VOLTS_PER_COUNT])
+            .collect();
+    }
+    let bins = (max_points / 2).max(1);
+    let width = counts.len().div_ceil(bins);
+    let mut points = Vec::with_capacity(max_points + 2);
+    for start in (0..counts.len()).step_by(width) {
+        let end = (start + width).min(counts.len());
+        let mut min_index = start;
+        let mut max_index = start;
+        for index in start + 1..end {
+            if counts[index] < counts[min_index] {
+                min_index = index;
+            }
+            if counts[index] > counts[max_index] {
+                max_index = index;
+            }
+        }
+        for index in if min_index <= max_index {
+            [min_index, max_index]
+        } else {
+            [max_index, min_index]
+        } {
+            points.push([index as f64 / fs, counts[index] * VOLTS_PER_COUNT]);
+        }
+    }
+    points
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +385,15 @@ mod tests {
         assert!(frames >= 1);
         // loop length (2 samples/word) must be a multiple of 4 samples
         assert_eq!((words.len() * 2) % BRAM_FRAME_SAMPLES, 0);
+    }
+    #[test]
+    fn peak_envelope_preserves_narrow_spike() {
+        let mut counts = vec![0.0; 16_384];
+        counts[8_123] = 12_345.0;
+        let reduced = peak_envelope(&counts, 1.0e9, 2048);
+        assert!(reduced.len() <= 2050);
+        assert!(reduced
+            .iter()
+            .any(|point| (point[1] - 12_345.0 * VOLTS_PER_COUNT).abs() < 1.0e-12));
     }
 }

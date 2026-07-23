@@ -5,10 +5,10 @@ use std::time::Instant;
 
 use eframe::egui;
 use egui::{Color32, Pos2, Stroke};
-use egui_plot::{Line, Plot, PlotPoints};
+use egui_plot::{Line, Plot, PlotBounds, PlotPoints};
 
 use crate::dsp;
-use crate::proto::{self, BoardCfg, Cmd, Evt};
+use crate::proto::{self, BoardCfg, Cmd, Evt, LiveShared};
 
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
@@ -36,6 +36,7 @@ fn ch_color(ch: usize) -> Color32 {
 pub struct DaqApp {
     tx: Sender<Cmd>,
     rx: Receiver<Evt>,
+    live: LiveShared,
 
     ports: Vec<String>,
     sel_port: String,
@@ -50,10 +51,14 @@ pub struct DaqApp {
     fs: f64,
     series: [Vec<[f64; 2]>; 4],
     display_dirty: bool,
+    display_live: bool,
+    live_mean: [Vec<f32>; 4],
+    live_sequence: u64,
 
     // view toggles
     fft_view: bool,
-    autoscale: bool,
+    time_y_ranges: [[f64; 2]; 4],
+    fft_y_ranges: [[f64; 2]; 4],
     deinterleave: bool,
 
     // capture controls
@@ -62,6 +67,10 @@ pub struct DaqApp {
     auto_sample: bool,
     last_auto: Instant,
     busy: bool,
+    live_requested: bool,
+    live_window: usize,
+    live_reps_per_batch: usize,
+    live_stats: String,
 
     // crossbar
     staged_src: [usize; 4],
@@ -112,7 +121,7 @@ const DT_OPTIONS: [(&str, u32); 6] = [
 impl DaqApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let cfg = BoardCfg::default();
-        let (tx, rx) = proto::spawn(cc.egui_ctx.clone(), cfg);
+        let (tx, rx, live) = proto::spawn(cc.egui_ctx.clone(), cfg);
         let ports = list_ports();
         let sel_port = ports
             .iter()
@@ -123,6 +132,7 @@ impl DaqApp {
         let mut app = Self {
             tx,
             rx,
+            live,
             ports,
             sel_port,
             connected: false,
@@ -133,14 +143,22 @@ impl DaqApp {
             fs: 1.0e9,
             series: Default::default(),
             display_dirty: false,
+            display_live: false,
+            live_mean: Default::default(),
+            live_sequence: 0,
             fft_view: false,
-            autoscale: true,
+            time_y_ranges: [[-0.95, 0.95]; 4],
+            fft_y_ranges: [[-90.0, 5.0]; 4],
             deinterleave: false,
             collect_idx: 0,
             capt_frames_idx: 2,
             auto_sample: false,
             last_auto: Instant::now(),
             busy: false,
+            live_requested: false,
+            live_window: 16,
+            live_reps_per_batch: 4,
+            live_stats: "idle".into(),
             staged_src: [1, 1, 1, 1], // DDS
             applied_src: [None; 4],
             staged_prof: [0, 1, 2, 3],
@@ -174,7 +192,10 @@ impl DaqApp {
     }
 
     fn profile_names(&self) -> Vec<String> {
-        let mut v: Vec<String> = dsp::BUILTIN_PROFILES.iter().map(|s| s.to_string()).collect();
+        let mut v: Vec<String> = dsp::BUILTIN_PROFILES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         v.extend(self.custom.iter().map(|c| c.name.clone()));
         v
     }
@@ -190,14 +211,7 @@ impl DaqApp {
                     self.connected = true;
                     self.conn_ok = true;
                     self.conn_msg = format!("connected {port} (idle)");
-                    self.status = "Connected. Use Collect Ethernet or Auto-Sample.".into();
-                    for ch in 0..4 {
-                        self.applied_src[ch] = Some(1); // DDS
-                        self.dac_status[ch] = "OK — DDS".into();
-                    }
-                    for n in 0..4 {
-                        self.neuron_running[n] = Some(dsp::BUILTIN_PROFILES[n].to_string());
-                    }
+                    self.status = "Connected without changing board routes or neuron state.".into();
                 }
                 Evt::Connected(Err(e)) => {
                     self.connected = false;
@@ -220,7 +234,13 @@ impl DaqApp {
                         "no DAQ response (wrong port / board down)".into()
                     };
                 }
-                Evt::RouteDone { ch, ok, src_idx, profile, neuron } => {
+                Evt::RouteDone {
+                    ch,
+                    ok,
+                    src_idx,
+                    profile,
+                    neuron,
+                } => {
                     self.busy = false;
                     let c = ch as usize;
                     if ok {
@@ -231,10 +251,15 @@ impl DaqApp {
                             self.neuron_running[n as usize] = Some(p);
                         }
                     } else {
-                        self.dac_status[c] = format!("ERR — {} not set", dsp::source_label(src_idx));
+                        self.dac_status[c] =
+                            format!("ERR — {} not set", dsp::source_label(src_idx));
                     }
                 }
-                Evt::NeuronDone { target, ok, profile } => {
+                Evt::NeuronDone {
+                    target,
+                    ok,
+                    profile,
+                } => {
                     if ok {
                         if target == "all" {
                             for n in 0..4 {
@@ -250,12 +275,23 @@ impl DaqApp {
                         self.neuron_status = format!("neuron {target}: ERR");
                     }
                 }
-                Evt::Capture { kind, chans, cov, tries, saved } => {
+                Evt::Capture {
+                    kind,
+                    chans,
+                    cov,
+                    tries,
+                    saved,
+                } => {
                     self.busy = false;
                     self.chans = chans;
+                    self.display_live = false;
                     self.display_dirty = true;
                     let where_ = saved.map(|s| format!("  -> {s}")).unwrap_or_default();
-                    let retry = if tries > 1 { format!("  ({tries} tries)") } else { String::new() };
+                    let retry = if tries > 1 {
+                        format!("  ({tries} tries)")
+                    } else {
+                        String::new()
+                    };
                     self.status = format!(
                         "{kind} capture: {} samples/ch  cov {:.0}%{retry}{where_}",
                         self.chans[0].len(),
@@ -271,29 +307,93 @@ impl DaqApp {
         }
     }
 
+    fn poll_live_snapshot(&mut self) {
+        let snapshot = match self.live.read() {
+            Ok(snapshot) if snapshot.sequence != self.live_sequence => snapshot.clone(),
+            _ => return,
+        };
+        self.live_sequence = snapshot.sequence;
+        self.live_requested = snapshot.running;
+        if !snapshot.average[0].is_empty() {
+            self.live_mean = snapshot.average;
+            self.display_live = true;
+            self.display_dirty = true;
+        }
+        self.live_stats = format!(
+            "{} held / {} total | {:.1} captures/s | {:.1} batches/s | {:.0}% UDP | drain {}",
+            snapshot.held,
+            snapshot.total,
+            snapshot.capture_hz,
+            snapshot.batch_hz,
+            100.0 * snapshot.coverage,
+            snapshot.drain_attempts,
+        );
+        if !snapshot.last_error.is_empty() {
+            self.live_stats = format!(
+                "{} | {} failures | {}",
+                self.live_stats, snapshot.failures, snapshot.last_error
+            );
+        }
+    }
+
     fn rebuild_display(&mut self) {
         for ch in 0..4 {
-            let counts: Vec<f64> = if self.deinterleave {
+            let counts: Vec<f64> = if self.display_live {
+                self.live_mean[ch]
+                    .iter()
+                    .map(|&value| value as f64)
+                    .collect()
+            } else if self.deinterleave {
                 dsp::deinterleave_baseline(&self.chans[ch])
             } else {
-                self.chans[ch].iter().map(|&v| v as f64).collect()
+                self.chans[ch].iter().map(|&value| value as f64).collect()
             };
             self.series[ch] = if self.fft_view {
                 dsp::magnitude_db(&counts, self.fs)
+            } else if self.display_live {
+                dsp::peak_envelope(&counts, self.fs, 4096)
             } else {
-                let n = counts.len();
-                let stride = (n / 6000).max(1);
+                let count = counts.len();
+                let stride = (count / 6000).max(1);
                 counts
                     .iter()
                     .step_by(stride)
                     .enumerate()
-                    .map(|(i, &v)| [(i * stride) as f64 / self.fs, v * dsp::VOLTS_PER_COUNT])
+                    .map(|(index, &value)| {
+                        [
+                            (index * stride) as f64 / self.fs,
+                            value * dsp::VOLTS_PER_COUNT,
+                        ]
+                    })
                     .collect()
             };
         }
         self.display_dirty = false;
     }
-
+    fn autoscale_once(&mut self) {
+        let min_span = if self.fft_view { 10.0 } else { 0.04 };
+        let ranges = if self.fft_view {
+            &mut self.fft_y_ranges
+        } else {
+            &mut self.time_y_ranges
+        };
+        for (channel, series) in self.series.iter().enumerate() {
+            let mut low = f64::INFINITY;
+            let mut high = f64::NEG_INFINITY;
+            for point in series {
+                if point[1].is_finite() {
+                    low = low.min(point[1]);
+                    high = high.max(point[1]);
+                }
+            }
+            if low.is_finite() && high.is_finite() {
+                let center = 0.5 * (low + high);
+                let span = (high - low).max(min_span);
+                let padding = 0.10 * span;
+                ranges[channel] = [center - 0.5 * span - padding, center + 0.5 * span + padding];
+            }
+        }
+    }
     // -------------------------------------------------------- panel builders
     fn connection_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
@@ -308,7 +408,11 @@ impl DaqApp {
             if ui.button("↻").clicked() {
                 self.ports = list_ports();
             }
-            let label = if self.connected { "Reconnect" } else { "Connect" };
+            let label = if self.connected {
+                "Reconnect"
+            } else {
+                "Connect"
+            };
             if ui.button(label).clicked() {
                 self.conn_msg = format!("connecting {}...", self.sel_port);
                 self.send(Cmd::Connect(self.sel_port.clone()));
@@ -336,27 +440,48 @@ impl DaqApp {
             ui.add_enabled_ui(self.connected, |ui| {
                 ui.horizontal(|ui| {
                     egui::ComboBox::from_id_salt("capt_frames")
-                        .selected_text(format!("{} frames", dsp::CAPT_FRAME_OPTIONS[self.capt_frames_idx]))
+                        .selected_text(format!(
+                            "{} frames",
+                            dsp::CAPT_FRAME_OPTIONS[self.capt_frames_idx]
+                        ))
                         .show_ui(ui, |ui| {
-                            for (i, f) in dsp::CAPT_FRAME_OPTIONS.iter().enumerate() {
-                                ui.selectable_value(&mut self.capt_frames_idx, i, format!("{f} frames"));
+                            for (index, frames) in dsp::CAPT_FRAME_OPTIONS.iter().enumerate() {
+                                ui.selectable_value(
+                                    &mut self.capt_frames_idx,
+                                    index,
+                                    format!("{frames} frames"),
+                                );
                             }
                         });
-                    if ui.button("UART Capture").clicked() && !self.busy {
+                    if ui
+                        .add_enabled(
+                            !self.busy && !self.live_requested,
+                            egui::Button::new("UART Capture"),
+                        )
+                        .clicked()
+                    {
                         self.busy = true;
                         self.status = "UART capturing...".into();
-                        self.send(Cmd::UartCapture(dsp::CAPT_FRAME_OPTIONS[self.capt_frames_idx]));
+                        self.send(Cmd::UartCapture(
+                            dsp::CAPT_FRAME_OPTIONS[self.capt_frames_idx],
+                        ));
                     }
                 });
                 ui.horizontal(|ui| {
                     egui::ComboBox::from_id_salt("collect_size")
                         .selected_text(dsp::COLLECT_SIZES[self.collect_idx].1)
                         .show_ui(ui, |ui| {
-                            for (i, (_, lbl)) in dsp::COLLECT_SIZES.iter().enumerate() {
-                                ui.selectable_value(&mut self.collect_idx, i, *lbl);
+                            for (index, (_, label)) in dsp::COLLECT_SIZES.iter().enumerate() {
+                                ui.selectable_value(&mut self.collect_idx, index, *label);
                             }
                         });
-                    if ui.button("Collect Ethernet").clicked() && !self.busy {
+                    if ui
+                        .add_enabled(
+                            !self.busy && !self.live_requested,
+                            egui::Button::new("Collect Ethernet"),
+                        )
+                        .clicked()
+                    {
                         self.busy = true;
                         self.status = "collecting burst over Ethernet...".into();
                         self.send(Cmd::CollectEth {
@@ -364,18 +489,70 @@ impl DaqApp {
                             save: true,
                         });
                     }
+                    let auto_label = if self.auto_sample {
+                        "Stop Auto-Sample"
+                    } else {
+                        "Start Auto-Sample"
+                    };
+                    if ui
+                        .add_enabled(!self.live_requested, egui::Button::new(auto_label))
+                        .clicked()
+                    {
+                        self.auto_sample = !self.auto_sample;
+                        if self.auto_sample {
+                            self.last_auto = Instant::now() - std::time::Duration::from_secs(2);
+                        }
+                    }
                 });
-                let auto_label = if self.auto_sample { "Stop Auto-Sample" } else { "Start Auto-Sample" };
-                if ui.button(auto_label).clicked() {
-                    self.auto_sample = !self.auto_sample;
-                    if self.auto_sample {
-                        self.last_auto = Instant::now() - std::time::Duration::from_secs(2);
+
+                ui.separator();
+                ui.label(egui::RichText::new("Continuous trigger average").strong());
+                ui.add_enabled_ui(!self.live_requested, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("window");
+                        ui.add(
+                            egui::DragValue::new(&mut self.live_window)
+                                .range(2..=64)
+                                .speed(1),
+                        );
+                        ui.label("reps/batch");
+                        ui.add(
+                            egui::DragValue::new(&mut self.live_reps_per_batch)
+                                .range(1..=8)
+                                .speed(1),
+                        );
+                    });
+                });
+                let live_label = if self.live_requested {
+                    "Stop Live Trigger Average"
+                } else {
+                    "Start Live Trigger Average"
+                };
+                if ui.button(live_label).clicked() {
+                    if self.live_requested {
+                        self.send(Cmd::StopLiveAverage);
+                        self.live_requested = false;
+                        self.live_stats = "stop requested".into();
+                    } else {
+                        self.auto_sample = false;
+                        self.live_requested = true;
+                        self.display_live = true;
+                        self.live_stats = "starting...".into();
+                        self.send(Cmd::StartLiveAverage {
+                            bytes: dsp::COLLECT_SIZES[self.collect_idx].0,
+                            reps_per_batch: self.live_reps_per_batch,
+                            window: self.live_window,
+                        });
                     }
                 }
+                ui.label(
+                    egui::RichText::new(&self.live_stats)
+                        .size(10.0)
+                        .color(Color32::from_rgb(0x9f, 0xb3, 0xc8)),
+                );
             });
         });
     }
-
     fn tab_xbar(&mut self, ui: &mut egui::Ui) {
         for ch in 0..4 {
             ui.group(|ui| {
@@ -404,7 +581,8 @@ impl DaqApp {
                     if ui.button("Confirm route").clicked() && self.connected {
                         let names = self.profile_names();
                         let prof = names.get(self.staged_prof[ch]).cloned().unwrap_or_default();
-                        self.dac_status[ch] = format!("programming {}…", dsp::source_label(self.staged_src[ch]));
+                        self.dac_status[ch] =
+                            format!("programming {}…", dsp::source_label(self.staged_src[ch]));
                         self.send(Cmd::ApplyRoute {
                             ch: ch as u8,
                             src_idx: self.staged_src[ch],
@@ -428,7 +606,8 @@ impl DaqApp {
     fn draw_crossbar(&self, ui: &mut egui::Ui) {
         let n = dsp::SOURCES.len();
         let h = (24 * n + 24) as f32;
-        let (rect, _resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::hover());
+        let (rect, _resp) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::hover());
         let p = ui.painter_at(rect);
         p.rect_filled(rect, 4.0, Color32::from_rgb(0x0d, 0x11, 0x16));
         let top = rect.top() + 16.0;
@@ -463,18 +642,43 @@ impl DaqApp {
                 );
             }
         }
-        let live: std::collections::HashSet<usize> = self.applied_src.iter().flatten().cloned().collect();
+        let live: std::collections::HashSet<usize> =
+            self.applied_src.iter().flatten().cloned().collect();
         for i in 0..n {
             let y = sy(i);
             let on = live.contains(&i);
-            let tcol = if on { Color32::from_rgb(0xe6, 0xee, 0xf6) } else { Color32::from_rgb(0x5f, 0x71, 0x85) };
-            p.text(Pos2::new(src_x - 8.0, y), egui::Align2::RIGHT_CENTER, dsp::source_label(i), fid.clone(), tcol);
-            p.circle_filled(Pos2::new(src_x, y), 3.4, if on { Color32::from_rgb(0x4F, 0xC3, 0xF7) } else { Color32::from_rgb(0x33, 0x41, 0x4d) });
+            let tcol = if on {
+                Color32::from_rgb(0xe6, 0xee, 0xf6)
+            } else {
+                Color32::from_rgb(0x5f, 0x71, 0x85)
+            };
+            p.text(
+                Pos2::new(src_x - 8.0, y),
+                egui::Align2::RIGHT_CENTER,
+                dsp::source_label(i),
+                fid.clone(),
+                tcol,
+            );
+            p.circle_filled(
+                Pos2::new(src_x, y),
+                3.4,
+                if on {
+                    Color32::from_rgb(0x4F, 0xC3, 0xF7)
+                } else {
+                    Color32::from_rgb(0x33, 0x41, 0x4d)
+                },
+            );
         }
         for c in 0..4 {
             let y = dy(c);
             p.circle_filled(Pos2::new(dac_x, y), 5.0, ch_color(c));
-            p.text(Pos2::new(dac_x + 10.0, y), egui::Align2::LEFT_CENTER, format!("DAC{c}"), fid.clone(), Color32::from_rgb(0xe6, 0xee, 0xf6));
+            p.text(
+                Pos2::new(dac_x + 10.0, y),
+                egui::Align2::LEFT_CENTER,
+                format!("DAC{c}"),
+                fid.clone(),
+                Color32::from_rgb(0xe6, 0xee, 0xf6),
+            );
         }
     }
 
@@ -500,14 +704,22 @@ impl DaqApp {
                 ui.horizontal(|ui| {
                     ui.label(format!("neuron {n}"));
                     egui::ComboBox::from_id_salt(format!("nprof{n}"))
-                        .selected_text(names.get(self.neuron_prof_idx[n]).cloned().unwrap_or_default())
+                        .selected_text(
+                            names
+                                .get(self.neuron_prof_idx[n])
+                                .cloned()
+                                .unwrap_or_default(),
+                        )
                         .show_ui(ui, |ui| {
                             for (i, nm) in names.iter().enumerate() {
                                 ui.selectable_value(&mut self.neuron_prof_idx[n], i, nm);
                             }
                         });
                     if ui.button("Program").clicked() && self.connected {
-                        let prof = names.get(self.neuron_prof_idx[n]).cloned().unwrap_or_default();
+                        let prof = names
+                            .get(self.neuron_prof_idx[n])
+                            .cloned()
+                            .unwrap_or_default();
                         self.send_profile(n.to_string(), &prof);
                     }
                     if let Some(r) = &self.neuron_running[n] {
@@ -528,7 +740,11 @@ impl DaqApp {
                     .selected_text(items.get(self.load_prof_idx).cloned().unwrap_or_default())
                     .show_ui(ui, |ui| {
                         for (i, nm) in items.iter().enumerate() {
-                            if ui.selectable_value(&mut self.load_prof_idx, i, nm).clicked() && i > 0 {
+                            if ui
+                                .selectable_value(&mut self.load_prof_idx, i, nm)
+                                .clicked()
+                                && i > 0
+                            {
                                 self.load_profile_values(&items[i]);
                             }
                         }
@@ -538,7 +754,12 @@ impl DaqApp {
                 ui.horizontal(|ui| {
                     ui.label(*label);
                     let speed = 10f64.powi(-(*dec as i32));
-                    ui.add(egui::DragValue::new(&mut self.np_values[i]).range(*lo..=*hi).speed(speed).max_decimals(*dec));
+                    ui.add(
+                        egui::DragValue::new(&mut self.np_values[i])
+                            .range(*lo..=*hi)
+                            .speed(speed)
+                            .max_decimals(*dec),
+                    );
                 });
             }
             ui.horizontal(|ui| {
@@ -551,7 +772,11 @@ impl DaqApp {
             });
             ui.horizontal(|ui| {
                 ui.label("save as");
-                ui.add(egui::TextEdit::singleline(&mut self.save_name).desired_width(120.0).hint_text("name"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.save_name)
+                        .desired_width(120.0)
+                        .hint_text("name"),
+                );
                 if ui.button("Save…").clicked() {
                     self.save_current_profile();
                 }
@@ -564,11 +789,19 @@ impl DaqApp {
         ui.group(|ui| {
             ui.label(egui::RichText::new("DDS tone").strong());
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut self.dds_freq_mhz).range(0.0..=500.0).speed(0.5).suffix(" MHz"));
+                ui.add(
+                    egui::DragValue::new(&mut self.dds_freq_mhz)
+                        .range(0.0..=500.0)
+                        .speed(0.5)
+                        .suffix(" MHz"),
+                );
                 if ui.button("Set DDS").clicked() && self.connected {
                     let inc = dsp::dds_freq_to_inc(self.dds_freq_mhz * 1e6);
                     self.send(Cmd::SetDds(inc));
-                    self.status = format!("DDS {:.3} MHz (inc 0x{inc:06X})", dsp::dds_inc_to_freq(inc) / 1e6);
+                    self.status = format!(
+                        "DDS {:.3} MHz (inc 0x{inc:06X})",
+                        dsp::dds_inc_to_freq(inc) / 1e6
+                    );
                 }
             });
         });
@@ -577,7 +810,11 @@ impl DaqApp {
             egui::Grid::new("wf").num_columns(2).show(ui, |ui| {
                 ui.label("target");
                 egui::ComboBox::from_id_salt("wfch")
-                    .selected_text(if self.wf_ch == 4 { "all".to_string() } else { format!("ch{}", self.wf_ch) })
+                    .selected_text(if self.wf_ch == 4 {
+                        "all".to_string()
+                    } else {
+                        format!("ch{}", self.wf_ch)
+                    })
                     .show_ui(ui, |ui| {
                         for c in 0..4 {
                             ui.selectable_value(&mut self.wf_ch, c, format!("ch{c}"));
@@ -595,17 +832,35 @@ impl DaqApp {
                     });
                 ui.end_row();
                 ui.label("period");
-                ui.add(egui::DragValue::new(&mut self.wf_period).range(2..=dsp::PROGRAM_SAMPLES as i32).suffix(" ns"));
+                ui.add(
+                    egui::DragValue::new(&mut self.wf_period)
+                        .range(2..=dsp::PROGRAM_SAMPLES as i32)
+                        .suffix(" ns"),
+                );
                 ui.end_row();
                 ui.label("width");
-                ui.add(egui::DragValue::new(&mut self.wf_width).range(1..=dsp::PROGRAM_SAMPLES as i32).suffix(" ns"));
+                ui.add(
+                    egui::DragValue::new(&mut self.wf_width)
+                        .range(1..=dsp::PROGRAM_SAMPLES as i32)
+                        .suffix(" ns"),
+                );
                 ui.end_row();
                 let vmax = dsp::DAC_FULLSCALE as f64 * dsp::VOLTS_PER_COUNT;
                 ui.label("V min");
-                ui.add(egui::DragValue::new(&mut self.wf_vlo).range(-vmax..=vmax).speed(0.01).suffix(" V"));
+                ui.add(
+                    egui::DragValue::new(&mut self.wf_vlo)
+                        .range(-vmax..=vmax)
+                        .speed(0.01)
+                        .suffix(" V"),
+                );
                 ui.end_row();
                 ui.label("V max");
-                ui.add(egui::DragValue::new(&mut self.wf_vhi).range(-vmax..=vmax).speed(0.01).suffix(" V"));
+                ui.add(
+                    egui::DragValue::new(&mut self.wf_vhi)
+                        .range(-vmax..=vmax)
+                        .speed(0.01)
+                        .suffix(" V"),
+                );
                 ui.end_row();
             });
             if ui.button("Program BRAM").clicked() && self.connected {
@@ -616,9 +871,21 @@ impl DaqApp {
                     self.wf_vlo,
                     self.wf_vhi,
                 );
-                let chans: Vec<u8> = if self.wf_ch == 4 { vec![0, 1, 2, 3] } else { vec![self.wf_ch as u8] };
-                self.status = format!("programming {} to {:?}", dsp::WAVEFORMS[self.wf_kind], chans);
-                self.send(Cmd::ProgramBram { chans, words, loop_frames: frames });
+                let chans: Vec<u8> = if self.wf_ch == 4 {
+                    vec![0, 1, 2, 3]
+                } else {
+                    vec![self.wf_ch as u8]
+                };
+                self.status = format!(
+                    "programming {} to {:?}",
+                    dsp::WAVEFORMS[self.wf_kind],
+                    chans
+                );
+                self.send(Cmd::ProgramBram {
+                    chans,
+                    words,
+                    loop_frames: frames,
+                });
             }
         });
     }
@@ -626,10 +893,15 @@ impl DaqApp {
     fn tab_display(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
             ui.label(egui::RichText::new("Display").strong());
-            if ui.checkbox(&mut self.deinterleave, "Legacy mod-4 baseline removal").changed() {
+            if ui
+                .checkbox(&mut self.deinterleave, "Legacy mod-4 baseline removal")
+                .changed()
+            {
                 self.display_dirty = true;
             }
-            ui.checkbox(&mut self.autoscale, "Autoscale Y");
+            if ui.button("Autoscale once").clicked() {
+                self.autoscale_once();
+            }
             ui.horizontal(|ui| {
                 if ui.selectable_label(!self.fft_view, "Time").clicked() {
                     self.fft_view = false;
@@ -640,6 +912,29 @@ impl DaqApp {
                     self.display_dirty = true;
                 }
             });
+            let ranges = if self.fft_view {
+                &mut self.fft_y_ranges
+            } else {
+                &mut self.time_y_ranges
+            };
+            let step = if self.fft_view { 5.0 } else { 0.05 };
+            egui::Grid::new("fixed_y_ranges")
+                .num_columns(3)
+                .show(ui, |ui| {
+                    ui.label("channel");
+                    ui.label("Y min");
+                    ui.label("Y max");
+                    ui.end_row();
+                    for (channel, range) in ranges.iter_mut().enumerate() {
+                        ui.label(format!("ADC{channel}"));
+                        ui.add(egui::DragValue::new(&mut range[0]).speed(step));
+                        ui.add(egui::DragValue::new(&mut range[1]).speed(step));
+                        if range[0] >= range[1] {
+                            range[1] = range[0] + step;
+                        }
+                        ui.end_row();
+                    }
+                });
             ui.horizontal(|ui| {
                 let cic = ui.button("CIC on");
                 if cic.clicked() && self.connected {
@@ -654,7 +949,11 @@ impl DaqApp {
             ui.label(egui::RichText::new("Live stream (UDP)").strong());
             ui.horizontal(|ui| {
                 ui.label("decim");
-                ui.add(egui::DragValue::new(&mut self.stream_decim).range(4..=65532).speed(4));
+                ui.add(
+                    egui::DragValue::new(&mut self.stream_decim)
+                        .range(4..=65532)
+                        .speed(4),
+                );
                 ui.checkbox(&mut self.stream_cic, "CIC");
             });
             ui.horizontal(|ui| {
@@ -669,9 +968,11 @@ impl DaqApp {
                 }
             });
             ui.label(
-                egui::RichText::new("(continuous stream issues STRM; use Auto-Sample for the live plot)")
-                    .size(10.0)
-                    .color(Color32::GRAY),
+                egui::RichText::new(
+                    "(continuous stream issues STRM; use Auto-Sample for the live plot)",
+                )
+                .size(10.0)
+                .color(Color32::GRAY),
             );
         });
         ui.group(|ui| {
@@ -690,9 +991,13 @@ impl DaqApp {
             });
             if !self.stat_raw.is_empty() {
                 egui::CollapsingHeader::new("last STAT output").show(ui, |ui| {
-                    egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(&self.stat_raw).monospace().size(10.0)));
-                    });
+                    egui::ScrollArea::vertical()
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            ui.add(egui::Label::new(
+                                egui::RichText::new(&self.stat_raw).monospace().size(10.0),
+                            ));
+                        });
                 });
             }
         });
@@ -773,14 +1078,28 @@ impl DaqApp {
 impl eframe::App for DaqApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
+        self.poll_live_snapshot();
 
-        // auto-sample cadence (1/s)
-        if self.auto_sample && self.connected && !self.busy && self.last_auto.elapsed().as_millis() >= 1000 {
+        // Legacy one-shot auto-sample cadence. Continuous trigger averaging is
+        // paced entirely by the acquisition thread and never by this UI loop.
+        if self.auto_sample
+            && !self.live_requested
+            && self.connected
+            && !self.busy
+            && self.last_auto.elapsed().as_millis() >= 1000
+        {
             self.last_auto = Instant::now();
             self.busy = true;
-            self.send(Cmd::CollectEth { bytes: 64 * 1024, save: false });
+            self.send(Cmd::CollectEth {
+                bytes: 64 * 1024,
+                save: false,
+            });
         }
-        if self.auto_sample {
+        if self.live_requested {
+            // The acquisition thread publishes latest-only state. The viewer
+            // samples it periodically, so rendering cannot throttle capture.
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
+        } else if self.auto_sample {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
 
@@ -794,27 +1113,34 @@ impl eframe::App for DaqApp {
             ui.add_space(4.0);
         });
 
-        egui::SidePanel::right("controls").resizable(false).exact_width(440.0).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tab, Tab::Neuron, "Neuron");
-                ui.selectable_value(&mut self.tab, Tab::Xbar, "XBAR");
-                ui.selectable_value(&mut self.tab, Tab::Capture, "Display");
-                ui.selectable_value(&mut self.tab, Tab::Waveforms, "Waveforms");
+        egui::SidePanel::right("controls")
+            .resizable(false)
+            .exact_width(440.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.tab, Tab::Neuron, "Neuron");
+                    ui.selectable_value(&mut self.tab, Tab::Xbar, "XBAR");
+                    ui.selectable_value(&mut self.tab, Tab::Capture, "Display");
+                    ui.selectable_value(&mut self.tab, Tab::Waveforms, "Waveforms");
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(ui.available_height() - 190.0)
+                    .show(ui, |ui| match self.tab {
+                        Tab::Neuron => self.tab_neuron(ui),
+                        Tab::Xbar => self.tab_xbar(ui),
+                        Tab::Capture => self.tab_display(ui),
+                        Tab::Waveforms => self.tab_waveforms(ui),
+                    });
+                ui.separator();
+                self.capture_bar(ui);
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(&self.status)
+                        .size(11.0)
+                        .color(Color32::from_rgb(0x9f, 0xb3, 0xc8)),
+                );
             });
-            ui.separator();
-            egui::ScrollArea::vertical().max_height(ui.available_height() - 190.0).show(ui, |ui| {
-                match self.tab {
-                    Tab::Neuron => self.tab_neuron(ui),
-                    Tab::Xbar => self.tab_xbar(ui),
-                    Tab::Capture => self.tab_display(ui),
-                    Tab::Waveforms => self.tab_waveforms(ui),
-                }
-            });
-            ui.separator();
-            self.capture_bar(ui);
-            ui.add_space(4.0);
-            ui.label(egui::RichText::new(&self.status).size(11.0).color(Color32::from_rgb(0x9f, 0xb3, 0xc8)));
-        });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let n = self.series.iter().map(|s| s.len()).max().unwrap_or(0);
@@ -829,18 +1155,28 @@ impl eframe::App for DaqApp {
                 let (xlabel, ylabel) = if self.fft_view { ("Hz", "dBFS") } else { ("s", "V") };
                 let pts = PlotPoints::from(self.series[ch].clone());
                 let line = Line::new(pts).color(ch_color(ch)).name(format!("ch{ch}"));
-                let mut plot = Plot::new(format!("plot{ch}"))
+                let range = if self.fft_view {
+                    self.fft_y_ranges[ch]
+                } else {
+                    self.time_y_ranges[ch]
+                };
+                let plot = Plot::new(format!("plot{ch}"))
                     .height(h)
                     .x_axis_label(xlabel)
                     .y_axis_label(format!("ch{ch} [{ylabel}]"))
-                    .allow_scroll(false);
-                if !self.autoscale && !self.fft_view {
-                    plot = plot.include_y(-0.95).include_y(0.95);
-                }
-                if self.fft_view {
-                    plot = plot.include_y(-90.0).include_y(5.0);
-                }
-                plot.show(ui, |pu| pu.line(line));
+                    .allow_scroll(false)
+                    .auto_bounds(egui::Vec2b::new(true, false));
+                plot.show(ui, |plot_ui| {
+                    let mut bounds = plot_ui.plot_bounds();
+                    let fixed_y = PlotBounds::from_min_max(
+                        [bounds.min()[0], range[0]],
+                        [bounds.max()[0], range[1]],
+                    );
+                    bounds.set_y(&fixed_y);
+                    plot_ui.set_auto_bounds(egui::Vec2b::new(true, false));
+                    plot_ui.set_plot_bounds(bounds);
+                    plot_ui.line(line);
+                });
             }
         });
     }
@@ -855,17 +1191,23 @@ impl Drop for DaqApp {
 // ------------------------------------------------------------------- support
 fn list_ports() -> Vec<String> {
     match serialport::available_ports() {
-        Ok(ports) => {
-            let mut v: Vec<String> = ports.into_iter().map(|p| p.port_name).collect();
-            if !v.iter().any(|p| p.contains("COM10")) {
-                v.insert(0, "COM10".to_string());
+        Ok(mut ports) => {
+            ports.sort_by_key(|port| match port.port_type {
+                serialport::SerialPortType::UsbPort(_) => 0,
+                serialport::SerialPortType::PciPort => 1,
+                serialport::SerialPortType::Unknown => 2,
+                serialport::SerialPortType::BluetoothPort => 3,
+            });
+            let names: Vec<String> = ports.into_iter().map(|port| port.port_name).collect();
+            if names.is_empty() {
+                vec!["COM10".to_string()]
+            } else {
+                names
             }
-            v
         }
         Err(_) => vec!["COM10".to_string()],
     }
 }
-
 fn custom_params(cp: &CustomProfile) -> Vec<(String, u32)> {
     vec![
         ("a".into(), dsp::izh_to_q16(cp.a)),
