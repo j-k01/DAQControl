@@ -92,6 +92,19 @@ pub struct DaqApp {
     // dds
     dds_freq_mhz: f64,
 
+    // neuron current player
+    current_kind: usize,
+    current_amp_ma: f64,
+    current_gain: f64,
+    current_freq_hz: f64,
+    current_duty: f64,
+    current_step_zero: usize,
+    current_step_high: usize,
+    current_step_cps: u32,
+    current_step_loop: bool,
+    current_running: bool,
+    current_status: String,
+
     // waveform builder
     wf_ch: usize, // 0..3, 4=all
     wf_kind: usize,
@@ -173,6 +186,17 @@ impl DaqApp {
             dt_idx: 2,
             neuron_status: "—".into(),
             dds_freq_mhz: 62.5,
+            current_kind: 0,
+            current_amp_ma: 15.0,
+            current_gain: 20.0,
+            current_freq_hz: 5_000.0,
+            current_duty: 50.0,
+            current_step_zero: 16,
+            current_step_high: 48,
+            current_step_cps: 1,
+            current_step_loop: false,
+            current_running: false,
+            current_status: "not programmed".into(),
             wf_ch: 4,
             wf_kind: 0,
             wf_period: 35,
@@ -297,6 +321,20 @@ impl DaqApp {
                         self.chans[0].len(),
                         100.0 * cov
                     );
+                }
+                Evt::CurrentDone {
+                    ok,
+                    running,
+                    status,
+                } => {
+                    self.busy = false;
+                    self.current_running = running;
+                    self.current_status = if ok {
+                        status.clone()
+                    } else {
+                        format!("ERR: {status}")
+                    };
+                    self.status = self.current_status.clone();
                 }
                 Evt::Status(s) => self.status = s,
                 Evt::Error(e) => {
@@ -786,6 +824,191 @@ impl DaqApp {
     }
 
     fn tab_waveforms(&mut self, ui: &mut egui::Ui) {
+        let current_kind = dsp::CURRENT_PRESETS[self.current_kind];
+        if current_kind == "Step" {
+            self.current_step_zero = self.current_step_zero.min(dsp::CURRENT_WAVE_MAX - 1);
+            self.current_step_high = self.current_step_high.clamp(
+                1,
+                dsp::CURRENT_WAVE_MAX.saturating_sub(self.current_step_zero),
+            );
+        }
+        let preview = dsp::gen_current_wave(dsp::CurrentWaveConfig {
+            kind: current_kind,
+            amplitude_ma: self.current_amp_ma,
+            frequency_hz: self.current_freq_hz,
+            duty_percent: self.current_duty,
+            step_zero: self.current_step_zero,
+            step_high: self.current_step_high,
+            step_cps: self.current_step_cps,
+            step_loop: self.current_step_loop,
+        });
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Current player").strong());
+                let state = if self.current_running {
+                    "RUNNING"
+                } else {
+                    "STOPPED"
+                };
+                ui.colored_label(
+                    if self.current_running {
+                        Color32::LIGHT_GREEN
+                    } else {
+                        Color32::GRAY
+                    },
+                    state,
+                );
+            });
+            egui::Grid::new("current_player_controls")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    ui.label("profile");
+                    egui::ComboBox::from_id_salt("current_profile")
+                        .selected_text(current_kind)
+                        .show_ui(ui, |ui| {
+                            for (index, name) in dsp::CURRENT_PRESETS.iter().enumerate() {
+                                ui.selectable_value(&mut self.current_kind, index, *name);
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label("amplitude");
+                    ui.add(
+                        egui::DragValue::new(&mut self.current_amp_ma)
+                            .range(0.0..=dsp::CURRENT_MAX_MA)
+                            .speed(0.1)
+                            .suffix(" mA"),
+                    );
+                    ui.end_row();
+
+                    ui.label("DAC mirror gain");
+                    ui.add(
+                        egui::DragValue::new(&mut self.current_gain)
+                            .range(0.0..=dsp::CURRENT_GAIN_MAX)
+                            .speed(0.25)
+                            .suffix("x"),
+                    );
+                    ui.end_row();
+
+                    if matches!(current_kind, "Sine" | "Square") {
+                        ui.label("frequency");
+                        ui.add(
+                            egui::DragValue::new(&mut self.current_freq_hz)
+                                .range(1.0..=3_125_000.0)
+                                .speed(100.0)
+                                .suffix(" Hz"),
+                        );
+                        ui.end_row();
+                    }
+                    if current_kind == "Square" {
+                        ui.label("duty");
+                        ui.add(
+                            egui::DragValue::new(&mut self.current_duty)
+                                .range(0.1..=99.9)
+                                .speed(0.5)
+                                .suffix("%"),
+                        );
+                        ui.end_row();
+                    }
+                    if current_kind == "Step" {
+                        ui.label("zero samples");
+                        ui.add(
+                            egui::DragValue::new(&mut self.current_step_zero)
+                                .range(0..=dsp::CURRENT_WAVE_MAX - 1),
+                        );
+                        ui.end_row();
+                        self.current_step_high = self.current_step_high.clamp(
+                            1,
+                            dsp::CURRENT_WAVE_MAX.saturating_sub(self.current_step_zero),
+                        );
+                        ui.label("high samples");
+                        ui.add(egui::DragValue::new(&mut self.current_step_high).range(
+                            1..=dsp::CURRENT_WAVE_MAX.saturating_sub(self.current_step_zero),
+                        ));
+                        ui.end_row();
+                        ui.label("cycles/sample");
+                        ui.add(
+                            egui::DragValue::new(&mut self.current_step_cps)
+                                .range(1..=u16::MAX as u32),
+                        );
+                        ui.end_row();
+                        ui.label("mode");
+                        ui.checkbox(&mut self.current_step_loop, "Loop");
+                        ui.end_row();
+                    }
+                });
+
+            let points: Vec<[f64; 2]> = preview
+                .samples_ma
+                .iter()
+                .enumerate()
+                .map(|(index, &sample)| [index as f64, sample])
+                .collect();
+            Plot::new("current_player_preview")
+                .height(120.0)
+                .allow_drag(false)
+                .allow_zoom(false)
+                .allow_scroll(false)
+                .include_y(0.0)
+                .include_y(self.current_amp_ma.max(1.0))
+                .show(ui, |plot_ui| {
+                    plot_ui.line(Line::new(PlotPoints::from(points)).color(Color32::LIGHT_GREEN));
+                });
+
+            ui.horizontal(|ui| {
+                let enabled = self.connected && !self.busy && !self.live_requested;
+                if ui
+                    .add_enabled(enabled, egui::Button::new("Program / restart"))
+                    .clicked()
+                {
+                    self.busy = true;
+                    let description = if preview.actual_hz > 0.0 {
+                        format!(
+                            "{} {:.3} Hz, {} samples, cps {}",
+                            current_kind,
+                            preview.actual_hz,
+                            preview.samples_ma.len(),
+                            preview.cps
+                        )
+                    } else {
+                        format!(
+                            "{}: {} samples, cps {}",
+                            current_kind,
+                            preview.samples_ma.len(),
+                            preview.cps
+                        )
+                    };
+                    if current_kind == "Step" {
+                        self.send(Cmd::ProgramCurrentStep {
+                            cps: preview.cps,
+                            zero_count: self.current_step_zero as u32,
+                            high_count: self.current_step_high as u32,
+                            amp_q16: dsp::current_ma_to_q16(self.current_amp_ma),
+                            looped: self.current_step_loop,
+                            gain_q8_8: dsp::current_gain_to_q8_8(self.current_gain),
+                            description,
+                        });
+                    } else {
+                        self.send(Cmd::ProgramCurrentWave {
+                            samples_q16: preview
+                                .samples_ma
+                                .iter()
+                                .map(|&sample| dsp::current_ma_to_q16(sample))
+                                .collect(),
+                            cps: preview.cps,
+                            hold: false,
+                            gain_q8_8: dsp::current_gain_to_q8_8(self.current_gain),
+                            description,
+                        });
+                    }
+                }
+                if ui.add_enabled(enabled, egui::Button::new("Stop")).clicked() {
+                    self.busy = true;
+                    self.send(Cmd::StopCurrent);
+                }
+            });
+            ui.label(&self.current_status);
+        });
         ui.group(|ui| {
             ui.label(egui::RichText::new("DDS tone").strong());
             ui.horizontal(|ui| {

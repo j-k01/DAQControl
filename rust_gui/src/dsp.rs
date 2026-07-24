@@ -8,6 +8,31 @@ pub const BRAM_FRAME_SAMPLES: usize = 4;
 
 pub const DDS_SAMPLE_RATE_HZ: f64 = 1.0e9;
 pub const DDS_PHASE_BITS: u32 = 24;
+pub const CURRENT_PLAYER_HZ: f64 = 50.0e6;
+pub const CURRENT_WAVE_MAX: usize = 1024;
+pub const CURRENT_WAVE_MIN_PERIODIC: usize = 16;
+pub const CURRENT_MAX_MA: f64 = 0x7FFF_FFFFu32 as f64 / 65536.0;
+pub const CURRENT_GAIN_MAX: f64 = 0xFFFFu32 as f64 / 256.0;
+pub const CURRENT_PRESETS: [&str; 4] = ["Sine", "Square", "Constant current", "Step"];
+
+#[derive(Clone)]
+pub struct CurrentWave {
+    pub samples_ma: Vec<f64>,
+    pub cps: u32,
+    pub actual_hz: f64,
+}
+
+#[derive(Clone, Copy)]
+pub struct CurrentWaveConfig<'a> {
+    pub kind: &'a str,
+    pub amplitude_ma: f64,
+    pub frequency_hz: f64,
+    pub duty_percent: f64,
+    pub step_zero: usize,
+    pub step_high: usize,
+    pub step_cps: u32,
+    pub step_loop: bool,
+}
 
 /// 16:4 DAC crossbar sources, in the fixed display order. `.1` is the firmware
 /// NSRC token, `.0` is the human label.
@@ -124,6 +149,93 @@ pub fn clamp_s16(v: f64) -> i32 {
 
 pub fn volts_to_counts(v: f64) -> i32 {
     clamp_s16(v / VOLTS_PER_COUNT)
+}
+pub fn current_ma_to_q16(ma: f64) -> u32 {
+    (ma.clamp(0.0, CURRENT_MAX_MA) * 65536.0).round() as u32
+}
+
+pub fn current_gain_to_q8_8(gain: f64) -> u16 {
+    (gain.clamp(0.0, CURRENT_GAIN_MAX) * 256.0).round() as u16
+}
+
+/// Choose the longest legal waveform and a 16-bit clocks-per-sample divider
+/// that best approximate a requested periodic frequency.
+pub fn choose_current_timing(freq_hz: f64) -> (usize, u32, f64) {
+    let frequency = freq_hz.max(CURRENT_PLAYER_HZ / (u16::MAX as f64 * CURRENT_WAVE_MAX as f64));
+    let target_ticks = CURRENT_PLAYER_HZ / frequency;
+    let max_samples =
+        (target_ticks.round() as usize).clamp(CURRENT_WAVE_MIN_PERIODIC, CURRENT_WAVE_MAX);
+    let mut best = (CURRENT_WAVE_MIN_PERIODIC, 1u32, f64::INFINITY);
+    for samples in CURRENT_WAVE_MIN_PERIODIC..=max_samples {
+        let cps = (target_ticks / samples as f64)
+            .round()
+            .clamp(1.0, u16::MAX as f64) as u32;
+        let actual = CURRENT_PLAYER_HZ / (cps as f64 * samples as f64);
+        let error = (actual - frequency).abs();
+        if error < best.2 || (error == best.2 && samples > best.0) {
+            best = (samples, cps, error);
+        }
+    }
+    let actual = CURRENT_PLAYER_HZ / (best.1 as f64 * best.0 as f64);
+    (best.0, best.1, actual)
+}
+
+pub fn gen_current_wave(config: CurrentWaveConfig<'_>) -> CurrentWave {
+    let amplitude = config.amplitude_ma.clamp(0.0, CURRENT_MAX_MA);
+    match config.kind {
+        "Constant current" => CurrentWave {
+            samples_ma: vec![amplitude],
+            cps: 1,
+            actual_hz: 0.0,
+        },
+        "Step" => {
+            let zero = config.step_zero.min(CURRENT_WAVE_MAX);
+            let high = config.step_high.min(CURRENT_WAVE_MAX.saturating_sub(zero));
+            let mut samples = vec![0.0; zero];
+            samples.extend(std::iter::repeat_n(amplitude, high));
+            if samples.is_empty() {
+                samples.push(0.0);
+            }
+            let cps = config.step_cps.clamp(1, u16::MAX as u32);
+            CurrentWave {
+                actual_hz: if config.step_loop {
+                    CURRENT_PLAYER_HZ / (cps as f64 * samples.len() as f64)
+                } else {
+                    0.0
+                },
+                samples_ma: samples,
+                cps,
+            }
+        }
+        "Square" => {
+            let (samples, cps, actual_hz) = choose_current_timing(config.frequency_hz);
+            let high = ((samples as f64 * config.duty_percent.clamp(0.1, 99.9) / 100.0).round()
+                as usize)
+                .clamp(1, samples - 1);
+            let samples_ma = (0..samples)
+                .map(|index| if index < high { amplitude } else { 0.0 })
+                .collect();
+            CurrentWave {
+                samples_ma,
+                cps,
+                actual_hz,
+            }
+        }
+        _ => {
+            let (samples, cps, actual_hz) = choose_current_timing(config.frequency_hz);
+            let samples_ma = (0..samples)
+                .map(|index| {
+                    let phase = 2.0 * std::f64::consts::PI * index as f64 / samples as f64;
+                    0.5 * amplitude * (1.0 - phase.cos())
+                })
+                .collect();
+            CurrentWave {
+                samples_ma,
+                cps,
+                actual_hz,
+            }
+        }
+    }
 }
 
 // ------------------------------------------------------------- interleave fix
@@ -359,6 +471,66 @@ mod tests {
     fn q16() {
         assert_eq!(izh_to_q16(1.0), 0x10000);
         assert_eq!(izh_to_q16(0.02), (0.02f64 * 65536.0).round() as u32);
+        assert_eq!(current_ma_to_q16(1.0), 0x10000);
+        assert_eq!(current_gain_to_q8_8(20.0), 0x1400);
+    }
+
+    #[test]
+    fn current_timing_uses_legal_precise_parameters() {
+        for requested in [2_000.0, 5_000.0, 100_000.0] {
+            let (samples, cps, actual) = choose_current_timing(requested);
+            assert!((CURRENT_WAVE_MIN_PERIODIC..=CURRENT_WAVE_MAX).contains(&samples));
+            assert!((1..=u16::MAX as u32).contains(&cps));
+            assert!((actual - requested).abs() / requested < 0.001);
+        }
+    }
+
+    #[test]
+    fn current_profiles_have_expected_shapes() {
+        let sine = gen_current_wave(CurrentWaveConfig {
+            kind: "Sine",
+            amplitude_ma: 15.0,
+            frequency_hz: 10_000.0,
+            duty_percent: 50.0,
+            step_zero: 0,
+            step_high: 0,
+            step_cps: 1,
+            step_loop: false,
+        });
+        assert!(sine.samples_ma.iter().all(|&sample| sample >= 0.0));
+        assert!(sine.samples_ma.iter().copied().fold(0.0, f64::max) > 14.9);
+
+        let square = gen_current_wave(CurrentWaveConfig {
+            kind: "Square",
+            amplitude_ma: 15.0,
+            frequency_hz: 10_000.0,
+            duty_percent: 25.0,
+            step_zero: 0,
+            step_high: 0,
+            step_cps: 1,
+            step_loop: false,
+        });
+        let high = square
+            .samples_ma
+            .iter()
+            .filter(|&&sample| sample > 0.0)
+            .count();
+        assert!((high as f64 / square.samples_ma.len() as f64 - 0.25).abs() < 0.02);
+
+        let step = gen_current_wave(CurrentWaveConfig {
+            kind: "Step",
+            amplitude_ma: 12.0,
+            frequency_hz: 0.0,
+            duty_percent: 50.0,
+            step_zero: 7,
+            step_high: 11,
+            step_cps: 3,
+            step_loop: false,
+        });
+        assert_eq!(step.samples_ma.len(), 18);
+        assert!(step.samples_ma[..7].iter().all(|&sample| sample == 0.0));
+        assert!(step.samples_ma[7..].iter().all(|&sample| sample == 12.0));
+        assert_eq!(step.actual_hz, 0.0);
     }
 
     #[test]

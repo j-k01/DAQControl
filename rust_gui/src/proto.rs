@@ -95,6 +95,23 @@ pub enum Cmd {
         window: usize,
     },
     StopLiveAverage,
+    ProgramCurrentWave {
+        samples_q16: Vec<u32>,
+        cps: u32,
+        hold: bool,
+        gain_q8_8: u16,
+        description: String,
+    },
+    ProgramCurrentStep {
+        cps: u32,
+        zero_count: u32,
+        high_count: u32,
+        amp_q16: u32,
+        looped: bool,
+        gain_q8_8: u16,
+        description: String,
+    },
+    StopCurrent,
     ProgramBram {
         chans: Vec<u8>,
         words: Vec<u32>,
@@ -131,6 +148,11 @@ pub enum Evt {
         target: String,
         ok: bool,
         profile: String,
+    },
+    CurrentDone {
+        ok: bool,
+        running: bool,
+        status: String,
     },
     Status(String),
     Error(String),
@@ -627,6 +649,119 @@ fn handle(l: &mut Link, cfg: &BoardCfg, cmd: Cmd, tx: &Sender<Evt>, ctx: &egui::
             }
             Err(e) => emit(Evt::Error(format!("Collect Ethernet: {e}"))),
         },
+        Cmd::ProgramCurrentWave {
+            samples_q16,
+            cps,
+            hold,
+            gain_q8_8,
+            description,
+        } => {
+            let mut ok = set_current_gain(l, gain_q8_8);
+            let mut reply = if ok {
+                String::new()
+            } else {
+                "CURG failed or timed out".into()
+            };
+            if samples_q16.is_empty() || samples_q16.len() > dsp::CURRENT_WAVE_MAX {
+                ok = false;
+                reply = "current waveform must contain 1..1024 samples".into();
+            } else if ok {
+                let mode = if hold { " hold" } else { "" };
+                l.send_line(&format!(
+                    "CURW {} {}{}",
+                    cps.clamp(1, u16::MAX as u32),
+                    samples_q16.len(),
+                    mode
+                ));
+                let ready = l
+                    .read_until(&["CWRD"], Duration::from_secs(2))
+                    .unwrap_or_default();
+                if !ready.starts_with("CWRD") {
+                    ok = false;
+                    reply = if ready.is_empty() {
+                        "CURW ready timeout".into()
+                    } else {
+                        ready
+                    };
+                } else {
+                    let mut bytes = Vec::with_capacity(samples_q16.len() * 4);
+                    for word in &samples_q16 {
+                        bytes.extend_from_slice(&word.to_le_bytes());
+                    }
+                    ok = l.port.write_all(&bytes).is_ok() && l.port.flush().is_ok();
+                    if ok {
+                        reply = l
+                            .read_until(&["OK CURW"], Duration::from_secs(4))
+                            .unwrap_or_default();
+                        ok = reply.starts_with("OK CURW");
+                    } else {
+                        reply = "CURW binary transfer failed".into();
+                    }
+                }
+            }
+            emit(Evt::CurrentDone {
+                ok,
+                running: ok,
+                status: if ok {
+                    format!("{description}: {reply}")
+                } else {
+                    reply
+                },
+            });
+        }
+        Cmd::ProgramCurrentStep {
+            cps,
+            zero_count,
+            high_count,
+            amp_q16,
+            looped,
+            gain_q8_8,
+            description,
+        } => {
+            let mut ok = set_current_gain(l, gain_q8_8);
+            let mut reply = if ok {
+                String::new()
+            } else {
+                "CURG failed or timed out".into()
+            };
+            if ok {
+                reply = l.cmd(
+                    &format!(
+                        "CURS {} {} {} 0x{:08X} {}",
+                        cps.clamp(1, u16::MAX as u32),
+                        zero_count,
+                        high_count,
+                        amp_q16,
+                        if looped { "loop" } else { "hold" }
+                    ),
+                    &["OK CURS"],
+                    Duration::from_secs(3),
+                );
+                ok = reply.starts_with("OK CURS");
+            }
+            emit(Evt::CurrentDone {
+                ok,
+                running: ok,
+                status: if ok {
+                    format!("{description}: {reply}")
+                } else {
+                    reply
+                },
+            });
+        }
+        Cmd::StopCurrent => {
+            let reply = l.cmd("CURP off", &["CURP off"], Duration::from_secs(2));
+            let ok = reply.starts_with("CURP off");
+            emit(Evt::CurrentDone {
+                ok,
+                running: false,
+                status: if ok {
+                    "current player stopped".into()
+                } else {
+                    reply
+                },
+            });
+        }
         Cmd::ProgramBram {
             chans,
             words,
@@ -641,6 +776,14 @@ fn handle(l: &mut Link, cfg: &BoardCfg, cmd: Cmd, tx: &Sender<Evt>, ctx: &egui::
     }
 }
 
+fn set_current_gain(l: &mut Link, gain_q8_8: u16) -> bool {
+    let reply = l.cmd(
+        &format!("CURG 0x{gain_q8_8:04X}"),
+        &["OK CURG"],
+        Duration::from_secs(2),
+    );
+    reply.starts_with("OK CURG")
+}
 fn apply_profile(l: &mut Link, target: &str, profile: &str) -> bool {
     // built-in name -> NEUR <t> <profile>; else assume caller sent params.
     if dsp::BUILTIN_PROFILES.contains(&profile) {
