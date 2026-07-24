@@ -26,6 +26,8 @@ this app is the host-side control/scope, same as the Python GUI.
 - **Neuron control** — built-in + saved **custom profiles**
   (`~/.daq_neuron_profiles.json`), per-neuron running-profile readout, live
   a/b/c/d/I params, and explicit integration `dt` + update-period timing.
+  Connect restores the established `period=1`, `dt=0.5` operating point without
+  changing any route or per-neuron profile.
 - **Verified current player** — arbitrary, periodic, constant, and step
   programs are uploaded over UART, then registers 16 and 20 are read back to
   verify run mode, sample count, timing, and DAC-mirror gain.

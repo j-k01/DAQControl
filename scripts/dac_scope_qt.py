@@ -10,7 +10,8 @@ on connect -- acquisition is opt-in:
     and draws it in the main plots (off by default). Auto-samples are NOT saved.
 
   - Connection: pick the UART COM port and connect/reconnect (no streaming and
-    no route/neuron reprogramming); the GUI reads reg17 and shows live routes.
+    no route/profile reprogramming); the GUI reads reg17, shows live routes,
+    and restores the expected fast global neuron timing (period=1, dt=0.5).
   - Per channel (DAC0..3): pick any crossbar source -- Off / DDS / BRAM 0-3 /
     Spike 0-3 / Monitor 0-3 (per-neuron current) / Current source / Tag -- from
     the source dropdown, then hit "Confirm route" to commit. Confirming sends
@@ -730,9 +731,20 @@ class DacControl:
     def set_neuron(self, ch, profile):
         return self.cmd(f"NEUR {ch} {profile}", ok=("OK", "NEUR", "ERR"))
 
-    def set_neuron_dt(self, dt_hex):
-        # Integration timestep (Q16.16) for all neurons: larger = faster sim.
-        return self.cmd(f"NEUR all dt 0x{dt_hex:X}", ok=("OK", "NEUR", "ERR"))
+    def set_neuron_timing(self, dt_hex, period=1):
+        """Apply global neuron cadence without touching profiles or routes.
+
+        Both values matter to wall-clock spike rate. The FPGA power-on fallback
+        (period=256, dt=0.0625) advances simulated time 2048x more slowly than
+        the established GUI operating point (period=1, dt=0.5).
+        """
+        replies = [
+            self.cmd(f"NEUR all period {int(period)}",
+                     ok=("OK", "NEUR", "ERR")),
+            self.cmd(f"NEUR all dt 0x{dt_hex:X}",
+                     ok=("OK", "NEUR", "ERR")),
+        ]
+        return replies
 
     def status_lines(self, timeout=1.5):
         """Send STAT and collect the multi-line response. Used to verify the
@@ -2399,6 +2411,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
         try:
             self.dac = DacControl(port)
             live_sources, xbar_value = self.dac.get_sources()
+            timing_replies = self.dac.set_neuron_timing(
+                NEURON_DT_OPTIONS[self.dt_cb.currentIndex()][1], period=1)
+            if any(not reply or reply.startswith("ERR")
+                   for reply in timing_replies):
+                raise RuntimeError(
+                    "DAQ firmware did not accept neuron timing setup: "
+                    + " | ".join(timing_replies))
         except Exception as e:  # noqa: BLE001
             self.conn_lbl.setText(f"UART connect failed: {e}")
             self.conn_lbl.setStyleSheet("color:#E57373;")
@@ -2414,8 +2433,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return
         self.connect_btn.setText("Reconnect")
         self._set_controls_enabled(True)
-        # Connection is observational: reflect reg17 without changing routes,
-        # neuron profiles, or any acquisition state.
+        # Connection preserves reg17 and all per-neuron profiles. Only the two
+        # global timing values are restored to the established fast operating
+        # point; firmware applies those with mask=0, so no profile is reloaded.
         for ch, label in enumerate(live_sources):
             self.src_cbs[ch].blockSignals(True)
             self.src_cbs[ch].setCurrentText(label)
@@ -2436,8 +2456,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.stream_btn.setText("Start Auto-Sample")
         self.conn_lbl.setText(f"connected {port} (idle)")
         self.conn_lbl.setStyleSheet("color:#81C784;")
-        self.status.setText("Connected. Use Collect Ethernet for a saved "
-                            "snapshot, or Auto-Sample for 1/s live view.")
+        self.status.setText(
+            "Connected. Neuron timing: period=1, dt=0.5 (routes/profiles "
+            "preserved). Use Collect Ethernet for a saved snapshot, or "
+            "Auto-Sample for 1/s live view.")
 
     def _set_controls_enabled(self, on):
         self._controls_enabled = on
@@ -2731,7 +2753,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
     def _on_dt(self, idx):
         if self.dac:
             dt = NEURON_DT_OPTIONS[idx][1]
-            self._bg(lambda: self.dac.set_neuron_dt(dt))
+            self._bg(lambda: self.dac.set_neuron_timing(dt, period=1))
 
     # ---- neuron parameters (explicit Program button) ----
     def _on_load_profile_values(self, idx):

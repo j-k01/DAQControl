@@ -12,6 +12,9 @@ use crate::burst_async::{decode_chip, decode_pcap, parse_brdo_request, Reassembl
 use crate::dsp;
 use crate::rolling::{Capture, RollingAverage};
 
+const NEURON_RUNTIME_DT: u32 = 0x0000_8000; // 0.5 Q16.16
+const NEURON_RUNTIME_PERIOD: u32 = 1;
+
 #[derive(Clone)]
 pub struct BoardCfg {
     pub board_ip: String,
@@ -358,6 +361,11 @@ fn worker(
                     match Link::open(&port) {
                         Ok(mut opened) => {
                             let routes = read_routes(&mut opened);
+                            let timing = apply_neuron_timing(
+                                &mut opened,
+                                NEURON_RUNTIME_DT,
+                                NEURON_RUNTIME_PERIOD,
+                            );
                             let current = read_current_state(&mut opened);
                             link = Some(opened);
                             emit(&tx, &ctx, Evt::Connected(Ok(port)));
@@ -398,6 +406,10 @@ fn worker(
                                         status: detail,
                                     },
                                 ),
+                            }
+                            match timing {
+                                Ok(detail) => emit(&tx, &ctx, Evt::Status(detail)),
+                                Err(detail) => emit(&tx, &ctx, Evt::Error(detail)),
                             }
                         }
                         Err(error) => emit(&tx, &ctx, Evt::Connected(Err(error))),
@@ -710,28 +722,10 @@ fn handle(l: &mut Link, cfg: &BoardCfg, cmd: Cmd, tx: &Sender<Evt>, ctx: &egui::
                 profile: profile_label,
             });
         }
-        Cmd::SetNeuronTiming { dt, period } => {
-            let period_reply = l.cmd(
-                &format!("NEUR all period {}", period.clamp(1, 0xFF_FFFF)),
-                &["OK NEUR"],
-                Duration::from_secs(1),
-            );
-            let dt_reply = l.cmd(
-                &format!("NEUR all dt 0x{dt:X}"),
-                &["OK NEUR"],
-                Duration::from_secs(1),
-            );
-            emit(Evt::Status(
-                if period_reply.starts_with("OK NEUR") && dt_reply.starts_with("OK NEUR") {
-                    format!(
-                        "neuron timing applied: period={} clocks, dt=0x{dt:X}",
-                        period
-                    )
-                } else {
-                    format!("neuron timing failed: period=[{period_reply}], dt=[{dt_reply}]")
-                },
-            ));
-        }
+        Cmd::SetNeuronTiming { dt, period } => match apply_neuron_timing(l, dt, period) {
+            Ok(detail) => emit(Evt::Status(detail)),
+            Err(detail) => emit(Evt::Error(detail)),
+        },
         Cmd::SetCic(on) => {
             let r = l.cmd(
                 &format!("STRM CIC {}", if on { "on" } else { "off" }),
@@ -1017,6 +1011,29 @@ fn set_current_gain(l: &mut Link, gain_q8_8: u16) -> bool {
         Duration::from_secs(2),
     );
     reply.starts_with("OK CURG")
+}
+
+fn apply_neuron_timing(link: &mut Link, dt: u32, period: u32) -> Result<String, String> {
+    let period = period.clamp(1, 0xFF_FFFF);
+    let period_reply = link.cmd(
+        &format!("NEUR all period {period}"),
+        &["OK NEUR"],
+        Duration::from_secs(1),
+    );
+    let dt_reply = link.cmd(
+        &format!("NEUR all dt 0x{dt:X}"),
+        &["OK NEUR"],
+        Duration::from_secs(1),
+    );
+    if period_reply.starts_with("OK NEUR") && dt_reply.starts_with("OK NEUR") {
+        Ok(format!(
+            "neuron timing applied: period={period} clocks, dt=0x{dt:X}; routes/profiles preserved"
+        ))
+    } else {
+        Err(format!(
+            "neuron timing failed: period=[{period_reply}], dt=[{dt_reply}]"
+        ))
+    }
 }
 
 #[derive(Clone, Copy)]

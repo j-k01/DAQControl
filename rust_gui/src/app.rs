@@ -238,7 +238,8 @@ impl DaqApp {
                     self.connected = true;
                     self.conn_ok = true;
                     self.conn_msg = format!("connected {port} (idle)");
-                    self.status = "Connected without changing board routes or neuron state.".into();
+                    self.status =
+                        "Connected: routes/profiles preserved; fast neuron timing restored.".into();
                 }
                 Evt::Connected(Err(e)) => {
                     self.connected = false;
