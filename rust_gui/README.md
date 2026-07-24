@@ -18,8 +18,9 @@ this app is the host-side control/scope, same as the Python GUI.
 
 ## Features (parity with the Python GUI)
 
-- **4-channel scope** — Time or FFT (in-house radix-2 FFT), autoscale; plots are
-  fully interactive (zoom/pan) — an upgrade over the fixed-span Qt view.
+- **4-channel scope** — Time or FFT (in-house radix-2 FFT), always-visible
+  one-shot fit and optional continuous per-waveform Y autoscale; plots remain
+  fully interactive (zoom/pan).
 - **Visual crossbar (XBAR tab)** — the 16→4 routing drawn as lines; a route is
   **solid only once applied**, staged picks are **dashed**, so the picture never
   claims a switch the board hasn't taken. "Confirm route" commits via `NSRC`.

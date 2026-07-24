@@ -61,6 +61,7 @@ pub struct DaqApp {
     time_y_ranges: [[f64; 2]; 4],
     fft_y_ranges: [[f64; 2]; 4],
     deinterleave: bool,
+    auto_y: bool,
     plot_view_revision: u64,
 
     // capture controls
@@ -166,6 +167,7 @@ impl DaqApp {
             time_y_ranges: [[-0.95, 0.95]; 4],
             fft_y_ranges: [[-90.0, 5.0]; 4],
             deinterleave: false,
+            auto_y: false,
             plot_view_revision: 0,
             collect_idx: 0,
             capt_frames_idx: 2,
@@ -479,6 +481,15 @@ impl DaqApp {
             }
             if self.connected && ui.button("Disconnect").clicked() {
                 self.send(Cmd::Disconnect);
+            }
+            if ui.button("Fit plots").clicked() {
+                self.autoscale_once();
+                self.plot_view_revision = self.plot_view_revision.wrapping_add(1);
+            }
+            let auto_changed = ui.checkbox(&mut self.auto_y, "Auto Y").changed();
+            if auto_changed && self.auto_y {
+                self.autoscale_once();
+                self.plot_view_revision = self.plot_view_revision.wrapping_add(1);
             }
             let mut dark = self.dark_mode;
             if ui.checkbox(&mut dark, "Dark").changed() {
@@ -1187,6 +1198,14 @@ impl DaqApp {
                 self.autoscale_once();
                 self.plot_view_revision = self.plot_view_revision.wrapping_add(1);
             }
+            if ui
+                .checkbox(&mut self.auto_y, "Continuously autoscale new data")
+                .changed()
+                && self.auto_y
+            {
+                self.autoscale_once();
+                self.plot_view_revision = self.plot_view_revision.wrapping_add(1);
+            }
             ui.horizontal(|ui| {
                 if ui.selectable_label(!self.fft_view, "Time").clicked() {
                     self.fft_view = false;
@@ -1228,6 +1247,7 @@ impl DaqApp {
                     }
                 });
             if range_changed {
+                self.auto_y = false;
                 self.plot_view_revision = self.plot_view_revision.wrapping_add(1);
             }
             ui.horizontal(|ui| {
@@ -1400,6 +1420,10 @@ impl eframe::App for DaqApp {
 
         if self.display_dirty {
             self.rebuild_display();
+            if self.auto_y {
+                self.autoscale_once();
+                self.plot_view_revision = self.plot_view_revision.wrapping_add(1);
+            }
         }
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
