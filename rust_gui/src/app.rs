@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use eframe::egui;
 use egui::{Color32, Pos2, Stroke};
-use egui_plot::{Line, Plot, PlotBounds, PlotPoints};
+use egui_plot::{Line, Plot, PlotPoints};
 
 use crate::dsp;
 use crate::proto::{self, BoardCfg, Cmd, Evt, LiveShared};
@@ -60,6 +60,7 @@ pub struct DaqApp {
     time_y_ranges: [[f64; 2]; 4],
     fft_y_ranges: [[f64; 2]; 4],
     deinterleave: bool,
+    plot_view_revision: u64,
 
     // capture controls
     collect_idx: usize,
@@ -163,6 +164,7 @@ impl DaqApp {
             time_y_ranges: [[-0.95, 0.95]; 4],
             fft_y_ranges: [[-90.0, 5.0]; 4],
             deinterleave: false,
+            plot_view_revision: 0,
             collect_idx: 0,
             capt_frames_idx: 2,
             auto_sample: false,
@@ -1124,15 +1126,18 @@ impl DaqApp {
             }
             if ui.button("Autoscale once").clicked() {
                 self.autoscale_once();
+                self.plot_view_revision = self.plot_view_revision.wrapping_add(1);
             }
             ui.horizontal(|ui| {
                 if ui.selectable_label(!self.fft_view, "Time").clicked() {
                     self.fft_view = false;
                     self.display_dirty = true;
+                    self.plot_view_revision = self.plot_view_revision.wrapping_add(1);
                 }
                 if ui.selectable_label(self.fft_view, "FFT").clicked() {
                     self.fft_view = true;
                     self.display_dirty = true;
+                    self.plot_view_revision = self.plot_view_revision.wrapping_add(1);
                 }
             });
             let ranges = if self.fft_view {
@@ -1141,6 +1146,7 @@ impl DaqApp {
                 &mut self.time_y_ranges
             };
             let step = if self.fft_view { 5.0 } else { 0.05 };
+            let mut range_changed = false;
             egui::Grid::new("fixed_y_ranges")
                 .num_columns(3)
                 .show(ui, |ui| {
@@ -1150,14 +1156,21 @@ impl DaqApp {
                     ui.end_row();
                     for (channel, range) in ranges.iter_mut().enumerate() {
                         ui.label(format!("ADC{channel}"));
-                        ui.add(egui::DragValue::new(&mut range[0]).speed(step));
-                        ui.add(egui::DragValue::new(&mut range[1]).speed(step));
+                        range_changed |= ui
+                            .add(egui::DragValue::new(&mut range[0]).speed(step))
+                            .changed();
+                        range_changed |= ui
+                            .add(egui::DragValue::new(&mut range[1]).speed(step))
+                            .changed();
                         if range[0] >= range[1] {
                             range[1] = range[0] + step;
                         }
                         ui.end_row();
                     }
                 });
+            if range_changed {
+                self.plot_view_revision = self.plot_view_revision.wrapping_add(1);
+            }
             ui.horizontal(|ui| {
                 let cic = ui.button("CIC on");
                 if cic.clicked() && self.connected {
@@ -1373,6 +1386,18 @@ impl eframe::App for DaqApp {
                 });
                 return;
             }
+            let mut common_x = [f64::INFINITY, f64::NEG_INFINITY];
+            for point in self.series.iter().flatten() {
+                if point[0].is_finite() {
+                    common_x[0] = common_x[0].min(point[0]);
+                    common_x[1] = common_x[1].max(point[0]);
+                }
+            }
+            if !common_x[0].is_finite() || !common_x[1].is_finite() {
+                common_x = [0.0, 1.0];
+            } else if common_x[0] == common_x[1] {
+                common_x[1] = common_x[0] + 1.0 / self.fs;
+            }
             let h = (ui.available_height() - 8.0) / 4.0;
             for ch in 0..4 {
                 let (xlabel, ylabel) = if self.fft_view { ("Hz", "dBFS") } else { ("s", "V") };
@@ -1383,23 +1408,22 @@ impl eframe::App for DaqApp {
                 } else {
                     self.time_y_ranges[ch]
                 };
-                let plot = Plot::new(format!("plot{ch}"))
+                let plot_id = ("adc_plot", ch, self.plot_view_revision, self.fft_view);
+                let x_link_id =
+                    egui::Id::new(("adc_plot_x", self.plot_view_revision, self.fft_view));
+                let plot = Plot::new(plot_id)
                     .height(h)
                     .x_axis_label(xlabel)
                     .y_axis_label(format!("ch{ch} [{ylabel}]"))
                     .allow_scroll(false)
-                    .auto_bounds(egui::Vec2b::new(true, false));
-                plot.show(ui, |plot_ui| {
-                    let mut bounds = plot_ui.plot_bounds();
-                    let fixed_y = PlotBounds::from_min_max(
-                        [bounds.min()[0], range[0]],
-                        [bounds.max()[0], range[1]],
-                    );
-                    bounds.set_y(&fixed_y);
-                    plot_ui.set_auto_bounds(egui::Vec2b::new(true, false));
-                    plot_ui.set_plot_bounds(bounds);
-                    plot_ui.line(line);
-                });
+                    .auto_bounds(egui::Vec2b::new(true, false))
+                    .include_x(common_x[0])
+                    .include_x(common_x[1])
+                    .include_y(range[0])
+                    .include_y(range[1])
+                    .link_axis(x_link_id, true, false)
+                    .link_cursor(x_link_id, true, false);
+                plot.show(ui, |plot_ui| plot_ui.line(line));
             }
         });
     }

@@ -239,24 +239,23 @@ impl Link {
         const SYNC: [u8; 4] = [0xFE, 0x10, 0xCA, 0xFE];
         self.send_line(cmd);
         let deadline = Instant::now() + timeout;
-        // find sync in the raw stream
-        let mut win: Vec<u8> = Vec::new();
-        // seed with anything already buffered
+        // Seed with anything already buffered. Keep the bytes following the
+        // sync in this same chunk: on Windows the sync and much of the payload
+        // commonly arrive in one ReadFile completion.
         let mut stream = std::mem::take(&mut self.rx);
         loop {
-            for &b in &stream {
-                win.push(b);
-                if win.len() > 4 {
-                    win.remove(0);
-                }
-                if win == SYNC {
-                    // collect remaining bytes after the sync from this chunk
-                    return self.read_exact(need, deadline);
-                }
+            if let Some(payload_start) = capture_payload_start(&stream, &SYNC) {
+                let initial = stream.split_off(payload_start);
+                return self.read_exact(initial, need, deadline);
             }
-            stream.clear();
             if Instant::now() >= deadline {
                 return None;
+            }
+            // Retain the last three bytes so a sync split across serial reads
+            // remains detectable, while discarding arbitrary textual chatter.
+            if stream.len() > SYNC.len() - 1 {
+                let keep_from = stream.len() - (SYNC.len() - 1);
+                stream.drain(..keep_from);
             }
             let mut b = [0u8; 4096];
             if let Ok(n) = self.port.read(&mut b) {
@@ -265,9 +264,12 @@ impl Link {
         }
     }
 
-    fn read_exact(&mut self, need: usize, deadline: Instant) -> Option<Vec<u8>> {
-        let mut data = std::mem::take(&mut self.rx);
-        data.truncate(need);
+    fn read_exact(&mut self, mut data: Vec<u8>, need: usize, deadline: Instant) -> Option<Vec<u8>> {
+        if data.len() >= need {
+            let trailing = data.split_off(need);
+            self.rx.extend_from_slice(&trailing);
+            return Some(data);
+        }
         while data.len() < need {
             if Instant::now() >= deadline {
                 return None;
@@ -277,12 +279,22 @@ impl Link {
                 Ok(n) if n > 0 => {
                     let take = (need - data.len()).min(n);
                     data.extend_from_slice(&b[..take]);
+                    if take < n {
+                        self.rx.extend_from_slice(&b[take..n]);
+                    }
                 }
                 _ => {}
             }
         }
         Some(data)
     }
+}
+
+fn capture_payload_start(stream: &[u8], sync: &[u8; 4]) -> Option<usize> {
+    stream
+        .windows(sync.len())
+        .position(|window| window == sync)
+        .map(|offset| offset + sync.len())
 }
 
 pub fn spawn(ctx: egui::Context, cfg: BoardCfg) -> (Sender<Cmd>, Receiver<Evt>, LiveShared) {
@@ -1027,6 +1039,28 @@ fn save_capture(cfg: &BoardCfg, kind: &str, chans: &[Vec<i16>; 4]) -> Option<Str
     }
     std::fs::write(&path, out).ok()?;
     Some(path.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::capture_payload_start;
+
+    #[test]
+    fn capture_sync_returns_payload_in_the_same_serial_chunk() {
+        let sync = [0xFE, 0x10, 0xCA, 0xFE];
+        let wire = [b'O', b'K', b'\r', b'\n', 0xFE, 0x10, 0xCA, 0xFE, 1, 2, 3, 4];
+        let start = capture_payload_start(&wire, &sync).expect("sync");
+        assert_eq!(&wire[start..], &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn capture_sync_can_be_found_after_a_split_read_is_joined() {
+        let sync = [0xFE, 0x10, 0xCA, 0xFE];
+        let mut wire = vec![b'\n', 0xFE, 0x10];
+        wire.extend_from_slice(&[0xCA, 0xFE, 9, 8]);
+        let start = capture_payload_start(&wire, &sync).expect("sync");
+        assert_eq!(&wire[start..], &[9, 8]);
+    }
 }
 
 #[cfg(test)]
