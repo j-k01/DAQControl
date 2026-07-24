@@ -78,7 +78,10 @@ pub enum Cmd {
         params: Vec<(String, u32)>,
         profile_label: String,
     },
-    SetNeuronDt(u32),
+    SetNeuronTiming {
+        dt: u32,
+        period: u32,
+    },
     SetCic(bool),
     StartStream {
         decim: u32,
@@ -113,6 +116,7 @@ pub enum Cmd {
         description: String,
     },
     StopCurrent,
+    ReadCurrent,
     ProgramBram {
         chans: Vec<u8>,
         words: Vec<u32>,
@@ -347,9 +351,14 @@ fn worker(
                 Cmd::Connect(port) => {
                     live_cfg = None;
                     rolling = None;
+                    if let Ok(mut snapshot) = shared.write() {
+                        snapshot.running = false;
+                        snapshot.sequence += 1;
+                    }
                     match Link::open(&port) {
                         Ok(mut opened) => {
                             let routes = read_routes(&mut opened);
+                            let current = read_current_state(&mut opened);
                             link = Some(opened);
                             emit(&tx, &ctx, Evt::Connected(Ok(port)));
                             match routes {
@@ -367,6 +376,26 @@ fn worker(
                                     Evt::RoutesRead {
                                         routes: [None; 4],
                                         detail,
+                                    },
+                                ),
+                            }
+                            match current {
+                                Ok(state) => emit(
+                                    &tx,
+                                    &ctx,
+                                    Evt::CurrentDone {
+                                        ok: true,
+                                        running: state.running,
+                                        status: state.describe(),
+                                    },
+                                ),
+                                Err(detail) => emit(
+                                    &tx,
+                                    &ctx,
+                                    Evt::CurrentDone {
+                                        ok: false,
+                                        running: false,
+                                        status: detail,
                                     },
                                 ),
                             }
@@ -433,16 +462,30 @@ fn worker(
                     );
                 }
                 other => {
-                    if live_cfg.is_some() {
+                    let live_effect = live_command_effect(&other);
+                    if live_cfg.is_some() && live_effect == LiveCommandEffect::Blocked {
                         emit(
                             &tx,
                             &ctx,
                             Evt::Error(
-                                "stop live trigger averaging before issuing another board command"
+                                "that acquisition command cannot share the board transport with live trigger averaging"
                                     .into(),
                             ),
                         );
                     } else if let Some(opened) = link.as_mut() {
+                        if live_cfg.is_some() && live_effect == LiveCommandEffect::ResetAverage {
+                            let config = live_cfg.expect("live config");
+                            rolling = Some(RollingAverage::new(config.window));
+                            live_started = Instant::now();
+                            batches = 0;
+                            if let Ok(mut snapshot) = shared.write() {
+                                *snapshot = LiveSnapshot {
+                                    sequence: snapshot.sequence + 1,
+                                    running: true,
+                                    ..LiveSnapshot::default()
+                                };
+                            }
+                        }
                         handle(opened, &cfg, other, &tx, &ctx);
                     } else {
                         emit(&tx, &ctx, Evt::Error("not connected".into()));
@@ -507,6 +550,32 @@ fn worker(
                 std::thread::sleep(Duration::from_millis(200));
             }
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LiveCommandEffect {
+    Blocked,
+    ReadOnly,
+    ResetAverage,
+}
+
+/// Board-control writes are serialized between complete BCPT batches. They do
+/// not contend with UART or UDP capture, and the rolling window is restarted so
+/// captures acquired under the old and new settings are never averaged together.
+fn live_command_effect(command: &Cmd) -> LiveCommandEffect {
+    match command {
+        Cmd::ReadRoutes | Cmd::ReadCurrent | Cmd::Stat => LiveCommandEffect::ReadOnly,
+        Cmd::ApplyRoute { .. }
+        | Cmd::SetDds(_)
+        | Cmd::ProgramNeuron { .. }
+        | Cmd::SetNeuronTiming { .. }
+        | Cmd::SetCic(_)
+        | Cmd::ProgramCurrentWave { .. }
+        | Cmd::ProgramCurrentStep { .. }
+        | Cmd::StopCurrent
+        | Cmd::ProgramBram { .. } => LiveCommandEffect::ResetAverage,
+        _ => LiveCommandEffect::Blocked,
     }
 }
 
@@ -641,12 +710,27 @@ fn handle(l: &mut Link, cfg: &BoardCfg, cmd: Cmd, tx: &Sender<Evt>, ctx: &egui::
                 profile: profile_label,
             });
         }
-        Cmd::SetNeuronDt(dt) => {
-            let _ = l.cmd(
+        Cmd::SetNeuronTiming { dt, period } => {
+            let period_reply = l.cmd(
+                &format!("NEUR all period {}", period.clamp(1, 0xFF_FFFF)),
+                &["OK NEUR"],
+                Duration::from_secs(1),
+            );
+            let dt_reply = l.cmd(
                 &format!("NEUR all dt 0x{dt:X}"),
                 &["OK NEUR"],
                 Duration::from_secs(1),
             );
+            emit(Evt::Status(
+                if period_reply.starts_with("OK NEUR") && dt_reply.starts_with("OK NEUR") {
+                    format!(
+                        "neuron timing applied: period={} clocks, dt=0x{dt:X}",
+                        period
+                    )
+                } else {
+                    format!("neuron timing failed: period=[{period_reply}], dt=[{dt_reply}]")
+                },
+            ));
         }
         Cmd::SetCic(on) => {
             let r = l.cmd(
@@ -752,6 +836,21 @@ fn handle(l: &mut Link, cfg: &BoardCfg, cmd: Cmd, tx: &Sender<Evt>, ctx: &egui::
                             .read_until(&["OK CURW"], Duration::from_secs(4))
                             .unwrap_or_default();
                         ok = reply.starts_with("OK CURW");
+                        if ok {
+                            match verify_current_state(
+                                l,
+                                cps,
+                                samples_q16.len().saturating_sub(1) as u32,
+                                hold,
+                                gain_q8_8,
+                            ) {
+                                Ok(detail) => reply = format!("{reply}; {detail}"),
+                                Err(error) => {
+                                    ok = false;
+                                    reply = error;
+                                }
+                            }
+                        }
                     } else {
                         reply = "CURW binary transfer failed".into();
                     }
@@ -796,6 +895,21 @@ fn handle(l: &mut Link, cfg: &BoardCfg, cmd: Cmd, tx: &Sender<Evt>, ctx: &egui::
                     Duration::from_secs(3),
                 );
                 ok = reply.starts_with("OK CURS");
+                if ok {
+                    match verify_current_state(
+                        l,
+                        cps,
+                        zero_count.saturating_add(high_count).saturating_sub(1),
+                        !looped,
+                        gain_q8_8,
+                    ) {
+                        Ok(detail) => reply = format!("{reply}; {detail}"),
+                        Err(error) => {
+                            ok = false;
+                            reply = error;
+                        }
+                    }
+                }
             }
             emit(Evt::CurrentDone {
                 ok,
@@ -809,17 +923,46 @@ fn handle(l: &mut Link, cfg: &BoardCfg, cmd: Cmd, tx: &Sender<Evt>, ctx: &egui::
         }
         Cmd::StopCurrent => {
             let reply = l.cmd("CURP off", &["CURP off"], Duration::from_secs(2));
-            let ok = reply.starts_with("CURP off");
+            let mut ok = reply.starts_with("CURP off");
+            let mut status = if ok {
+                "current player stopped".into()
+            } else {
+                reply
+            };
+            if ok {
+                match read_current_state(l) {
+                    Ok(state) if !state.running => status = state.describe(),
+                    Ok(state) => {
+                        ok = false;
+                        status = format!(
+                            "stop acknowledged but run bit remains set: reg16=0x{:08X}",
+                            state.control
+                        );
+                    }
+                    Err(error) => {
+                        ok = false;
+                        status = error;
+                    }
+                }
+            }
             emit(Evt::CurrentDone {
                 ok,
                 running: false,
-                status: if ok {
-                    "current player stopped".into()
-                } else {
-                    reply
-                },
+                status,
             });
         }
+        Cmd::ReadCurrent => match read_current_state(l) {
+            Ok(state) => emit(Evt::CurrentDone {
+                ok: true,
+                running: state.running,
+                status: state.describe(),
+            }),
+            Err(error) => emit(Evt::CurrentDone {
+                ok: false,
+                running: false,
+                status: error,
+            }),
+        },
         Cmd::ProgramBram {
             chans,
             words,
@@ -874,6 +1017,85 @@ fn set_current_gain(l: &mut Link, gain_q8_8: u16) -> bool {
         Duration::from_secs(2),
     );
     reply.starts_with("OK CURG")
+}
+
+#[derive(Clone, Copy)]
+struct CurrentState {
+    control: u32,
+    gain_q8_8: u16,
+    cps: u16,
+    last_index: u16,
+    hold: bool,
+    running: bool,
+}
+
+impl CurrentState {
+    fn describe(self) -> String {
+        format!(
+            "{}: reg16=0x{:08X}, cps={}, samples={}, mode={}, reg20 gain={:.3}x",
+            if self.running {
+                "current player RUNNING"
+            } else {
+                "current player STOPPED"
+            },
+            self.control,
+            self.cps,
+            u32::from(self.last_index) + 1,
+            if self.hold { "hold" } else { "loop" },
+            f64::from(self.gain_q8_8) / 256.0,
+        )
+    }
+}
+
+fn read_register(link: &mut Link, register: usize) -> Result<u32, String> {
+    let reply = link.cmd(
+        &format!("RDRW {register}"),
+        &[&format!("REG{register}")],
+        Duration::from_secs(2),
+    );
+    if reply.is_empty() {
+        return Err(format!("no UART response to RDRW {register}"));
+    }
+    parse_register_value(&reply, register)
+        .ok_or_else(|| format!("malformed register {register} readback: {reply}"))
+}
+
+fn read_current_state(link: &mut Link) -> Result<CurrentState, String> {
+    let control = read_register(link, 16)?;
+    let gain_q8_8 = (read_register(link, 20)? & 0xFFFF) as u16;
+    Ok(CurrentState {
+        control,
+        gain_q8_8,
+        cps: (control & 0xFFFF) as u16,
+        last_index: ((control >> 16) & 0x3FF) as u16,
+        hold: control & (1 << 26) != 0,
+        running: control & (1 << 30) != 0,
+    })
+}
+
+fn verify_current_state(
+    link: &mut Link,
+    cps: u32,
+    last_index: u32,
+    hold: bool,
+    gain_q8_8: u16,
+) -> Result<String, String> {
+    let state = read_current_state(link)?;
+    let expected_control = (cps.clamp(1, u16::MAX as u32) & 0xFFFF)
+        | ((last_index & 0x3FF) << 16)
+        | if hold { 1 << 26 } else { 0 }
+        | (1 << 30);
+    // Bit 31 is a restart toggle, so it intentionally is not compared.
+    if state.control & 0x7FFF_FFFF != expected_control || state.gain_q8_8 != gain_q8_8 {
+        return Err(format!(
+            "current-player readback mismatch: reg16=0x{:08X} expected 0x{:08X} (ignoring restart bit), reg20=0x{:04X} expected 0x{:04X}",
+            state.control, expected_control, state.gain_q8_8, gain_q8_8
+        ));
+    }
+    Ok(format!(
+        "hardware verified reg16=0x{:08X}, reg20=0x{:04X}",
+        state.control, state.gain_q8_8
+    ))
 }
 fn apply_profile(l: &mut Link, target: &str, profile: &str) -> bool {
     // built-in name -> NEUR <t> <profile>; else assume caller sent params.
@@ -1150,8 +1372,31 @@ mod tests {
     fn parses_crossbar_register_readback() {
         assert_eq!(parse_register_value("REG17 = 0x00006F61", 17), Some(0x6F61));
         assert_eq!(parse_register_value("REG17 = 4369", 17), Some(4369));
+        assert_eq!(
+            parse_register_value("REG16 = 0xC42F0001", 16),
+            Some(0xC42F0001)
+        );
         assert_eq!(parse_register_value("REG16 = 0x1111", 17), None);
         assert_eq!(parse_register_value("ERR unknown", 17), None);
+    }
+
+    #[test]
+    fn live_mode_allows_controls_but_blocks_competing_acquisitions() {
+        assert_eq!(
+            live_command_effect(&Cmd::SetNeuronTiming {
+                dt: 0x8000,
+                period: 1
+            }),
+            LiveCommandEffect::ResetAverage
+        );
+        assert_eq!(
+            live_command_effect(&Cmd::ReadCurrent),
+            LiveCommandEffect::ReadOnly
+        );
+        assert_eq!(
+            live_command_effect(&Cmd::UartCapture(1024)),
+            LiveCommandEffect::Blocked
+        );
     }
 
     #[test]

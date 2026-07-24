@@ -40,8 +40,11 @@ In the Capture panel:
 - Press **Start Live Trigger Average**.
 
 The current player must already be configured and running because `BCPT`
-waits for its hardware restart event. While continuous averaging owns the
-capture path, other board commands are rejected until averaging is stopped.
+waits for its hardware restart event. Programming and control commands remain
+available while averaging is active: the single worker applies each one
+between completed BCPT batches, then clears the rolling window. Competing
+acquisition commands (UART capture, one-shot Ethernet capture, and streaming)
+remain disabled until averaging is stopped.
 
 ## Correctness constraints
 
@@ -51,6 +54,8 @@ capture path, other board commands are rejected until averaging is stopped.
 - BCPT DDR stride is distinct from bytes per repetition; padding is never
   included in a repetition.
 - Changing sample length resets the rolling window rather than mixing layouts.
+- Any board-setting change made during live operation resets the rolling window
+  rather than mixing captures from different configurations.
 - The viewer shows only the average. Rendering cannot block capture or build up
   stale frames.
 

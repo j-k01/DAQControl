@@ -87,4 +87,10 @@ run_tb izh_monitor_integ_tb [list \
     ../izh_monitor_integ_tb.sv \
 ] {xpm}
 
+run_tb izh_current_to_spike_tb [list \
+    $izh_neuron_file \
+    ../../src/izh_dac_bank.sv \
+    ../izh_current_to_spike_tb.sv \
+]
+
 puts "Current-source unit tests passed."

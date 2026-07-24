@@ -44,9 +44,10 @@ on connect -- acquisition is opt-in:
         amplitude is in mA and can NEVER go negative. "Program" loads it via
         CURW or CURS; route Current source on a DAC to mirror the injected
         current out.
-      * Pulse shape: shows the spike pulse (<=4096 signed DAC samples) and lets you
-        drag individual points up/down; "Program pulse" sends it via PULS. The
-        shaped pulse is one crossbar input -- route a Spike source to emit it.
+      * Pulse shape: shows a spike pulse (<=4096 signed DAC samples) and lets you
+        drag individual points up/down; "Program pulse" sends it via PULS to
+        selected per-neuron shape banks. Spike 0..3 are four independent
+        crossbar sources, each followed by its own gain/offset calibration.
   - CIC anti-alias (chip 1), one-shot autoscale, manual shared X / per-channel
     Y ranges, selectable Y-axis linking, rising-edge trigger, and Time/FFT views.
   - Legacy mod-4 baseline removal: optional display-time diagnostic for old
@@ -62,8 +63,8 @@ on connect -- acquisition is opt-in:
     Captures are averaged at their original hardware-aligned sample indices;
     correlation offsets are reported as diagnostics but never shift saved data.
     Live trigger averaging redraws only when a completed BCPT batch supplies new
-    data. Its four plots share X and support mean-only per-channel autoscaling,
-    configurable margins/fixed ranges, and selectable Y-axis linking.
+    data. Its four plots share X and support visible-trace per-channel
+    autoscaling, fixed ranges, and selectable Y-axis linking.
 
 Prereqs: board programmed + A53 PS-eth app running; UART (default COM10); NIC at
 192.168.2.1/24. See notes/dac_sources_howto.md.
@@ -1641,7 +1642,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.main_y_link = [False] * 4
         self.liveavg_auto_y = [True] * 4
         self.liveavg_y_ranges = [(-0.95, 0.95) for _ in range(4)]
-        self.liveavg_y_padding = [10.0] * 4
         self.liveavg_y_link = [False] * 4
         self.liveavg_x_range = None    # samples; all four plots share X
         self.trigger = True
@@ -2134,9 +2134,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self._on_liveavg_display_options)
         self.liveavg_axes_btn = QtWidgets.QPushButton("Live avg axes...")
         self.liveavg_axes_btn.setToolTip(
-            "Choose per-channel mean autoscale or fixed Y limits, link selected "
-            "Y axes, and set one shared X window. Autoscale uses the average "
-            "trace only, never the ghost captures.")
+            "Choose per-channel visible-trace autoscale or fixed Y limits, "
+            "link selected Y axes, and set one shared X window. Visible ghost "
+            "captures participate in autoscaling.")
         self.liveavg_axes_btn.clicked.connect(self._on_liveavg_axes)
         # One-click demo bring-up: chattering neurons, 10 mA step current,
         # current->DAC0 / neuron0 spike->DAC1, 50-sample trapezoid pulse.
@@ -3463,16 +3463,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
         dlg.setWindowTitle("Live-average axes")
         layout = QtWidgets.QVBoxLayout(dlg)
         note = QtWidgets.QLabel(
-            "Auto Y fits each completed running-average trace only. Ghost "
-            "captures never affect scaling. Select two or more Link Y boxes "
-            "to keep those axes locked during zoom/pan.")
+            "Auto Y uses PyQtGraph's original visible-trace scaling. The mean "
+            "and any visible ghost captures all participate. Select two or "
+            "more Link Y boxes to keep those axes locked during zoom/pan.")
         note.setWordWrap(True)
         layout.addWidget(note)
 
         grid = QtWidgets.QGridLayout()
         for col, text in enumerate(
-                ("Channel", "Auto mean", "Y minimum", "Y maximum",
-                 "Margin", "Link Y")):
+                ("Channel", "Auto visible", "Y minimum", "Y maximum",
+                 "Link Y")):
             grid.addWidget(QtWidgets.QLabel(text), 0, col)
         editors = []
         for ch in range(4):
@@ -3491,20 +3491,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
             auto.toggled.connect(
                 lambda checked, boxes=(lo, hi):
                     [box.setEnabled(not checked) for box in boxes])
-            margin = QtWidgets.QDoubleSpinBox()
-            margin.setRange(0.0, 200.0)
-            margin.setDecimals(1)
-            margin.setSuffix(" %")
-            margin.setValue(self.liveavg_y_padding[ch])
             link = QtWidgets.QCheckBox()
             link.setChecked(self.liveavg_y_link[ch])
             grid.addWidget(QtWidgets.QLabel(f"ADC{ch}"), ch + 1, 0)
             grid.addWidget(auto, ch + 1, 1)
             grid.addWidget(lo, ch + 1, 2)
             grid.addWidget(hi, ch + 1, 3)
-            grid.addWidget(margin, ch + 1, 4)
-            grid.addWidget(link, ch + 1, 5)
-            editors.append((auto, lo, hi, margin, link))
+            grid.addWidget(link, ch + 1, 4)
+            editors.append((auto, lo, hi, link))
         layout.addLayout(grid)
 
         x_box = QtWidgets.QGroupBox("Shared X axis (all four live waveforms)")
@@ -3538,7 +3532,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if dlg.exec_() != QtWidgets.QDialog.Accepted:
             return
 
-        ranges = [(lo.value(), hi.value()) for _auto, lo, hi, _margin, _link
+        ranges = [(lo.value(), hi.value()) for _auto, lo, hi, _link
                   in editors]
         if any(lo >= hi for lo, hi in ranges):
             QtWidgets.QMessageBox.warning(
@@ -3551,18 +3545,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 "The shared X minimum must be below its maximum.")
             return
         self.liveavg_auto_y = [auto.isChecked()
-                               for auto, _lo, _hi, _margin, _link in editors]
+                               for auto, _lo, _hi, _link in editors]
         self.liveavg_y_ranges = ranges
-        self.liveavg_y_padding = [margin.value()
-                                  for _auto, _lo, _hi, margin, _link in editors]
         self.liveavg_y_link = [link.isChecked()
-                               for _auto, _lo, _hi, _margin, link in editors]
+                               for _auto, _lo, _hi, link in editors]
         self.liveavg_x_range = (
             None if x_auto.isChecked() else (x_lo.value(), x_hi.value()))
-        mean_traces = (
-            self._liveavg_last_snapshot.get("mean_traces", {})
-            if self._liveavg_last_snapshot else {})
-        self._apply_liveavg_axes(mean_traces)
+        self._apply_liveavg_axes()
 
     def _render_liveavg(self, snapshot):
         if not snapshot or not snapshot.get("held"):
@@ -3590,50 +3579,22 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 self._liveavg_means[ch].setData(
                     mean_x, mean_y * VOLTS_PER_COUNT,
                     skipFiniteCheck=True)
-        self._apply_liveavg_axes(mean_traces)
+        self._apply_liveavg_axes()
         return held
 
-    def _apply_liveavg_axes(self, mean_traces=None):
-        """Apply live-average axes from the mean traces, never the ghosts."""
+    def _apply_liveavg_axes(self):
+        """Apply live-average axes using every visible plot trace."""
         plots = getattr(self, "_liveavg_plots", None)
         if not plots:
             return
-        mean_traces = mean_traces or {}
-        ranges = list(self.liveavg_y_ranges)
-        for ch in range(4):
-            if self.liveavg_auto_y[ch] and ch in mean_traces:
-                _x, mean = mean_traces[ch]
-                fitted = self._fitted_y_range(
-                    np.asarray(mean) * VOLTS_PER_COUNT,
-                    min_span=0.001,
-                    padding=self.liveavg_y_padding[ch] / 100.0)
-                if fitted is not None:
-                    ranges[ch] = fitted
-
         linked = [ch for ch, enabled in enumerate(self.liveavg_y_link) if enabled]
-        if len(linked) >= 2:
-            auto_values = [
-                np.asarray(mean_traces[ch][1]) * VOLTS_PER_COUNT
-                for ch in linked
-                if self.liveavg_auto_y[ch] and ch in mean_traces
-            ]
-            if auto_values:
-                common = self._fitted_y_range(
-                    np.concatenate(auto_values),
-                    min_span=0.001,
-                    padding=max(self.liveavg_y_padding[ch] for ch in linked) / 100.0)
-                if common is not None:
-                    for ch in linked:
-                        ranges[ch] = common
-            else:
-                for ch in linked:
-                    ranges[ch] = ranges[linked[0]]
-
-        self.liveavg_y_ranges = ranges
         for ch, plot in enumerate(plots):
             plot.setYLink(None)
-            plot.enableAutoRange("y", False)
-            plot.setYRange(*ranges[ch], padding=0)
+            if self.liveavg_auto_y[ch]:
+                plot.enableAutoRange("y", True)
+            else:
+                plot.enableAutoRange("y", False)
+                plot.setYRange(*self.liveavg_y_ranges[ch], padding=0)
         if len(linked) >= 2:
             anchor = plots[linked[0]]
             for ch in linked[1:]:

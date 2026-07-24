@@ -43,6 +43,7 @@ pub struct DaqApp {
     connected: bool,
     conn_msg: String,
     conn_ok: bool,
+    dark_mode: bool,
 
     tab: Tab,
 
@@ -86,6 +87,7 @@ pub struct DaqApp {
     save_name: String,
     custom: Vec<CustomProfile>,
     dt_idx: usize,
+    neuron_period: u32,
     neuron_status: String,
 
     // dds
@@ -132,6 +134,7 @@ const DT_OPTIONS: [(&str, u32); 6] = [
 
 impl DaqApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        cc.egui_ctx.set_visuals(egui::Visuals::dark());
         let cfg = BoardCfg::default();
         let (tx, rx, live) = proto::spawn(cc.egui_ctx.clone(), cfg);
         let ports = list_ports();
@@ -150,6 +153,7 @@ impl DaqApp {
             connected: false,
             conn_msg: "not connected".into(),
             conn_ok: false,
+            dark_mode: true,
             tab: Tab::Xbar,
             chans: Default::default(),
             fs: 1.0e9,
@@ -182,6 +186,7 @@ impl DaqApp {
             save_name: String::new(),
             custom: load_custom(),
             dt_idx: 2,
+            neuron_period: 1,
             neuron_status: "—".into(),
             dds_freq_mhz: 62.5,
             current_kind: 0,
@@ -363,6 +368,12 @@ impl DaqApp {
             self.live_mean = snapshot.average;
             self.display_live = true;
             self.display_dirty = true;
+        } else if snapshot.running {
+            // A board-setting change restarts the rolling accumulator. Clear
+            // the old trace immediately so it is not mistaken for new data.
+            self.live_mean = Default::default();
+            self.display_live = true;
+            self.display_dirty = true;
         }
         self.live_stats = format!(
             "{} held / {} total | {:.1} captures/s | {:.1} batches/s | {:.0}% UDP | drain {}",
@@ -467,6 +478,15 @@ impl DaqApp {
             }
             if self.connected && ui.button("Disconnect").clicked() {
                 self.send(Cmd::Disconnect);
+            }
+            let mut dark = self.dark_mode;
+            if ui.checkbox(&mut dark, "Dark").changed() {
+                self.dark_mode = dark;
+                ui.ctx().set_visuals(if dark {
+                    egui::Visuals::dark()
+                } else {
+                    egui::Visuals::light()
+                });
             }
         });
         let col = if self.conn_ok {
@@ -725,17 +745,38 @@ impl DaqApp {
 
     fn tab_neuron(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
-            ui.label(egui::RichText::new("Neuron sim speed (all)").strong());
-            egui::ComboBox::from_id_salt("dt")
-                .selected_text(DT_OPTIONS[self.dt_idx].0)
-                .show_ui(ui, |ui| {
-                    for (i, (lbl, _)) in DT_OPTIONS.iter().enumerate() {
-                        ui.selectable_value(&mut self.dt_idx, i, *lbl);
-                    }
-                });
-            if ui.button("apply dt").clicked() && self.connected {
-                self.send(Cmd::SetNeuronDt(DT_OPTIONS[self.dt_idx].1));
-            }
+            ui.label(egui::RichText::new("Neuron timing (all)").strong());
+            ui.horizontal(|ui| {
+                ui.label("integration dt");
+                egui::ComboBox::from_id_salt("dt")
+                    .selected_text(DT_OPTIONS[self.dt_idx].0)
+                    .show_ui(ui, |ui| {
+                        for (i, (lbl, _)) in DT_OPTIONS.iter().enumerate() {
+                            ui.selectable_value(&mut self.dt_idx, i, *lbl);
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("update period");
+                ui.add(
+                    egui::DragValue::new(&mut self.neuron_period)
+                        .range(1..=0xFF_FFFF)
+                        .suffix(" clocks"),
+                );
+                if ui.button("Apply timing").clicked() && self.connected {
+                    self.send(Cmd::SetNeuronTiming {
+                        dt: DT_OPTIONS[self.dt_idx].1,
+                        period: self.neuron_period,
+                    });
+                }
+            });
+            ui.label(
+                egui::RichText::new(
+                    "Triggered spiking: period 1 is recommended. The power-on period is 256 clocks (5.12 µs), so a short current pulse can otherwise be missed.",
+                )
+                .small()
+                .color(Color32::GRAY),
+            );
         });
 
         ui.group(|ui| {
@@ -959,7 +1000,7 @@ impl DaqApp {
                 });
 
             ui.horizontal(|ui| {
-                let enabled = self.connected && !self.busy && !self.live_requested;
+                let enabled = self.connected && !self.busy;
                 if ui
                     .add_enabled(enabled, egui::Button::new("Program / restart"))
                     .clicked()
@@ -1009,7 +1050,23 @@ impl DaqApp {
                     self.busy = true;
                     self.send(Cmd::StopCurrent);
                 }
+                if ui
+                    .add_enabled(enabled, egui::Button::new("Read hardware state"))
+                    .clicked()
+                {
+                    self.busy = true;
+                    self.send(Cmd::ReadCurrent);
+                }
             });
+            if self.live_requested {
+                ui.label(
+                    egui::RichText::new(
+                        "Programming is queued between completed trigger batches; the rolling average restarts with the new settings.",
+                    )
+                    .small()
+                    .color(Color32::LIGHT_BLUE),
+                );
+            }
             ui.label(&self.current_status);
         });
         ui.group(|ui| {

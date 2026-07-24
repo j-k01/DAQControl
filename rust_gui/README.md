@@ -25,7 +25,10 @@ this app is the host-side control/scope, same as the Python GUI.
   claims a switch the board hasn't taken. "Confirm route" commits via `NSRC`.
 - **Neuron control** — built-in + saved **custom profiles**
   (`~/.daq_neuron_profiles.json`), per-neuron running-profile readout, live
-  a/b/c/d/I params, sim-speed (`dt`).
+  a/b/c/d/I params, and explicit integration `dt` + update-period timing.
+- **Verified current player** — arbitrary, periodic, constant, and step
+  programs are uploaded over UART, then registers 16 and 20 are read back to
+  verify run mode, sample count, timing, and DAC-mirror gain.
 - **DDS** tone (`DDSI`), **BRAM waveform** builder (`PROG`).
 - **Legacy mod-4 baseline removal** — optional display-time diagnostic for old
   captures or small genuine core offsets; raw captures stay intact. Corrected
@@ -37,6 +40,10 @@ this app is the host-side control/scope, same as the Python GUI.
   average, and publishes only the newest result to the viewer. The plot is
   peak-preserving and capped at 4096 points/channel, so rendering never paces
   acquisition.
+- Board controls remain available during continuous trigger averaging. They
+  are serialized between completed BCPT batches, and a setting change starts a
+  fresh rolling average so old and new configurations are never mixed.
+- Explicit dark/light theme toggle; dark mode is the default.
 - **Raw firmware command** box, STAT view, live-stream `STRM` start/stop.
 
 ## Layout
@@ -51,11 +58,12 @@ this app is the host-side control/scope, same as the Python GUI.
 | `src/main.rs`  | eframe bootstrap |
 
 `cargo test` covers the DSP, early-packet/request-ID race, strided BCPT layout,
-rolling eviction arithmetic, and spike-preserving display reduction.
+live-mode command arbitration, rolling eviction arithmetic, and
+spike-preserving display reduction.
 
 ## Not yet ported
 
 - Continuous UDP live-stream plot (the `STRM` buttons issue the command;
   Auto-Sample's 1/s bursts cover the live-view need meanwhile).
-- Current-source and pulse-shape editor pop-ups.
+- Pulse-shape editor pop-up.
 - Captures save as `.csv` (counts) rather than `.npz`.
