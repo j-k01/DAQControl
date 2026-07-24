@@ -64,12 +64,13 @@ pub enum Cmd {
     Disconnect,
     Raw(String),
     Stat,
-    /// commit a crossbar route: NSRC + (optional neuron reprogram)
+    /// Commit only a crossbar route. Neuron programming is intentionally
+    /// independent and lives in the Neuron tab.
     ApplyRoute {
         ch: u8,
         src_idx: usize,
-        profile: String,
     },
+    ReadRoutes,
     SetDds(u32),
     ProgramNeuron {
         target: String,
@@ -141,8 +142,11 @@ pub enum Evt {
         ch: u8,
         ok: bool,
         src_idx: usize,
-        profile: Option<String>,
-        neuron: Option<u8>,
+        detail: String,
+    },
+    RoutesRead {
+        routes: [Option<usize>; 4],
+        detail: String,
     },
     NeuronDone {
         target: String,
@@ -344,9 +348,28 @@ fn worker(
                     live_cfg = None;
                     rolling = None;
                     match Link::open(&port) {
-                        Ok(opened) => {
+                        Ok(mut opened) => {
+                            let routes = read_routes(&mut opened);
                             link = Some(opened);
                             emit(&tx, &ctx, Evt::Connected(Ok(port)));
+                            match routes {
+                                Ok((routes, value)) => emit(
+                                    &tx,
+                                    &ctx,
+                                    Evt::RoutesRead {
+                                        routes,
+                                        detail: format!("reg17=0x{value:04X}"),
+                                    },
+                                ),
+                                Err(detail) => emit(
+                                    &tx,
+                                    &ctx,
+                                    Evt::RoutesRead {
+                                        routes: [None; 4],
+                                        detail,
+                                    },
+                                ),
+                            }
                         }
                         Err(error) => emit(&tx, &ctx, Evt::Connected(Err(error))),
                     }
@@ -534,31 +557,54 @@ fn handle(l: &mut Link, cfg: &BoardCfg, cmd: Cmd, tx: &Sender<Evt>, ctx: &egui::
                 raw: blob,
             });
         }
-        Cmd::ApplyRoute {
-            ch,
-            src_idx,
-            profile,
-        } => {
+        Cmd::ApplyRoute { ch, src_idx } => {
             let token = dsp::source_token(src_idx);
-            let neuron = dsp::source_neuron_idx(src_idx);
+            let expected = dsp::source_code(src_idx);
             let r = l.cmd(
                 &format!("NSRC {ch} {token}"),
                 &["DAC xbar"],
                 Duration::from_secs(2),
             );
-            let mut ok = !r.is_empty() && !r.starts_with("ERR");
-            if let Some(n) = neuron {
-                let r2 = apply_profile(l, &n.to_string(), &profile);
-                ok = ok && r2;
-            }
+            let (ok, detail) = if r.is_empty() {
+                (false, "no UART response to NSRC".into())
+            } else if r.starts_with("ERR") {
+                (false, r)
+            } else {
+                match read_routes(l) {
+                    Ok((_routes, value)) => {
+                        let actual = ((value >> (4 * ch)) & 0xF) as u8;
+                        if actual == expected {
+                            (true, format!("reg17=0x{value:04X}, code {actual}"))
+                        } else {
+                            (
+                                false,
+                                format!(
+                                    "reg17 mismatch: requested code {expected}, read {actual} \
+                                     (reg17=0x{value:04X})"
+                                ),
+                            )
+                        }
+                    }
+                    Err(error) => (false, error),
+                }
+            };
             emit(Evt::RouteDone {
                 ch,
                 ok,
                 src_idx,
-                profile: neuron.map(|_| profile.clone()),
-                neuron,
+                detail,
             });
         }
+        Cmd::ReadRoutes => match read_routes(l) {
+            Ok((routes, value)) => emit(Evt::RoutesRead {
+                routes,
+                detail: format!("reg17=0x{value:04X}"),
+            }),
+            Err(detail) => emit(Evt::RoutesRead {
+                routes: [None; 4],
+                detail,
+            }),
+        },
         Cmd::SetDds(inc) => {
             let r = l.cmd(
                 &format!("DDSI 0x{inc:06X}"),
@@ -786,6 +832,39 @@ fn handle(l: &mut Link, cfg: &BoardCfg, cmd: Cmd, tx: &Sender<Evt>, ctx: &egui::
         }
         _ => {}
     }
+}
+
+fn parse_register_value(line: &str, register: usize) -> Option<u32> {
+    let (name, value) = line.split_once('=')?;
+    if name.trim() != format!("REG{register}") {
+        return None;
+    }
+    let value = value.trim();
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u32::from_str_radix(hex, 16).ok()
+    } else {
+        value.parse().ok()
+    }
+}
+
+/// Read the CPU-visible crossbar register and translate its four hardware
+/// nibbles into the viewer's display indices. This never changes board state.
+fn read_routes(link: &mut Link) -> Result<([Option<usize>; 4], u32), String> {
+    let reply = link.cmd("RDRW 17", &["REG17"], Duration::from_secs(2));
+    if reply.is_empty() {
+        return Err("no UART response to RDRW 17".into());
+    }
+    if reply.starts_with("ERR") {
+        return Err(format!("crossbar readback failed: {reply}"));
+    }
+    let value = parse_register_value(&reply, 17)
+        .ok_or_else(|| format!("malformed crossbar readback: {reply}"))?;
+    let routes =
+        std::array::from_fn(|ch| dsp::source_idx_from_code(((value >> (4 * ch)) & 0xF) as u8));
+    Ok((routes, value))
 }
 
 fn set_current_gain(l: &mut Link, gain_q8_8: u16) -> bool {
@@ -1066,6 +1145,14 @@ mod link_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_crossbar_register_readback() {
+        assert_eq!(parse_register_value("REG17 = 0x00006F61", 17), Some(0x6F61));
+        assert_eq!(parse_register_value("REG17 = 4369", 17), Some(4369));
+        assert_eq!(parse_register_value("REG16 = 0x1111", 17), None);
+        assert_eq!(parse_register_value("ERR unknown", 17), None);
+    }
 
     #[test]
     fn parses_and_slices_strided_bcpt_layout_without_using_padding() {

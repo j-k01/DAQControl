@@ -76,8 +76,6 @@ pub struct DaqApp {
     // crossbar
     staged_src: [usize; 4],
     applied_src: [Option<usize>; 4],
-    staged_prof: [usize; 4],
-    applied_prof: [Option<String>; 4],
     dac_status: [String; 4],
 
     // neuron
@@ -176,8 +174,6 @@ impl DaqApp {
             live_stats: "idle".into(),
             staged_src: [1, 1, 1, 1], // DDS
             applied_src: [None; 4],
-            staged_prof: [0, 1, 2, 3],
-            applied_prof: Default::default(),
             dac_status: Default::default(),
             neuron_prof_idx: [0, 1, 2, 3],
             neuron_running: Default::default(),
@@ -264,21 +260,30 @@ impl DaqApp {
                     ch,
                     ok,
                     src_idx,
-                    profile,
-                    neuron,
+                    detail,
                 } => {
                     self.busy = false;
                     let c = ch as usize;
                     if ok {
                         self.applied_src[c] = Some(src_idx);
-                        self.applied_prof[c] = profile.clone();
-                        self.dac_status[c] = format!("OK — {}", dsp::source_label(src_idx));
-                        if let (Some(n), Some(p)) = (neuron, profile) {
-                            self.neuron_running[n as usize] = Some(p);
-                        }
-                    } else {
                         self.dac_status[c] =
-                            format!("ERR — {} not set", dsp::source_label(src_idx));
+                            format!("OK — {} ({detail})", dsp::source_label(src_idx));
+                    } else {
+                        self.applied_src[c] = None;
+                        self.dac_status[c] =
+                            format!("ERR — {} not set: {detail}", dsp::source_label(src_idx));
+                    }
+                }
+                Evt::RoutesRead { routes, detail } => {
+                    self.applied_src = routes;
+                    for ch in 0..4 {
+                        if let Some(index) = routes[ch] {
+                            self.staged_src[ch] = index;
+                            self.dac_status[ch] =
+                                format!("LIVE — {} ({detail})", dsp::source_label(index));
+                        } else {
+                            self.dac_status[ch] = format!("ERR — route unreadable ({detail})");
+                        }
                     }
                 }
                 Evt::NeuronDone {
@@ -607,32 +612,28 @@ impl DaqApp {
                             ui.selectable_value(&mut self.staged_src[ch], i, dsp::source_label(i));
                         }
                     });
-                if dsp::source_is_neuron(self.staged_src[ch]) {
-                    let names = self.profile_names();
-                    egui::ComboBox::from_id_salt(format!("prof{ch}"))
-                        .selected_text(names.get(self.staged_prof[ch]).cloned().unwrap_or_default())
-                        .show_ui(ui, |ui| {
-                            for (i, n) in names.iter().enumerate() {
-                                ui.selectable_value(&mut self.staged_prof[ch], i, n);
-                            }
-                        });
-                }
                 ui.horizontal(|ui| {
                     if ui.button("Confirm route").clicked() && self.connected {
-                        let names = self.profile_names();
-                        let prof = names.get(self.staged_prof[ch]).cloned().unwrap_or_default();
                         self.dac_status[ch] =
                             format!("programming {}…", dsp::source_label(self.staged_src[ch]));
                         self.send(Cmd::ApplyRoute {
                             ch: ch as u8,
                             src_idx: self.staged_src[ch],
-                            profile: prof,
                         });
                     }
                     ui.label(&self.dac_status[ch]);
                 });
             });
         }
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(self.connected, egui::Button::new("Read hardware routes"))
+                .clicked()
+            {
+                self.send(Cmd::ReadRoutes);
+            }
+            ui.label("Route changes do not program neuron profiles.");
+        });
         ui.separator();
         ui.label(egui::RichText::new("Crossbar routing (16 → 4)").strong());
         ui.label(

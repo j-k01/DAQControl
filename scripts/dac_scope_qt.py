@@ -9,7 +9,8 @@ on connect -- acquisition is opt-in:
   - Start/Stop Auto-Sample: takes a fresh small one-shot burst once per second
     and draws it in the main plots (off by default). Auto-samples are NOT saved.
 
-  - Connection: pick the UART COM port and connect/reconnect (no streaming).
+  - Connection: pick the UART COM port and connect/reconnect (no streaming and
+    no route/neuron reprogramming); the GUI reads reg17 and shows live routes.
   - Per channel (DAC0..3): pick any crossbar source -- Off / DDS / BRAM 0-3 /
     Spike 0-3 / Monitor 0-3 (per-neuron current) / Current source / Tag -- from
     the source dropdown, then hit "Confirm route" to commit. Confirming sends
@@ -46,8 +47,8 @@ on connect -- acquisition is opt-in:
       * Pulse shape: shows the spike pulse (<=4096 signed DAC samples) and lets you
         drag individual points up/down; "Program pulse" sends it via PULS. The
         shaped pulse is one crossbar input -- route a Spike source to emit it.
-  - CIC anti-alias (chip 1), one-shot autoscale, fixed per-channel Y ranges,
-    rising-edge trigger, and Time/FFT views.
+  - CIC anti-alias (chip 1), one-shot autoscale, manual shared X / per-channel
+    Y ranges, selectable Y-axis linking, rising-edge trigger, and Time/FFT views.
   - Legacy mod-4 baseline removal: optional display-time diagnostic for old
     captures or genuine small per-core offsets. Corrected FPGA images assemble
     LMFS=4211 transport bytes directly and do not need it to remove the former
@@ -60,6 +61,9 @@ on connect -- acquisition is opt-in:
     (BCPT) replay a fresh current program and neuron state for every repetition.
     Captures are averaged at their original hardware-aligned sample indices;
     correlation offsets are reported as diagnostics but never shift saved data.
+    Live trigger averaging redraws only when a completed BCPT batch supplies new
+    data. Its four plots share X and support mean-only per-channel autoscaling,
+    configurable margins/fixed ranges, and selectable Y-axis linking.
 
 Prereqs: board programmed + A53 PS-eth app running; UART (default COM10); NIC at
 192.168.2.1/24. See notes/dac_sources_howto.md.
@@ -121,6 +125,7 @@ LABEL_TO_XBAR_CODE = {
     "Monitor 0": 10, "Monitor 1": 11, "Monitor 2": 12, "Monitor 3": 13,
     "Tag": 14, "Current source": 15,
 }
+XBAR_CODE_TO_LABEL = {code: label for label, code in LABEL_TO_XBAR_CODE.items()}
 WAVEFORMS = ["Sine", "Triangle", "Trapezoid", "Square", "Sawtooth"]
 CH_COLORS = ["#4FC3F7", "#81C784", "#FFB74D", "#E57373"]
 CAPT_FRAME_OPTIONS = [128, 256, 512, 1024, 2048, 4096]   # 4096 = firmware max
@@ -706,6 +711,21 @@ class DacControl:
         """Return reg17 reply only when the DAQ MicroBlaze is actually alive."""
         return self.cmd("RDRW 17", ok=("REG17", "ERR"), timeout=timeout)
 
+    def get_sources(self):
+        """Read, decode, and return the four live reg17 crossbar routes."""
+        reply = self.probe_firmware()
+        if not reply.startswith("REG17"):
+            raise RuntimeError(reply or "no UART response to RDRW 17")
+        try:
+            value = int(reply.split("=", 1)[1].strip(), 0)
+            labels = [
+                XBAR_CODE_TO_LABEL[(value >> (4 * ch)) & 0xF]
+                for ch in range(4)
+            ]
+        except (IndexError, KeyError, ValueError) as exc:
+            raise RuntimeError(f"malformed XBar readback: {reply}") from exc
+        return labels, value & 0xFFFF
+
     def set_neuron(self, ch, profile):
         return self.cmd(f"NEUR {ch} {profile}", ok=("OK", "NEUR", "ERR"))
 
@@ -730,15 +750,6 @@ class DacControl:
 
     def set_cic(self, on):
         return self.cmd(f"STRM CIC {'on' if on else 'off'}", ok=("OK STRM", "ERR"))
-
-    def base_setup(self):
-        """Board init only -- does NOT start the live stream (opt-in)."""
-        replies = [self.cmd("WRTE 2 0x01000018")]
-        for ch, prof in enumerate(NEURON_PROFILES):
-            replies.append(self.cmd(f"NEUR {ch} {prof}"))
-        replies.append(self.cmd("NEUR all period 1"))
-        replies.append(self.cmd("NEUR all dt 0x8000"))
-        return replies
 
     def start_stream(self, decim, usecic):
         return self.cmd(f"STRM {decim}{' cic' if usecic else ''}",
@@ -1625,6 +1636,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.fft_view = False
         self.time_y_ranges = [(-0.95, 0.95) for _ in range(4)]
         self.fft_y_ranges = [(-90.0, 5.0) for _ in range(4)]
+        self.time_x_range = None       # None = fit the current waveform
+        self.fft_x_range = None
+        self.main_y_link = [False] * 4
+        self.liveavg_auto_y = [True] * 4
+        self.liveavg_y_ranges = [(-0.95, 0.95) for _ in range(4)]
+        self.liveavg_y_padding = [10.0] * 4
+        self.liveavg_y_link = [False] * 4
+        self.liveavg_x_range = None    # samples; all four plots share X
         self.trigger = True
         self._popup = None
         self._cur_win = None        # CurrentSourceWindow (lazily created)
@@ -2007,9 +2026,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "Fit each channel to the traces currently on screen, then keep "
             "those Y ranges fixed.")
         self.auto_btn.clicked.connect(self._on_autoscale_once)
-        self.range_btn = QtWidgets.QPushButton("Y ranges...")
+        self.range_btn = QtWidgets.QPushButton("Axes...")
         self.range_btn.setToolTip(
-            "Set independent fixed Y-axis limits for ADC0-3 in Time and FFT views.")
+            "Set shared X limits, independent Y limits, and optional Y-axis "
+            "linking for ADC0-3 in Time and FFT views.")
         self.range_btn.clicked.connect(self._on_y_ranges)
         self.trig_chk = QtWidgets.QCheckBox("Trigger")
         self.trig_chk.setChecked(True)
@@ -2112,6 +2132,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "Overlay the individual captures retained in the rolling window.")
         self.liveavg_ghosts_chk.toggled.connect(
             self._on_liveavg_display_options)
+        self.liveavg_axes_btn = QtWidgets.QPushButton("Live avg axes...")
+        self.liveavg_axes_btn.setToolTip(
+            "Choose per-channel mean autoscale or fixed Y limits, link selected "
+            "Y axes, and set one shared X window. Autoscale uses the average "
+            "trace only, never the ghost captures.")
+        self.liveavg_axes_btn.clicked.connect(self._on_liveavg_axes)
         # One-click demo bring-up: chattering neurons, 10 mA step current,
         # current->DAC0 / neuron0 spike->DAC1, 50-sample trapezoid pulse.
         self.defaults_btn = QtWidgets.QPushButton("Chattering Demo Setup")
@@ -2152,7 +2178,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         ag.addWidget(self.liveavg_btn, 6, 1)
         ag.addWidget(self.liveavg_downsample_chk, 7, 0)
         ag.addWidget(self.liveavg_ghosts_chk, 7, 1)
-        ag.addWidget(self.defaults_btn, 8, 0, 1, 2)
+        ag.addWidget(self.liveavg_axes_btn, 8, 0, 1, 2)
+        ag.addWidget(self.defaults_btn, 9, 0, 1, 2)
         right_col.addWidget(acq)        # outside the scroll area -> always visible
 
         left.addStretch(1)
@@ -2371,18 +2398,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         # ---- UART (required): everything in the panel works over this ----
         try:
             self.dac = DacControl(port)
-            probe = self.dac.probe_firmware()
-            if not probe.startswith("REG17"):
-                raise RuntimeError(
-                    "COM port opened, but DAQ MicroBlaze firmware did not answer "
-                    "RDRW 17. Re-run program_board.ps1; Ethernet is not required.")
-            setup_replies = self.dac.base_setup()
-            if any(not r or r.startswith("ERR") for r in setup_replies):
-                raise RuntimeError("DAQ firmware stopped responding during setup")
-            for ch in range(4):
-                reply = self.dac.set_source(ch, self.args.initial)
-                if not reply or reply.startswith("ERR"):
-                    raise RuntimeError(f"DAC{ch} initial XBar route failed: {reply}")
+            live_sources, xbar_value = self.dac.get_sources()
         except Exception as e:  # noqa: BLE001
             self.conn_lbl.setText(f"UART connect failed: {e}")
             self.conn_lbl.setStyleSheet("color:#E57373;")
@@ -2398,15 +2414,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return
         self.connect_btn.setText("Reconnect")
         self._set_controls_enabled(True)
-        # reflect the source each DAC was set to on connect -- these are now the
-        # live routes (solid lines + summary), matching the NSRC sent above.
-        for ch in range(4):
-            self.dac_status[ch].setText(f"OK — {self.args.initial}")
+        # Connection is observational: reflect reg17 without changing routes,
+        # neuron profiles, or any acquisition state.
+        for ch, label in enumerate(live_sources):
+            self.src_cbs[ch].blockSignals(True)
+            self.src_cbs[ch].setCurrentText(label)
+            self.src_cbs[ch].blockSignals(False)
+            self.dac_status[ch].setText(
+                f"LIVE — {label} (reg17=0x{xbar_value:04X})")
             self.dac_status[ch].setStyleSheet("color:#81C784; font-size:11px;")
-            self._set_applied_route(ch, self.args.initial)
-        # base_setup() programmed neuron n with the n-th built-in profile
-        for n in range(4):
-            self._set_neuron_running(str(n), NEURON_PROFILES[n])
+            self._set_applied_route(ch, label)
         # Acquisition is OPT-IN: nothing samples until the user presses
         # Auto-Sample. Use "Collect Ethernet" for a single saved snapshot.
         self.tap = None
@@ -2584,16 +2601,29 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     def _on_y_ranges(self):
         dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("Fixed Y-axis ranges")
+        dlg.setWindowTitle("Main plot axes")
         layout = QtWidgets.QVBoxLayout(dlg)
+        link_box = QtWidgets.QGroupBox("Lock selected Y axes together")
+        link_lay = QtWidgets.QHBoxLayout(link_box)
+        link_checks = []
+        for ch in range(4):
+            check = QtWidgets.QCheckBox(f"ADC{ch}")
+            check.setChecked(self.main_y_link[ch])
+            link_lay.addWidget(check)
+            link_checks.append(check)
+        layout.addWidget(link_box)
         tabs = QtWidgets.QTabWidget()
         editors = {}
+        x_editors = {}
 
-        for mode, ranges, suffix, bounds, decimals, step in (
-                ("Time", self.time_y_ranges, " V", (-100.0, 100.0), 4, 0.05),
-                ("FFT", self.fft_y_ranges, " dB", (-300.0, 100.0), 1, 5.0)):
+        for mode, ranges, suffix, bounds, decimals, step, x_range, x_suffix, x_bounds in (
+                ("Time", self.time_y_ranges, " V", (-100.0, 100.0), 4, 0.05,
+                 self.time_x_range, " s", (0.0, 3600.0)),
+                ("FFT", self.fft_y_ranges, " dB", (-300.0, 100.0), 1, 5.0,
+                 self.fft_x_range, " Hz", (0.0, 1.0e9))):
             page = QtWidgets.QWidget()
-            grid = QtWidgets.QGridLayout(page)
+            page_lay = QtWidgets.QVBoxLayout(page)
+            grid = QtWidgets.QGridLayout()
             grid.addWidget(QtWidgets.QLabel("Channel"), 0, 0)
             grid.addWidget(QtWidgets.QLabel("Minimum"), 0, 1)
             grid.addWidget(QtWidgets.QLabel("Maximum"), 0, 2)
@@ -2612,6 +2642,32 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 grid.addWidget(hi_box, ch + 1, 2)
                 mode_editors.append((lo_box, hi_box))
             editors[mode] = mode_editors
+            page_lay.addLayout(grid)
+
+            x_box = QtWidgets.QGroupBox("Shared X axis (all four waveforms)")
+            x_grid = QtWidgets.QGridLayout(x_box)
+            x_auto = QtWidgets.QCheckBox("Auto fit data")
+            x_auto.setChecked(x_range is None)
+            default_x = ((0.0, self.args.time_span / 1.0e9)
+                         if mode == "Time" else (0.0, 0.5e9))
+            x_lo = QtWidgets.QDoubleSpinBox()
+            x_hi = QtWidgets.QDoubleSpinBox()
+            for box, value in zip((x_lo, x_hi), x_range or default_x):
+                box.setRange(*x_bounds)
+                box.setDecimals(9 if mode == "Time" else 1)
+                box.setSuffix(x_suffix)
+                box.setValue(value)
+                box.setEnabled(not x_auto.isChecked())
+            x_auto.toggled.connect(
+                lambda checked, boxes=(x_lo, x_hi):
+                    [box.setEnabled(not checked) for box in boxes])
+            x_grid.addWidget(x_auto, 0, 0, 1, 2)
+            x_grid.addWidget(QtWidgets.QLabel("Minimum"), 1, 0)
+            x_grid.addWidget(x_lo, 1, 1)
+            x_grid.addWidget(QtWidgets.QLabel("Maximum"), 2, 0)
+            x_grid.addWidget(x_hi, 2, 1)
+            page_lay.addWidget(x_box)
+            x_editors[mode] = (x_auto, x_lo, x_hi)
             tabs.addTab(page, mode)
         tabs.setCurrentIndex(1 if self.fft_view else 0)
         layout.addWidget(tabs)
@@ -2631,12 +2687,25 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     self, "Invalid Y range",
                     f"Every {mode} minimum must be below its maximum.")
                 return
+        x_values = {}
+        for mode, (auto, lo, hi) in x_editors.items():
+            x_values[mode] = None if auto.isChecked() else (lo.value(), hi.value())
+            if x_values[mode] is not None and lo.value() >= hi.value():
+                QtWidgets.QMessageBox.warning(
+                    self, "Invalid X range",
+                    f"The {mode} X minimum must be below its maximum.")
+                return
         self.time_y_ranges = values["Time"]
         self.fft_y_ranges = values["FFT"]
+        self.time_x_range = x_values["Time"]
+        self.fft_x_range = x_values["FFT"]
+        self.main_y_link = [check.isChecked() for check in link_checks]
         self._apply_view_ranges()
         if getattr(self, "_liveavg_plots", None):
-            for ch, plot in enumerate(self._liveavg_plots):
-                self._apply_time_plot_range(plot, ch)
+            mean_traces = (
+                self._liveavg_last_snapshot.get("mean_traces", {})
+                if self._liveavg_last_snapshot else {})
+            self._apply_liveavg_axes(mean_traces)
 
     def _on_program(self):
         if not self.dac:
@@ -3346,7 +3415,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
             p = win.addPlot(row=ch, col=0)
             p.showGrid(x=True, y=True, alpha=0.25)
             p.setLabel("left", f"ch{ch}", units="V")
-            self._apply_time_plot_range(p, ch)
+            if ch > 0:
+                p.setXLink(self._liveavg_plots[0])
+            if ch < 3:
+                p.getAxis("bottom").setStyle(showValues=False)
+            else:
+                p.setLabel("bottom", "sample", units="ns")
+            p.enableAutoRange("y", False)
+            p.setYRange(*self.liveavg_y_ranges[ch], padding=0)
             self._liveavg_plots.append(p)
             mean_curve = p.plot([], [], pen=pg.mkPen("#ffffff", width=1.5))
             mean_curve.setZValue(10)
@@ -3355,6 +3431,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                                            row=4, col=0)
         win.show()
         self._liveavg_win = win
+        self._apply_liveavg_axes()
 
     def _ensure_liveavg_ghosts(self):
         for ch, curves in enumerate(self._liveavg_ghosts):
@@ -3380,6 +3457,112 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 curve.setVisible(show_ghosts)
         if self._liveavg_last_snapshot is not None:
             self._render_liveavg(self._liveavg_last_snapshot)
+
+    def _on_liveavg_axes(self):
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Live-average axes")
+        layout = QtWidgets.QVBoxLayout(dlg)
+        note = QtWidgets.QLabel(
+            "Auto Y fits each completed running-average trace only. Ghost "
+            "captures never affect scaling. Select two or more Link Y boxes "
+            "to keep those axes locked during zoom/pan.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        grid = QtWidgets.QGridLayout()
+        for col, text in enumerate(
+                ("Channel", "Auto mean", "Y minimum", "Y maximum",
+                 "Margin", "Link Y")):
+            grid.addWidget(QtWidgets.QLabel(text), 0, col)
+        editors = []
+        for ch in range(4):
+            auto = QtWidgets.QCheckBox()
+            auto.setChecked(self.liveavg_auto_y[ch])
+            lo = QtWidgets.QDoubleSpinBox()
+            hi = QtWidgets.QDoubleSpinBox()
+            for box, value in ((lo, self.liveavg_y_ranges[ch][0]),
+                               (hi, self.liveavg_y_ranges[ch][1])):
+                box.setRange(-100.0, 100.0)
+                box.setDecimals(5)
+                box.setSingleStep(0.01)
+                box.setSuffix(" V")
+                box.setValue(value)
+                box.setEnabled(not auto.isChecked())
+            auto.toggled.connect(
+                lambda checked, boxes=(lo, hi):
+                    [box.setEnabled(not checked) for box in boxes])
+            margin = QtWidgets.QDoubleSpinBox()
+            margin.setRange(0.0, 200.0)
+            margin.setDecimals(1)
+            margin.setSuffix(" %")
+            margin.setValue(self.liveavg_y_padding[ch])
+            link = QtWidgets.QCheckBox()
+            link.setChecked(self.liveavg_y_link[ch])
+            grid.addWidget(QtWidgets.QLabel(f"ADC{ch}"), ch + 1, 0)
+            grid.addWidget(auto, ch + 1, 1)
+            grid.addWidget(lo, ch + 1, 2)
+            grid.addWidget(hi, ch + 1, 3)
+            grid.addWidget(margin, ch + 1, 4)
+            grid.addWidget(link, ch + 1, 5)
+            editors.append((auto, lo, hi, margin, link))
+        layout.addLayout(grid)
+
+        x_box = QtWidgets.QGroupBox("Shared X axis (all four live waveforms)")
+        x_grid = QtWidgets.QGridLayout(x_box)
+        x_auto = QtWidgets.QCheckBox("Auto fit current average length")
+        x_auto.setChecked(self.liveavg_x_range is None)
+        default_x = self.liveavg_x_range or (0.0, float(self.args.time_span))
+        x_lo = QtWidgets.QDoubleSpinBox()
+        x_hi = QtWidgets.QDoubleSpinBox()
+        for box, value in zip((x_lo, x_hi), default_x):
+            box.setRange(0.0, 1.0e9)
+            box.setDecimals(1)
+            box.setSuffix(" samples")
+            box.setValue(value)
+            box.setEnabled(not x_auto.isChecked())
+        x_auto.toggled.connect(
+            lambda checked:
+                [box.setEnabled(not checked) for box in (x_lo, x_hi)])
+        x_grid.addWidget(x_auto, 0, 0, 1, 2)
+        x_grid.addWidget(QtWidgets.QLabel("Minimum"), 1, 0)
+        x_grid.addWidget(x_lo, 1, 1)
+        x_grid.addWidget(QtWidgets.QLabel("Maximum"), 2, 0)
+        x_grid.addWidget(x_hi, 2, 1)
+        layout.addWidget(x_box)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        ranges = [(lo.value(), hi.value()) for _auto, lo, hi, _margin, _link
+                  in editors]
+        if any(lo >= hi for lo, hi in ranges):
+            QtWidgets.QMessageBox.warning(
+                self, "Invalid Y range",
+                "Every manual Y minimum must be below its maximum.")
+            return
+        if not x_auto.isChecked() and x_lo.value() >= x_hi.value():
+            QtWidgets.QMessageBox.warning(
+                self, "Invalid X range",
+                "The shared X minimum must be below its maximum.")
+            return
+        self.liveavg_auto_y = [auto.isChecked()
+                               for auto, _lo, _hi, _margin, _link in editors]
+        self.liveavg_y_ranges = ranges
+        self.liveavg_y_padding = [margin.value()
+                                  for _auto, _lo, _hi, margin, _link in editors]
+        self.liveavg_y_link = [link.isChecked()
+                               for _auto, _lo, _hi, _margin, link in editors]
+        self.liveavg_x_range = (
+            None if x_auto.isChecked() else (x_lo.value(), x_hi.value()))
+        mean_traces = (
+            self._liveavg_last_snapshot.get("mean_traces", {})
+            if self._liveavg_last_snapshot else {})
+        self._apply_liveavg_axes(mean_traces)
 
     def _render_liveavg(self, snapshot):
         if not snapshot or not snapshot.get("held"):
@@ -3407,7 +3590,59 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 self._liveavg_means[ch].setData(
                     mean_x, mean_y * VOLTS_PER_COUNT,
                     skipFiniteCheck=True)
+        self._apply_liveavg_axes(mean_traces)
         return held
+
+    def _apply_liveavg_axes(self, mean_traces=None):
+        """Apply live-average axes from the mean traces, never the ghosts."""
+        plots = getattr(self, "_liveavg_plots", None)
+        if not plots:
+            return
+        mean_traces = mean_traces or {}
+        ranges = list(self.liveavg_y_ranges)
+        for ch in range(4):
+            if self.liveavg_auto_y[ch] and ch in mean_traces:
+                _x, mean = mean_traces[ch]
+                fitted = self._fitted_y_range(
+                    np.asarray(mean) * VOLTS_PER_COUNT,
+                    min_span=0.001,
+                    padding=self.liveavg_y_padding[ch] / 100.0)
+                if fitted is not None:
+                    ranges[ch] = fitted
+
+        linked = [ch for ch, enabled in enumerate(self.liveavg_y_link) if enabled]
+        if len(linked) >= 2:
+            auto_values = [
+                np.asarray(mean_traces[ch][1]) * VOLTS_PER_COUNT
+                for ch in linked
+                if self.liveavg_auto_y[ch] and ch in mean_traces
+            ]
+            if auto_values:
+                common = self._fitted_y_range(
+                    np.concatenate(auto_values),
+                    min_span=0.001,
+                    padding=max(self.liveavg_y_padding[ch] for ch in linked) / 100.0)
+                if common is not None:
+                    for ch in linked:
+                        ranges[ch] = common
+            else:
+                for ch in linked:
+                    ranges[ch] = ranges[linked[0]]
+
+        self.liveavg_y_ranges = ranges
+        for ch, plot in enumerate(plots):
+            plot.setYLink(None)
+            plot.enableAutoRange("y", False)
+            plot.setYRange(*ranges[ch], padding=0)
+        if len(linked) >= 2:
+            anchor = plots[linked[0]]
+            for ch in linked[1:]:
+                plots[ch].setYLink(anchor)
+        if self.liveavg_x_range is None:
+            plots[0].enableAutoRange("x", True)
+        else:
+            plots[0].enableAutoRange("x", False)
+            plots[0].setXRange(*self.liveavg_x_range, padding=0)
 
     def _on_liveavg_tick(self):
         if self._liveavg_busy or not self.dac:
@@ -3662,7 +3897,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
     # ---- display ----
     def _apply_view_ranges(self):
         ranges = self.fft_y_ranges if self.fft_view else self.time_y_ranges
+        x_range = self.fft_x_range if self.fft_view else self.time_x_range
         for ch, p in enumerate(self.plots):
+            p.setYLink(None)
             p.enableAutoRange("y", False)
             if self.fft_view:
                 p.setLabel("left", f"ch{ch}", units="dB")
@@ -3672,13 +3909,23 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 if ch == 3:
                     p.setLabel("bottom", "time", units="s")
             p.setYRange(*ranges[ch], padding=0)
+        linked = [ch for ch, enabled in enumerate(self.main_y_link) if enabled]
+        if len(linked) >= 2:
+            anchor = self.plots[linked[0]]
+            for ch in linked[1:]:
+                self.plots[ch].setYLink(anchor)
+        if x_range is None:
+            self.plots[0].enableAutoRange("x", True)
+        else:
+            self.plots[0].enableAutoRange("x", False)
+            self.plots[0].setXRange(*x_range, padding=0)
 
     def _apply_time_plot_range(self, plot, ch):
         plot.enableAutoRange("y", False)
         plot.setYRange(*self.time_y_ranges[ch], padding=0)
 
     @staticmethod
-    def _fitted_y_range(values, min_span=0.04):
+    def _fitted_y_range(values, min_span=0.04, padding=0.10):
         """Return a padded finite-data range suitable for one fixed Y axis."""
         if values is None:
             return None
@@ -3689,7 +3936,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         hi = float(finite.max())
         center = 0.5 * (lo + hi)
         span = max(float(min_span), hi - lo)
-        pad = 0.10 * span
+        pad = max(0.0, float(padding)) * span
         return (center - 0.5 * span - pad, center + 0.5 * span + pad)
 
     def _trig_start(self, yfull, span):
@@ -3796,7 +4043,10 @@ def main():
     ap.add_argument("--window", type=int, default=8192)
     ap.add_argument("--time-span", type=int, default=1024)
     ap.add_argument("--rcvbuf", type=lambda x: int(x, 0), default=1 << 20)
-    ap.add_argument("--initial", default="DDS", choices=SOURCE_LABELS)
+    ap.add_argument(
+        "--initial", default="DDS", choices=SOURCE_LABELS,
+        help="offline staged XBar selection before connect; live reg17 routes "
+             "replace it on connect and are never changed automatically")
     ap.add_argument("--cic", action="store_true")
     ap.add_argument("--fps", type=float, default=60.0)
     ap.add_argument("--capture-dir",

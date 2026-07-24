@@ -61,22 +61,24 @@ pub fn source_label(idx: usize) -> &'static str {
 pub fn source_token(idx: usize) -> &'static str {
     SOURCES.get(idx).map(|s| s.1).unwrap_or("off")
 }
-pub fn source_is_neuron(idx: usize) -> bool {
-    let l = source_label(idx);
-    l.starts_with("Spike ") || l.starts_with("Monitor ")
-}
-/// neuron index named by a Spike/Monitor source, if any.
-pub fn source_neuron_idx(idx: usize) -> Option<u8> {
-    if source_is_neuron(idx) {
-        source_label(idx)
-            .rsplit(' ')
-            .next()
-            .and_then(|t| t.parse::<u8>().ok())
-    } else {
-        None
+/// Hardware reg17 source code. The display order intentionally puts Current
+/// source before Tag, while the HDL encoding is Tag=14 and Current=15.
+pub fn source_code(idx: usize) -> u8 {
+    match idx {
+        0..=13 => idx as u8,
+        14 => 15,
+        15 => 14,
+        _ => 0,
     }
 }
-
+pub fn source_idx_from_code(code: u8) -> Option<usize> {
+    match code {
+        0..=13 => Some(code as usize),
+        14 => Some(15),
+        15 => Some(14),
+        _ => None,
+    }
+}
 pub const BUILTIN_PROFILES: [&str; 4] = ["regular", "bursting", "chattering", "fast"];
 
 /// (param, label, lo, hi, default, decimals)
@@ -465,6 +467,16 @@ mod tests {
         assert_eq!(dds_freq_to_inc(125e6), 0x200000);
         assert_eq!(dds_freq_to_inc(1e12), 0x00FF_FFFF); // clamp
         assert!((dds_inc_to_freq(0x100000) - 62.5e6).abs() < 1.0);
+    }
+
+    #[test]
+    fn source_display_order_maps_to_hardware_codes() {
+        for index in 0..SOURCES.len() {
+            let code = source_code(index);
+            assert_eq!(source_idx_from_code(code), Some(index));
+        }
+        assert_eq!(source_code(14), 15); // Current source
+        assert_eq!(source_code(15), 14); // Tag
     }
 
     #[test]
