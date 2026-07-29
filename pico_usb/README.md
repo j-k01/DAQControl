@@ -84,6 +84,27 @@ That test writes known words into the reserved DAQ DDR buffers, uses the real
 MicroBlaze burst-ready command, and requires byte-exact chip 0 and chip 1 UDP
 payloads.
 
+## Ethernet recovery
+
+Use the single-line recovery entry point:
+
+```powershell
+recover_ethernet.cmd
+```
+
+Its bounded sequence is: verify/configure the selected host NIC, refresh that
+NIC if needed, restart only `daq-eth-service` through the Linux COM9 shell, and
+run the complete unified loader only if Linux itself is unavailable. It never
+loads the retired bare-metal A53 Ethernet ELF, so recovery preserves Pico USB,
+the MicroBlaze firmware, and XBar state whenever a service-only restart is
+sufficient.
+
+Read-only diagnosis remains available as:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\diagnose_board_ethernet.ps1
+```
+
 ## Contents
 
 - `load_and_test.py` is the one-line JTAG/UART orchestrator.

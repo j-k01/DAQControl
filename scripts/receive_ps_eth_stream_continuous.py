@@ -2,8 +2,8 @@
 """Continuous decimated ADC stream receiver.
 
 Flow: arm the MicroBlaze first (UART: `STRM <decim>`), then run this script.
-It sends `STRM` to the A53 app, which drains the DDR rings to us as "DAQS"
-packets; on exit it sends `STOP`.
+It sends `STRM` to the active DAQ Ethernet service, which drains the DDR rings
+as "DAQS" packets; on exit it sends `STOP`.
 
 Each packet: 32-byte little-endian header
   u32 magic 0x53514144 "DAQS", u16 version, u16 header_bytes,

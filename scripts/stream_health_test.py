@@ -222,9 +222,8 @@ def main():
         dac.close()
         print("\nNO PACKETS RECEIVED. The board UART answered but no UDP stream "
               "is arriving.")
-        print("Most likely the A53 PS-eth streamer is not running. Checklist:")
-        print("  * On capitolpeak: xsct load_ps_eth_stream.tcl   (revive the A53"
-              " app; do program_and_load.tcl first if the A53 download wedges)")
+        print("Most likely the DAQ Ethernet service is not reachable. Checklist:")
+        print("  * Run recover_ethernet.cmd for bounded unified-runtime recovery")
         print("  * NIC 192.168.2.1/24 up, board at 192.168.2.10, cable connected")
         print("  * `STRM STAT` over UART shows active=1")
         return

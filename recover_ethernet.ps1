@@ -6,11 +6,11 @@
   Runs a bounded recovery ladder:
     1. Configure and test the host NIC.
     2. Restart the host NIC and clear stale neighbor state.
-    3. Check and restart the A53 Ethernet application once.
-    4. Reprogram the FPGA, MicroBlaze, and A53 application.
+    3. Restart only the Linux DAQ Ethernet service over the PS UART.
+    4. Reload the complete unified Linux/USB/DAQ runtime.
     5. Optionally wait for a physical power cycle and try once more.
 
-  Success requires an actual UDP PING/PONG exchange with the A53 application.
+  Success requires an actual UDP PING/PONG exchange with the DAQ service.
   ICMP ping alone is not considered sufficient.
 
 .EXAMPLE
@@ -34,10 +34,17 @@ param(
     [int]$ProbeAttempts = 5,
     [int]$ProbeTimeoutMs = 1500,
     [int]$LinkWaitSeconds = 20,
+    [string]$PsPort = "COM9",
+    [string]$Python = "python",
+    [string]$Remote,
+    [string]$Identity,
+    # Retained for command-line compatibility; the unified loader discovers
+    # the remote tool version and does not pin a local Vivado/XSDB version.
     [string]$Vivado,
     [string]$Xsdb,
     [switch]$SkipAdapterRestart,
-    [switch]$SkipProcessorRestart,
+    [Alias("SkipProcessorRestart")]
+    [switch]$SkipServiceRestart,
     [switch]$SkipFullProgram,
     [switch]$ForceFullProgram,
     [switch]$WaitForPowerCycle,
@@ -135,49 +142,6 @@ function Resolve-BoardAdapter {
         throw "Multiple Up adapters without a default route: $names. Pass -InterfaceAlias."
     }
     throw "No Up physical adapter without a default route. Check the cable or pass -InterfaceAlias."
-}
-
-function Resolve-Xsdb {
-    if ($Xsdb) {
-        if (-not (Test-Path $Xsdb)) { throw "XSDB not found: $Xsdb" }
-        return (Resolve-Path $Xsdb).Path
-    }
-    if ($Vivado) {
-        $versionCandidates = @(
-            "C:\Xilinx\$Vivado\Vivado\bin\xsdb.bat"
-            "C:\Xilinx\Vivado\$Vivado\bin\xsdb.bat"
-            "C:\Xilinx\$Vivado\Vitis\bin\xsdb.bat"
-            "C:\Xilinx\Vitis\$Vivado\bin\xsdb.bat"
-        )
-        $versionMatch = $versionCandidates |
-            Where-Object { Test-Path $_ } |
-            Select-Object -First 1
-        if ($versionMatch) { return (Resolve-Path $versionMatch).Path }
-        throw "XSDB was not found for requested Xilinx version $Vivado."
-    }
-    $candidates = @(
-        Get-ChildItem "C:\Xilinx\*\Vivado\bin\xsdb.bat" -ErrorAction SilentlyContinue
-        Get-ChildItem "C:\Xilinx\Vivado\*\bin\xsdb.bat" -ErrorAction SilentlyContinue
-        Get-ChildItem "C:\Xilinx\*\Vitis\bin\xsdb.bat" -ErrorAction SilentlyContinue
-        Get-ChildItem "C:\Xilinx\Vitis\*\bin\xsdb.bat" -ErrorAction SilentlyContinue
-    ) | Sort-Object -Property @{
-        Expression = {
-            if ($_.FullName -match '(\d{4}\.\d+)') {
-                [version]$matches[1]
-            } else {
-                [version]"0.0"
-            }
-        }
-        Descending = $true
-    }, @{
-        Expression = { $_.FullName }
-        Descending = $true
-    }
-    if ($candidates.Count) { return $candidates[0].FullName }
-    $command = Get-Command xsdb.bat,xsdb -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if ($command) { return $command.Source }
-    return $null
 }
 
 function Invoke-ChildPowerShell {
@@ -279,60 +243,36 @@ function Test-BoardUdp {
     return $false
 }
 
-function Test-A53Mailbox {
-    if (-not $script:XsdbExe) {
-        Write-Warning "XSDB is unavailable; the A53 heartbeat cannot be inspected."
-        return $false
-    }
-    Write-Host "`nChecking the A53 mailbox/heartbeat..." -ForegroundColor Cyan
-    & $script:XsdbExe (Join-Path $root "scripts\test_eth_mailbox.tcl")
-    return ($LASTEXITCODE -eq 0)
-}
-
-function Restart-A53Application {
-    if (-not $script:XsdbExe) {
-        Write-Warning "XSDB is unavailable; skipping the controlled A53 restart."
-        return $false
-    }
-
-    $psElf = (Resolve-Path (Join-Path $root "prebuilt\ps_eth_stream.elf")).Path
-    $mbElf = (Resolve-Path (Join-Path $root "prebuilt\firmware.elf")).Path
-    Write-Host "`nRestarting the A53 Ethernet app once without PS initialization..." `
+function Restart-LinuxDaqService {
+    Write-Host "`nRestarting only the Linux DAQ Ethernet service on $PsPort..." `
         -ForegroundColor Yellow
-    & $script:XsdbExe (Join-Path $root "load_ps_eth_stream.tcl") $psElf
-    $a53Exit = $LASTEXITCODE
-
-    Write-Host "Restoring MicroBlaze firmware without PS initialization..."
-    & $script:XsdbExe (Join-Path $root "load_mb_firmware.tcl") $mbElf "--no-ps-init"
-    $mbExit = $LASTEXITCODE
-    if ($mbExit -ne 0) {
-        throw "MicroBlaze restore failed after A53 restart (exit $mbExit)."
-    }
-    if ($a53Exit -ne 0) {
-        Write-Warning "A53 restart failed with exit code $a53Exit."
+    & $Python (Join-Path $root "scripts\recover_linux_daq_service.py") `
+        "--port" $PsPort
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning ("The unified Linux shell/service was not recoverable over " +
+            "$PsPort. The full unified loader is the next recovery stage.")
         return $false
     }
-    Start-Sleep -Seconds 8
+    Start-Sleep -Seconds 2
     return $true
 }
 
 function Program-CompleteBoard {
-    Write-Host "`nProgramming tracked FPGA, MicroBlaze, and A53 artifacts..." `
+    Write-Host "`nLoading the complete unified Linux/USB/DAQ runtime..." `
         -ForegroundColor Yellow
     $arguments = @(
-        "-NoProfile", "-ExecutionPolicy", "Bypass",
-        "-File", (Join-Path $root "program_board.ps1"),
-        "-NoPing", "-NoNicSetup",
-        "-BoardIp", $BoardIp,
-        "-HostIp", $LocalIp
+        (Join-Path $root "pico_usb\load_and_test.py"),
+        "--port", $PsPort,
+        "--board-ip", $BoardIp,
+        "--local-ip", $LocalIp
     )
-    if ($Vivado) { $arguments += @("-Vivado", $Vivado) }
-    & powershell.exe @arguments
+    if ($Remote) { $arguments += @("--remote", $Remote) }
+    if ($Identity) { $arguments += @("--identity", $Identity) }
+    & $Python @arguments
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Complete board programming failed with exit code $LASTEXITCODE."
+        Write-Warning "Unified runtime load failed with exit code $LASTEXITCODE."
         return $false
     }
-    Start-Sleep -Seconds 10
     Configure-HostPath
     Clear-BoardNeighbor
     return $true
@@ -346,7 +286,7 @@ function Show-FinalDiagnostics {
         "-InterfaceAlias", $script:Adapter.Name,
         "-CmdPort", "$CmdPort"
     )
-    if ($script:XsdbExe) { $arguments += @("-Xsdb", $script:XsdbExe) }
+    $arguments += @("-PsPort", $PsPort, "-Python", $Python)
     Invoke-ChildPowerShell `
         -Script (Join-Path $root "scripts\diagnose_board_ethernet.ps1") `
         -Arguments $arguments | Out-Null
@@ -357,8 +297,8 @@ if ($PlanOnly) {
     Write-Host "  1. Configure the selected direct-link NIC and firewall."
     Write-Host "  2. Require a valid UDP PONG from $BoardIp`:$CmdPort."
     Write-Host "  3. Clear ARP and restart only the selected NIC."
-    Write-Host "  4. Inspect A53 heartbeat and perform one no-init A53 reload."
-    Write-Host "  5. Program tracked FPGA, MicroBlaze, and A53 artifacts."
+    Write-Host "  4. Restart only daq-eth-service through Linux on $PsPort."
+    Write-Host "  5. Load the complete unified Linux/USB/DAQ runtime."
     if ($WaitForPowerCycle) {
         Write-Host "  6. Wait for a physical power cycle and make one final attempt."
     }
@@ -384,13 +324,12 @@ try {
     Write-Host "Log: $LogPath"
 
     $script:Adapter = Resolve-BoardAdapter -RequestedAlias $InterfaceAlias
-    $script:XsdbExe = Resolve-Xsdb
     Write-Host "Board-link adapter: $($script:Adapter.Name)"
     Write-Host "Local/board: $LocalIp -> $BoardIp`:$CmdPort"
-    if ($script:XsdbExe) {
-        Write-Host "XSDB: $script:XsdbExe"
-    } else {
-        Write-Warning "XSDB was not found. Processor recovery will require program_board.ps1."
+    Write-Host "Linux PS UART: $PsPort"
+    if ($Vivado -or $Xsdb) {
+        Write-Warning ("-Vivado/-Xsdb are ignored by the unified recovery path; " +
+            "the loader uses the available toolchain on its JTAG host.")
     }
 
     Configure-HostPath
@@ -412,12 +351,11 @@ try {
         }
     }
 
-    if (-not $ForceFullProgram -and -not $SkipProcessorRestart) {
-        Test-A53Mailbox | Out-Null
-        if (Restart-A53Application) {
+    if (-not $ForceFullProgram -and -not $SkipServiceRestart) {
+        if (Restart-LinuxDaqService) {
             Clear-BoardNeighbor
-            if (Test-BoardUdp -Stage "controlled A53 restart") {
-                Write-Host "`nEthernet recovered after restarting the A53 application." `
+            if (Test-BoardUdp -Stage "Linux DAQ service restart") {
+                Write-Host "`nEthernet recovered after restarting daq-eth-service." `
                     -ForegroundColor Green
                 exit 0
             }
@@ -459,7 +397,7 @@ try {
     Write-Host "`nRECOVERY FAILED: no valid UDP PONG from $BoardIp." `
         -ForegroundColor Red
     Write-Host "Review the transcript: $LogPath"
-    Write-Host "If JTAG reported EDITR timeout, physically power-cycle the board and rerun:"
+    Write-Host "If the unified loader cannot reach the processors, power-cycle the board and rerun:"
     Write-Host "  .\recover_ethernet.ps1 -InterfaceAlias `"$($script:Adapter.Name)`" -WaitForPowerCycle"
     exit 3
 } catch {

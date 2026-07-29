@@ -3,9 +3,9 @@
   Read-only diagnosis of the direct PC <-> DAQ-board Ethernet path.
 
 .DESCRIPTION
-  Checks host link/IP/route, ICMP, ARP, the real A53 UDP PING/PONG command
-  path, and (when xsdb is available) the A53 progress mailbox + heartbeat.
-  It does not program or reset the FPGA, MicroBlaze, or A53.
+  Checks host link/IP/route, ICMP, ARP, the real DAQ UDP PING/PONG command
+  path, and the unified Linux DAQ-service state over the PS UART.
+  It does not program, reset, or restart anything.
 
 .EXAMPLE
   .\scripts\diagnose_board_ethernet.ps1
@@ -18,25 +18,16 @@ param(
     [string]$LocalIp,
     [string]$InterfaceAlias,
     [int]$CmdPort = 5006,
+    [string]$PsPort = "COM9",
+    [string]$Python = "python",
+    # Backward-compatible, ignored legacy parameter.
     [string]$Xsdb,
-    [switch]$SkipJtag
+    [Alias("SkipJtag")]
+    [switch]$SkipSerial
 )
 $ErrorActionPreference = "Continue"
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $root
-
-function Resolve-Xsdb {
-    if ($Xsdb -and (Test-Path $Xsdb)) { return (Resolve-Path $Xsdb).Path }
-    $candidates = @(
-        Get-ChildItem "C:\Xilinx\*\Vivado\bin\xsdb.bat" -ErrorAction SilentlyContinue
-        Get-ChildItem "C:\Xilinx\Vivado\*\bin\xsdb.bat" -ErrorAction SilentlyContinue
-        Get-ChildItem "C:\Xilinx\*\Vitis\bin\xsdb.bat" -ErrorAction SilentlyContinue
-    ) | Sort-Object FullName -Descending
-    if ($candidates.Count) { return $candidates[0].FullName }
-    $cmd = Get-Command xsdb.bat,xsdb -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($cmd) { return $cmd.Source }
-    return $null
-}
 
 Write-Host "=== DAQ Ethernet diagnosis (read-only) ===" -ForegroundColor Cyan
 Write-Host "Board: $BoardIp/24, UDP command port $CmdPort"
@@ -63,7 +54,16 @@ if ($InterfaceAlias) {
     $adapter = if ($ipObj) { Get-NetAdapter -InterfaceIndex $ipObj.InterfaceIndex -ErrorAction SilentlyContinue }
 }
 
-if (-not $LocalIp -and $ipObj) { $LocalIp = $ipObj.IPAddress }
+if (-not $LocalIp -and $adapter) {
+    $ipObj = Get-NetIPAddress -InterfaceIndex $adapter.ifIndex `
+        -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.IPAddress -like "192.168.2.*" -and
+            $_.IPAddress -ne $BoardIp
+        } |
+        Select-Object -First 1
+    if ($ipObj) { $LocalIp = $ipObj.IPAddress }
+}
 if (-not $adapter) {
     Write-Warning "Could not identify the direct-link adapter. Pass -InterfaceAlias and -LocalIp."
 } else {
@@ -96,24 +96,22 @@ if ($arpLines.Count) {
     Write-Host "ARP entry: none"
 }
 
-Write-Host "`n[4] A53 UDP application PING/PONG"
+Write-Host "`n[4] DAQ UDP service PING/PONG"
 $pyArgs = @("scripts\test_board_ethernet.py", "--board-ip", $BoardIp,
             "--cmd-port", "$CmdPort")
 if ($LocalIp) { $pyArgs += @("--local-ip", $LocalIp) }
-& python @pyArgs
+& $Python @pyArgs
 $udpExit = $LASTEXITCODE
 
-$jtagExit = -1
-if (-not $SkipJtag) {
-    Write-Host "`n[5] A53 mailbox/heartbeat over JTAG"
-    $xsdbExe = Resolve-Xsdb
-    if ($xsdbExe) {
-        Write-Host "XSDB: $xsdbExe"
-        & $xsdbExe "scripts\test_eth_mailbox.tcl"
-        $jtagExit = $LASTEXITCODE
-    } else {
-        Write-Warning "xsdb not found; rerun with -Xsdb <full path> or -SkipJtag."
-    }
+$serialExit = -1
+if (-not $SkipSerial) {
+    Write-Host "`n[5] Unified Linux DAQ-service state over $PsPort"
+    & $Python "scripts\recover_linux_daq_service.py" "--port" $PsPort "--probe"
+    $serialExit = $LASTEXITCODE
+}
+if ($Xsdb) {
+    Write-Warning ("-Xsdb is ignored: halting A53 core 0 for a mailbox read is " +
+        "not safe or necessary under the unified SMP Linux runtime.")
 }
 
 Write-Host "`n=== Interpretation ===" -ForegroundColor Cyan
@@ -121,15 +119,24 @@ if ($udpExit -eq 0) {
     Write-Host "PASS: Ethernet is operational end-to-end." -ForegroundColor Green
     exit 0
 }
-if ($jtagExit -eq 0) {
-    if ($arpLines.Count) {
-        Write-Warning "A53 is alive and L2/ARP works, but UDP PONG failed: check Windows Firewall/VPN and source-IP selection."
+if ($serialExit -eq 0) {
+    if ($icmp -or $arpLines.Count) {
+        Write-Warning ("Linux and daq-eth-service are alive, but UDP PONG failed: " +
+            "check Windows Firewall/VPN and source-IP selection.")
     } else {
-        Write-Warning "A53 is alive but the board is absent from ARP: check direct-link adapter, 192.168.2.x/24 assignment, cable, and GEM3 port."
+        Write-Warning ("The service is running, but the board is absent from the " +
+            "host network: check the adapter, 192.168.2.x/24 assignment, cable, " +
+            "and GEM3 port.")
     }
-} elseif ($jtagExit -gt 0) {
-    Write-Warning "A53 mailbox test failed: the PS Ethernet application is not running correctly. Run recover_board_ethernet.ps1."
+} elseif ($serialExit -gt 0) {
+    if ($icmp) {
+        Write-Warning ("Linux networking answers ICMP, but the DAQ service could " +
+            "not be confirmed. Run recover_ethernet.cmd to restart only the service.")
+    } else {
+        Write-Warning ("The unified Linux shell/service was not confirmed. Run " +
+            "recover_ethernet.cmd for bounded recovery.")
+    }
 } else {
-    Write-Warning "UDP failed and A53 state was not measured. Run again with working XSDB for a definitive diagnosis."
+    Write-Warning "UDP failed and Linux service state was not measured."
 }
 exit 1

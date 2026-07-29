@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Test the DAQ board's actual UDP command path (PING -> PONG).
 
-Unlike ICMP ping, this proves that the A53 lwIP application is running, UDP
-port 5006 is bound, the host route is correct, and the reply reaches the host.
+Unlike ICMP ping, this proves that the active DAQ Ethernet service is running,
+UDP port 5006 is bound, the host route is correct, and the reply reaches the host.
 The script is read-only: it never programs or resets either processor.
 """
 
@@ -16,11 +16,8 @@ import subprocess
 import sys
 import time
 
-BOARD_MAC = "00:0a:35:00:01:10"
-
-
-def arp_entries():
-    """Return matching board-MAC ARP lines (best effort, Windows/Linux)."""
+def arp_entries(board_ip: str):
+    """Return matching board-IP neighbor lines (best effort, Windows/Linux)."""
     for cmd in (["arp", "-a"], ["ip", "neigh"]):
         try:
             out = subprocess.run(cmd, capture_output=True, text=True,
@@ -29,8 +26,7 @@ def arp_entries():
             continue
         hits = []
         for line in out.splitlines():
-            norm = line.lower().replace("-", ":")
-            if BOARD_MAC in norm:
+            if re.search(rf"(?<![\d.]){re.escape(board_ip)}(?![\d.])", line):
                 hits.append(line.strip())
         if hits:
             return hits
@@ -79,7 +75,7 @@ def main() -> int:
                 if getattr(exc, "winerror", None) == 10054 \
                         or exc.errno == errno.ECONNREFUSED:
                     print(f"  attempt {attempt}: UDP port unreachable "
-                          "(IP path works; A53 app is not listening)")
+                          "(IP path works; DAQ service is not listening)")
                     continue
                 print(f"FAIL SEND/RECV: {exc}")
                 return 2
@@ -93,14 +89,14 @@ def main() -> int:
     finally:
         sock.close()
 
-    print("FAIL UDP: no PONG; the A53 app is not reachable on its command port.")
-    hits = arp_entries()
+    print("FAIL UDP: no PONG; the DAQ service is not reachable on its command port.")
+    hits = arp_entries(args.board_ip)
     if hits:
-        print("Board MAC is present in ARP (L2 works; investigate app/UDP/firewall):")
+        print("Board IP is present in ARP (L2 works; investigate service/UDP/firewall):")
         for line in hits:
             print(f"  {line}")
     else:
-        print("Board MAC is absent from ARP (app down, link down, or wrong host subnet).")
+        print("Board IP is absent from ARP (runtime down, link down, or wrong host subnet).")
     return 3
 
 
