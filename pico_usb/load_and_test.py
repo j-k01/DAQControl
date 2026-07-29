@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,8 @@ ARTIFACTS = {
     "linux_image": "Image",
     "linux_dtb": "system.dtb",
     "initramfs": "pico-initramfs.cpio.gz",
+    "mb_firmware": "firmware.elf",
+    "psu_init": "psu_init.tcl",
 }
 
 
@@ -60,9 +63,11 @@ def require_artifacts() -> dict[str, Path]:
     paths = {
         name: PREBUILT / filename
         for name, filename in ARTIFACTS.items()
-        if name != "bitstream"
+        if name not in {"bitstream", "mb_firmware", "psu_init"}
     }
     paths["bitstream"] = ROOT.parent / "prebuilt" / "top.bit"
+    paths["mb_firmware"] = ROOT.parent / "prebuilt" / "firmware.elf"
+    paths["psu_init"] = ROOT.parent / "prebuilt" / "psu_init.tcl"
     missing = [str(path) for path in paths.values() if not path.is_file()]
     if missing:
         raise RuntimeError("missing prebuilt artifact(s):\n  " + "\n  ".join(missing))
@@ -105,17 +110,16 @@ set pico_uf2 [file join $work_dir {ARTIFACTS["pico_uf2"]}]
 set linux_image [file join $work_dir {ARTIFACTS["linux_image"]}]
 set linux_dtb [file join $work_dir {ARTIFACTS["linux_dtb"]}]
 set initramfs [file join $work_dir {ARTIFACTS["initramfs"]}]
+set mb_firmware [file join $work_dir {ARTIFACTS["mb_firmware"]}]
+set psu_init_tcl [file join $work_dir {ARTIFACTS["psu_init"]}]
 set dtb_addr 0x00100000
 set pico_image_addr 0x35000000
 set pico_uf2_addr 0x36000000
 set linux_addr 0x08000000
 set linux_dtb_addr 0x04000000
-set initramfs_addr 0x20000000
+set initramfs_addr 0x0C000000
 
 connect
-targets -set -filter {{name =~ "PL"}}
-fpga -file $bitstream
-
 targets -set -filter {{name =~ "PSU"}}
 rst -system
 after 3000
@@ -130,6 +134,9 @@ dow $pmufw
 con
 after 1000
 
+# FSBL establishes the standard ZynqMP handoff state required by BL31.  The
+# DAQ-generated psu_init below is still run after PL configuration to restore
+# the exact HP-port and PS-to-PL settings used by the known-good DAQ flow.
 targets -set -filter {{name =~ "Cortex-A53 #0"}}
 catch {{stop}}
 rst -processor
@@ -138,6 +145,33 @@ con
 after 20000
 stop
 
+# Configure the PL after the system reset.  A system reset after `fpga` erases
+# the configuration and was invisible in the original USB-only proof.
+targets -set -filter {{name =~ "PL"}}
+fpga -file $bitstream
+after 1000
+
+# Use the exact, known-good DAQ JTAG initialization path.  It configures DDR,
+# PS clocks, and the PS-to-PL HP ports without an FSBL protection handoff.
+targets -set -filter {{name =~ "PSU"}}
+source $psu_init_tcl
+foreach p {{psu_init psu_ps_pl_isolation_removal psu_ps_pl_reset_config}} {{
+    if {{[llength [info commands $p]] > 0}} {{
+        $p
+    }}
+}}
+
+# Start the existing DAQ MicroBlaze after FSBL has established the final PS,
+# DDR, isolation, and reset state and the PL is configured.
+targets -set -filter {{name =~ "MicroBlaze #*"}}
+catch {{stop}}
+rst -processor
+dow $mb_firmware
+con
+
+targets -set -filter {{name =~ "Cortex-A53 #0"}}
+catch {{stop}}
+rst -processor -clear-registers
 dow -data $dtb $dtb_addr
 dow $uboot
 dow -data $pico_image $pico_image_addr
@@ -146,7 +180,7 @@ dow -data $linux_image $linux_addr
 dow -data $linux_dtb $linux_dtb_addr
 dow -data $initramfs $initramfs_addr
 dow $bl31
-puts "Starting ZCU102 USB host runtime"
+puts "Starting unified ZCU102 DAQ Ethernet and Pico USB runtime"
 con
 exit
 """
@@ -195,7 +229,7 @@ def upload(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Load and verify the ZCU102 J96 to Pico 2 USB/SPI test"
+        description="Load and verify unified ZCU102 DAQ Ethernet + Pico USB runtime"
     )
     parser.add_argument("--port", default="COM9", help="ZCU102 PS UART0")
     parser.add_argument(
@@ -208,7 +242,40 @@ def parse_args() -> argparse.Namespace:
         default=str(Path.home() / ".ssh" / "capitolpeak_auto"),
         help="SSH private key",
     )
+    parser.add_argument(
+        "--board-ip", default="192.168.2.10", help="ZCU102 Linux DAQ address"
+    )
+    parser.add_argument(
+        "--local-ip", default="192.168.2.1", help="direct-link host address"
+    )
     return parser.parse_args()
+
+
+def verify_ethernet(board_ip: str, local_ip: str, timeout: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout
+    last_error = "no response"
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(0.5)
+        try:
+            sock.bind((local_ip, 0))
+        except OSError as exc:
+            raise RuntimeError(
+                f"cannot bind Ethernet test to {local_ip}: {exc}. "
+                "Configure the direct-link adapter before running."
+            ) from exc
+        while time.monotonic() < deadline:
+            try:
+                sock.sendto(b"PING", (board_ip, 5006))
+                reply, peer = sock.recvfrom(128)
+                if peer[0] == board_ip and reply == b"PONG\n":
+                    return
+                last_error = f"unexpected reply {reply!r} from {peer}"
+            except OSError as exc:
+                last_error = str(exc)
+    raise RuntimeError(
+        f"Linux USB passed, but DAQ Ethernet PING to {board_ip}:5006 failed: "
+        f"{last_error}"
+    )
 
 
 def main() -> int:
@@ -267,8 +334,8 @@ def main() -> int:
 
                 boot_command = (
                     "setenv bootargs 'console=ttyPS0,115200 earlycon "
-                    "root=/dev/ram0 rw rdinit=/init'; "
-                    f"booti 08000000 20000000:{initramfs_size:x} 04000000\r"
+                    "root=/dev/ram0 rw rdinit=/init mem=240M'; "
+                    f"booti 08000000 0C000000:{initramfs_size:x} 04000000\r"
                 )
                 port.write(boot_command.encode("ascii"))
                 if not wait_for(output, lock, SUCCESS, 90):
@@ -287,11 +354,15 @@ def main() -> int:
                         "Pico USB/SPI verification did not complete; inspect the "
                         "UART transcript above."
                     )
+                verify_ethernet(args.board_ip, args.local_ip)
             finally:
                 done.set()
                 reader.join(timeout=1)
 
-    print("\nPASS: Pico LED is blinking and bidirectional SPI/USB is verified.")
+    print(
+        "\nPASS: MicroBlaze is running, Pico USB/SPI passed, and Linux DAQ "
+        "Ethernet answered PING."
+    )
     return 0
 
 
