@@ -24,6 +24,8 @@ by this directory's manifest and verified before programming.
 `system.dtb` are from Xilinx Linux 6.6 tag
 `xlnx_rebase_v6.6_LTS_2024.1`. The initramfs is based on Alpine 3.24.1 and
 contains the USB updater, Linux DAQ Ethernet service, DDR diagnostic utility,
-their runtime, and the RAM-only UF2.
+the dual-ingress Pico SPI bridge, their runtime, and the RAM-only UF2. The
+bridge accepts requests directly on UDP port 5007 or through the MicroBlaze
+UART command and its separate DDR mailbox.
 
 No artifact in this directory is persistently programmed by the loader.

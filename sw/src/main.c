@@ -290,7 +290,14 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
 #define STRM_DESC_STRIDE     0x40u
 #define STRM_ONESHOT_DESC0   0x1003C000u
 #define STRM_ONESHOT_DESC1   0x1003C040u
+#define PICO_MAILBOX         0x1003FE00u
 #define STRM_MAILBOX         0x1003FF00u
+#define PICO_MAILBOX_MAGIC   0x50425247u
+#define PICO_MAILBOX_DATA    0x20u
+#define PICO_MAX_BYTES       128u
+#define PICO_FLAG_LOOPBACK   1u
+#define PICO_STATUS_OK       0u
+#define PICO_STATUS_BUSY     5u
 #define STRM_MAGIC_RUNNING   0x53545201u
 #define STRM_MAGIC_STOPPED   0x53545200u
 #define RW6_STREAM_ENABLE    (1u << 31)
@@ -353,7 +360,7 @@ static void stream_stop(void);
 #endif
 
 static XUartNs550 uart;
-static char cmd[96];
+static char cmd[320];
 static int cmd_idx = 0;
 
 #if HAS_BRAM_DATAPLANE
@@ -3267,7 +3274,136 @@ static void cmd_burst_trig(char *args)
 }
 #endif /* HAS_BRAM_DATAPLANE */
 
-/* BRDO -- ask the A53 to read the last captured regions out over UDP. Capture
+static int pico_hex_nibble(char c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    return -1;
+}
+
+/* PSPI <hex> [half_period_us] [external]
+ *
+ * Submit one Pico SPI transaction through the Linux-owned USB controller.
+ * The default loopback mode verifies the present GP6->GP10 ... GP9->GP13
+ * jumper wiring. "external" drives GP6..GP9 without waiting for Pico core 1.
+ */
+static void cmd_pico_spi(char *args)
+{
+    u8 tx[PICO_MAX_BYTES];
+    u8 rx[PICO_MAX_BYTES];
+    char *p = args;
+    char *hex_start;
+    u32 hex_chars = 0u;
+    u32 length;
+    u32 half_period_us = 5u;
+    u32 flags = PICO_FLAG_LOOPBACK;
+    u32 request;
+    u32 status;
+    u32 rx_length;
+    u32 timeout;
+    u32 i;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+    hex_start = p;
+    while (pico_hex_nibble(*p) >= 0) {
+        p++;
+        hex_chars++;
+    }
+    if (hex_chars == 0u || (hex_chars & 1u) != 0u ||
+        hex_chars > 2u * PICO_MAX_BYTES ||
+        (*p != '\0' && *p != ' ' && *p != '\t')) {
+        send_str("ERR PSPI expects 1..128 bytes of even-length hex\r\n");
+        return;
+    }
+    length = hex_chars / 2u;
+    for (i = 0; i < length; i++) {
+        tx[i] = (u8)((pico_hex_nibble(hex_start[2u * i]) << 4) |
+                     pico_hex_nibble(hex_start[2u * i + 1u]));
+    }
+
+    if (parse_u32_arg(&p, &half_period_us)) {
+        if (half_period_us == 0u || half_period_us > 100u) {
+            send_str("ERR PSPI half_period_us must be 1..100\r\n");
+            return;
+        }
+    }
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (*p != '\0') {
+        if (strncmp(p, "external", 8) == 0 &&
+            (p[8] == '\0' || p[8] == ' ' || p[8] == '\t')) {
+            flags = 0u;
+        } else {
+            send_str("ERR PSPI final option must be external\r\n");
+            return;
+        }
+    }
+
+    if (Xil_In32(PICO_MAILBOX + 0x00u) != PICO_MAILBOX_MAGIC) {
+        send_str("ERR PSPI Linux Pico bridge unavailable\r\n");
+        return;
+    }
+    for (i = 0; i < (length + 3u) / 4u; i++) {
+        u32 word = 0u;
+        u32 byte_index = i * 4u;
+        u32 j;
+        for (j = 0; j < 4u && byte_index + j < length; j++)
+            word |= (u32)tx[byte_index + j] << (8u * j);
+        Xil_Out32(PICO_MAILBOX + PICO_MAILBOX_DATA + i * 4u, word);
+    }
+
+    request = Xil_In32(PICO_MAILBOX + 0x04u) + 1u;
+    if (request == 0u)
+        request = 1u;
+    Xil_Out32(PICO_MAILBOX + 0x10u, flags);
+    Xil_Out32(PICO_MAILBOX + 0x14u, half_period_us);
+    Xil_Out32(PICO_MAILBOX + 0x18u, length);
+    Xil_Out32(PICO_MAILBOX + 0x1Cu, 0u);
+    Xil_Out32(PICO_MAILBOX + 0x0Cu, PICO_STATUS_BUSY);
+    Xil_Out32(PICO_MAILBOX + 0x04u, request);
+
+    for (timeout = 0u; timeout < 100000000u; timeout++) {
+        if (Xil_In32(PICO_MAILBOX + 0x08u) == request)
+            break;
+    }
+    if (timeout == 100000000u) {
+        send_str("ERR PSPI Linux bridge timeout\r\n");
+        return;
+    }
+    status = Xil_In32(PICO_MAILBOX + 0x0Cu);
+    rx_length = Xil_In32(PICO_MAILBOX + 0x1Cu);
+    if (status != PICO_STATUS_OK || rx_length != length) {
+        send_str("ERR PSPI status=");
+        send_uint(status);
+        send_str(" rx_length=");
+        send_uint(rx_length);
+        send_str("\r\n");
+        return;
+    }
+    for (i = 0; i < (rx_length + 3u) / 4u; i++) {
+        u32 word = Xil_In32(PICO_MAILBOX + PICO_MAILBOX_DATA + i * 4u);
+        u32 byte_index = i * 4u;
+        u32 j;
+        for (j = 0; j < 4u && byte_index + j < rx_length; j++)
+            rx[byte_index + j] = (u8)(word >> (8u * j));
+    }
+
+    send_str("OK PSPI n=");
+    send_uint(rx_length);
+    send_str(" rx=");
+    for (i = 0; i < rx_length; i++) {
+        send_byte((u8)"0123456789ABCDEF"[rx[i] >> 4]);
+        send_byte((u8)"0123456789ABCDEF"[rx[i] & 0x0Fu]);
+    }
+    send_str("\r\n");
+}
+
+/* BRDO -- ask Linux to read the last captured regions out over UDP. Capture
  * (BCAP) and readout (BRDO) are decoupled, both MB-controlled. */
 static void cmd_burst_readout(char *args)
 {
@@ -3540,7 +3676,8 @@ static void cmd_help(void)
     send_str("  DMAC [frames]    arm ADC0/ADC1 S2MM DMA to PS DDR, then pulse ADC capture\r\n");
     send_str("  BCAP [MB]        full-rate un-decimated burst capture of all 4 ADC ch (default/max 16 MB/chip)\r\n");
     send_str("  BCPT [N[k|m] [reps]] multisample burst: reps trigger-synced captures of N/chip, strided in DDR (default 64k x16)\r\n");
-    send_str("  BRDO             ask the A53 to read the last BCAP regions out over UDP\r\n");
+    send_str("  BRDO             ask Linux to read the last BCAP regions out over UDP\r\n");
+    send_str("  PSPI hex [half_us] [external]  forward 1..128 SPI bytes to Pico over Linux USB; default verifies loopback\r\n");
     send_str("  BMAP [b0 b1]     show/set BCAP DDR bases (debug)\r\n");
     send_str("  STRM [decim [cic]]|STOP|STAT  continuous decimated stream into DDR rings (cyclic SG)\r\n");
     send_str("  STRM CIC on|off  live A/B toggle: chip1 ch2/3 CIC anti-alias (D=128) vs keep-1-of-D\r\n");
@@ -3819,6 +3956,8 @@ static void process_cmd(void)
         send_str("ERR BRAM dataplane not built; rebuild with --with-bram-dataplane\r\n");
 #endif
 #if HAS_PS_DDR_DMA
+    } else if (strncmp(cmd, "PSPI", 4) == 0) {
+        cmd_pico_spi(&cmd[4]);
     } else if (strncmp(cmd, "STRM", 4) == 0) {
         cmd_stream(&cmd[4]);
     } else if (strncmp(cmd, "BCAP", 4) == 0) {

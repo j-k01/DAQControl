@@ -14,8 +14,11 @@ command:
    protocol on port 5006;
 7. requests RP2350 BOOTSEL through the Pico CDC 1200-baud reset mechanism;
 8. copies a RAM-only Pico application through USB mass storage;
-9. runs a full-duplex software-SPI test through the four jumper wires; and
-10. verifies both `PICO2_USB_SPI_PASS` and an Ethernet `PING`/`PONG`.
+9. runs a full-duplex software-SPI test through the four jumper wires;
+10. starts a persistent Pico SPI bridge on both UDP and the MicroBlaze
+    UART-to-DDR-mailbox path; and
+11. verifies `PICO2_USB_SPI_PASS`, DAQ Ethernet `PING`/`PONG`, and a real Pico
+    SPI transaction.
 
 The successful hardware run started from the older Pico CDC firmware, entered
 BOOTSEL over USB without touching the button, loaded the application, and
@@ -72,6 +75,36 @@ PASS: MicroBlaze is running, Pico USB/SPI passed, and Linux DAQ Ethernet answere
 ```
 
 Enumeration alone is not treated as success.
+
+## Send Pico SPI transactions
+
+The same command can use Ethernet, COM10, or verify both paths:
+
+```powershell
+python scripts\pico_spi_bridge.py --transport ethernet --tx 00ffa55a
+python scripts\pico_spi_bridge.py --transport uart --port COM10 --tx 00ffa55a
+python scripts\pico_spi_bridge.py --transport both --port COM10 --tx 00ffa55a
+```
+
+The default is `--transport auto`: it tries board UDP port 5007 first and
+falls back to the normal MicroBlaze console on COM10. Therefore the same
+one-line command continues to work when the host has no Ethernet link to the
+board. Use `--transport both` when both links are present and you want their
+returned bytes compared. Both paths terminate in one Linux service, so Linux
+remains the only owner of the ZynqMP USB controller.
+
+By default the Pico uses the four jumper wires as a self-checking SPI
+loopback and returns each transmitted byte XOR `0xA5`. The client verifies
+that result. Add `--external` to drive GP6 (SCK), GP7 (MOSI), GP8 (MISO), and
+GP9 (CS) as an ordinary SPI mode-0 master without the internal loopback
+slave. Transfers are 1–128 bytes and `--half-period-us` selects 1–100 us.
+
+The direct MicroBlaze console form is:
+
+```text
+PSPI 00ffa55a 5
+PSPI 00ffa55a 5 external
+```
 
 To exercise the complete BRST/BRDO/DAQS path without depending on the external
 ADC clocks, run:

@@ -79,5 +79,12 @@ else
     done
 fi
 
+if [ -c /dev/ttyACM0 ]; then
+    /usr/sbin/pico-bridge-service >/dev/ttyPS0 2>&1 &
+    echo "PICO-BRIDGE: service launched at UDP port 5007 and MB mailbox 0x1003FE00"
+else
+    echo "PICO-BRIDGE: WARNING - /dev/ttyACM0 is unavailable"
+fi
+
 echo "PICO-HOST: diagnostic shell ready"
 exec /bin/sh

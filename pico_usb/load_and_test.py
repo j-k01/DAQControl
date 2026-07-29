@@ -4,6 +4,7 @@ import argparse
 import hashlib
 from pathlib import Path
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,7 @@ ROOT = Path(__file__).resolve().parent
 PREBUILT = ROOT / "prebuilt"
 REMOTE_DIR = "/tmp/daq_pico_usb"
 SUCCESS = b"PICO-HOST: PASS - USB update, Pico execution, and SPI loopback verified"
+PICO_HEADER = struct.Struct("<4sBBHIHH")
 
 ARTIFACTS = {
     "bitstream": "top.bit",
@@ -278,6 +280,51 @@ def verify_ethernet(board_ip: str, local_ip: str, timeout: float = 15.0) -> None
     )
 
 
+def verify_pico_bridge(
+    board_ip: str, local_ip: str, timeout: float = 15.0
+) -> None:
+    tx = bytes.fromhex("00ffa55a3cc39669")
+    expected = bytes(value ^ 0xA5 for value in tx)
+    sequence = 0x5049434F
+    request = PICO_HEADER.pack(
+        b"PSPI", 1, 1, 5, sequence, len(tx), 0
+    ) + tx
+    deadline = time.monotonic() + timeout
+    last_error = "no response"
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.bind((local_ip, 0))
+        sock.settimeout(0.5)
+        while time.monotonic() < deadline:
+            try:
+                sock.sendto(request, (board_ip, 5007))
+                response, peer = sock.recvfrom(PICO_HEADER.size + 128)
+            except OSError as exc:
+                last_error = str(exc)
+                continue
+            if peer[0] != board_ip or len(response) < PICO_HEADER.size:
+                continue
+            magic, version, status, rx_length, reply_sequence, _, _ = (
+                PICO_HEADER.unpack_from(response)
+            )
+            rx = response[PICO_HEADER.size:]
+            if (
+                magic == b"PSPR"
+                and version == 1
+                and status == 0
+                and reply_sequence == sequence
+                and rx_length == len(rx)
+                and rx == expected
+            ):
+                return
+            last_error = (
+                f"unexpected status={status}, sequence={reply_sequence}, "
+                f"payload={rx.hex()}"
+            )
+    raise RuntimeError(
+        f"Pico USB bridge on {board_ip}:5007 failed: {last_error}"
+    )
+
+
 def main() -> int:
     args = parse_args()
     if serial is None:
@@ -355,13 +402,14 @@ def main() -> int:
                         "UART transcript above."
                     )
                 verify_ethernet(args.board_ip, args.local_ip)
+                verify_pico_bridge(args.board_ip, args.local_ip)
             finally:
                 done.set()
                 reader.join(timeout=1)
 
     print(
-        "\nPASS: MicroBlaze is running, Pico USB/SPI passed, and Linux DAQ "
-        "Ethernet answered PING."
+        "\nPASS: MicroBlaze is running, Pico USB/SPI passed, Linux DAQ "
+        "Ethernet answered PING, and the Pico UDP bridge completed an SPI RPC."
     )
     return 0
 

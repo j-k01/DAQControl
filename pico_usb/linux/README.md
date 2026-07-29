@@ -44,7 +44,17 @@ Linux is booted with `mem=240M`, limiting its allocator to
 readout service. `daq_mem.c` builds the small `daq-mem` console utility used by
 the deterministic integration test.
 
-The two service programs are built as static AArch64 binaries with the Xilinx
+`pico_bridge_service.c` is the sole owner of the Pico CDC device. It serializes
+SPI requests from two independent PC ingress paths:
+
+- UDP port 5007 uses the versioned binary `PSPI`/`PSPR` protocol.
+- The MicroBlaze console's `PSPI` command uses the reserved mailbox at
+  `0x1003FE00`; this path remains usable when board Ethernet is unavailable.
+
+The existing DAQ service stays on UDP port 5006 and the existing DAQ mailbox
+stays at `0x1003FF00`. The Pico bridge does not modify either one.
+
+The service programs are built as static AArch64 binaries with the Xilinx
 Vitis toolchain:
 
 ```sh
@@ -52,6 +62,8 @@ aarch64-linux-gnu-gcc -O3 -static -Wall -Wextra -Werror \
   -o daq-eth-service daq_eth_service.c
 aarch64-linux-gnu-gcc -O2 -static -Wall -Wextra -Werror \
   -o daq-mem daq_mem.c
+aarch64-linux-gnu-gcc -O3 -static -Wall -Wextra -Werror \
+  -o pico-bridge-service pico_bridge_service.c
 ```
 
 No part of this flow performs persistent ZCU102 or Pico writes.
