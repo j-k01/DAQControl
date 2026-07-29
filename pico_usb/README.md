@@ -76,22 +76,45 @@ PASS: MicroBlaze is running, Pico USB/SPI passed, and Linux DAQ Ethernet answere
 
 Enumeration alone is not treated as success.
 
-## Send Pico SPI transactions
+## Use an existing Pico controller
 
-The same command can use Ethernet, COM10, or verify both paths:
+The normal interface is a pyserial-shaped transport. Existing controller code
+keeps its Pico messages and read/write logic; change only the imported serial
+namespace:
 
-```powershell
-python scripts\pico_spi_bridge.py --transport ethernet --tx 00ffa55a
-python scripts\pico_spi_bridge.py --transport uart --port COM10 --tx 00ffa55a
-python scripts\pico_spi_bridge.py --transport both --port COM10 --tx 00ffa55a
+```python
+# Before, with the Pico connected directly to the PC:
+# import serial
+
+# After, with the Pico connected to ZCU102 J96:
+import fpga_pico_serial as serial
+
+with serial.Serial(EXISTING_PICO_PORT, EXISTING_BAUD, timeout=1) as pico:
+    pico.write(b"the existing Pico message\n")
+    reply = pico.readline()
 ```
 
-The default is `--transport auto`: it tries board UDP port 5007 first and
-falls back to the normal MicroBlaze console on COM10. Therefore the same
-one-line command continues to work when the host has no Ethernet link to the
-board. Use `--transport both` when both links are present and you want their
-returned bytes compared. Both paths terminate in one Linux service, so Linux
-remains the only owner of the ZynqMP USB controller.
+Run the controller with the repository root on Python's import path, then use
+`import fpga_pico_serial as serial`. `Serial.write`, `read`, `readline`,
+`read_until`, `read_all`, `flush`, `reset_input_buffer`, context management,
+and `in_waiting` are implemented. Message bytes are forwarded unchanged.
+The old `port` and `baudrate` arguments are accepted for source compatibility;
+the FPGA UART fallback independently uses COM10 at 115200. Override that with
+`fpga_uart_port="COMx"` or the `FPGA_PICO_UART_PORT` environment variable when
+Windows assigns the MicroBlaze console a different name.
+
+The default `transport="auto"` probes board UDP port 5007 once when the object
+is opened and selects Ethernet when it responds; otherwise it opens the
+MicroBlaze console on COM10. The selected path is available as
+`pico.transport`. Pass `transport="ethernet"` or `"uart"` to force one.
+Selecting once at open prevents an ambiguous Ethernet timeout from duplicating
+a write over UART.
+
+Both paths terminate in one Linux service, so Linux remains the only owner of
+the ZynqMP USB controller. Ethernet link failure does not prevent the COM10
+path from forwarding USB CDC bytes.
+
+## Low-level SPI diagnostic
 
 By default the Pico uses the four jumper wires as a self-checking SPI
 loopback and returns each transmitted byte XOR `0xA5`. The client verifies
@@ -104,6 +127,12 @@ The direct MicroBlaze console form is:
 ```text
 PSPI 00ffa55a 5
 PSPI 00ffa55a 5 external
+```
+
+The corresponding diagnostic client is:
+
+```powershell
+python scripts\pico_spi_bridge.py --transport both --tx 00ffa55a
 ```
 
 To exercise the complete BRST/BRDO/DAQS path without depending on the external

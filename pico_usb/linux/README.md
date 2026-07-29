@@ -45,11 +45,13 @@ readout service. `daq_mem.c` builds the small `daq-mem` console utility used by
 the deterministic integration test.
 
 `pico_bridge_service.c` is the sole owner of the Pico CDC device. It serializes
-SPI requests from two independent PC ingress paths:
+raw CDC and diagnostic SPI requests from two independent PC ingress paths:
 
-- UDP port 5007 uses the versioned binary `PSPI`/`PSPR` protocol.
-- The MicroBlaze console's `PSPI` command uses the reserved mailbox at
-  `0x1003FE00`; this path remains usable when board Ethernet is unavailable.
+- UDP port 5007 uses versioned raw `PCDC`/`PCDR` and diagnostic
+  `PSPI`/`PSPR` packets.
+- The MicroBlaze console's `PICO W/R/F` and `PSPI` commands use the reserved
+  mailbox at `0x1003FE00`; this path remains usable when board Ethernet is
+  unavailable.
 
 The existing DAQ service stays on UDP port 5006 and the existing DAQ mailbox
 stays at `0x1003FF00`. The Pico bridge does not modify either one.

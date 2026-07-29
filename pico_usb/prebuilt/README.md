@@ -26,6 +26,7 @@ by this directory's manifest and verified before programming.
 contains the USB updater, Linux DAQ Ethernet service, DDR diagnostic utility,
 the dual-ingress Pico SPI bridge, their runtime, and the RAM-only UF2. The
 bridge accepts requests directly on UDP port 5007 or through the MicroBlaze
-UART command and its separate DDR mailbox.
+UART command and its separate DDR mailbox. Both paths support generic Pico
+USB CDC byte forwarding; SPI RPC remains available as a hardware diagnostic.
 
 No artifact in this directory is persistently programmed by the loader.

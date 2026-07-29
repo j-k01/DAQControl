@@ -1,7 +1,7 @@
 /*
- * Unified PC-to-Pico SPI bridge.
+ * Unified PC-to-Pico USB CDC and SPI bridge.
  *
- * Ingress 1: UDP 5007 using the binary PSPI/PSPR protocol.
+ * Ingress 1: UDP 5007 using PSPI/PSPR or raw PCDC/PCDR packets.
  * Ingress 2: MicroBlaze requests in reserved DDR at 0x1003FE00.
  * Egress:    USB CDC ASCII RPC to the Pico 2 on /dev/ttyACM0.
  *
@@ -38,6 +38,17 @@
 #define PICO_MAILBOX_DATA       0x20u
 #define PICO_MAILBOX_MAGIC      0x50425247u
 #define PAGE_BYTES              4096u
+#define PICO_MODE_MASK          0xFF000000u
+#define PICO_MODE_SPI           0x00000000u
+#define PICO_MODE_CDC_WRITE     0x01000000u
+#define PICO_MODE_CDC_READ      0x02000000u
+#define PICO_MODE_CDC_FLUSH     0x03000000u
+#define PICO_CDC_TIMEOUT_MAX_MS 60000u
+
+#define PCDC_PROBE              0u
+#define PCDC_WRITE              1u
+#define PCDC_READ               2u
+#define PCDC_FLUSH              3u
 
 #define MB_MAGIC                0x00u
 #define MB_REQUEST              0x04u
@@ -270,6 +281,90 @@ static int write_all(int fd, const uint8_t *data, size_t length)
     return offset == length ? 0 : -1;
 }
 
+static enum bridge_status pico_cdc_write(
+    const uint8_t *data, uint16_t length
+) {
+    if (length == 0u || length > PICO_MAX_BYTES) {
+        return BRIDGE_BAD_REQUEST;
+    }
+    if (open_pico() != 0) {
+        return BRIDGE_USB_UNAVAILABLE;
+    }
+    if (write_all(pico_fd, data, length) != 0) {
+        close_pico();
+        return BRIDGE_USB_IO_ERROR;
+    }
+    return BRIDGE_OK;
+}
+
+static enum bridge_status pico_cdc_read(
+    uint16_t capacity,
+    uint16_t timeout_ms,
+    uint8_t *data,
+    uint16_t *length
+) {
+    uint64_t deadline;
+
+    *length = 0u;
+    if (capacity == 0u || capacity > PICO_MAX_BYTES ||
+        timeout_ms > PICO_CDC_TIMEOUT_MAX_MS) {
+        return BRIDGE_BAD_REQUEST;
+    }
+    if (open_pico() != 0) {
+        return BRIDGE_USB_UNAVAILABLE;
+    }
+
+    deadline = monotonic_ms() + timeout_ms;
+    do {
+        struct pollfd pfd = {.fd = pico_fd, .events = POLLIN};
+        uint64_t now = monotonic_ms();
+        int wait_ms = 0;
+        int ready;
+
+        if (timeout_ms != 0u && now < deadline) {
+            uint64_t remaining = deadline - now;
+            wait_ms = remaining > 50u ? 50 : (int)remaining;
+        }
+        ready = poll(&pfd, 1, wait_ms);
+        if (ready < 0 && errno != EINTR) {
+            close_pico();
+            return BRIDGE_USB_IO_ERROR;
+        }
+        if (ready > 0 && (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+            close_pico();
+            return BRIDGE_USB_IO_ERROR;
+        }
+        if (ready > 0 && (pfd.revents & POLLIN)) {
+            ssize_t count = read(pico_fd, data, capacity);
+            if (count > 0) {
+                *length = (uint16_t)count;
+                return BRIDGE_OK;
+            }
+            if (count == 0) {
+                close_pico();
+                return BRIDGE_USB_IO_ERROR;
+            }
+            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                close_pico();
+                return BRIDGE_USB_IO_ERROR;
+            }
+        }
+    } while (timeout_ms != 0u && monotonic_ms() < deadline);
+    return BRIDGE_OK;
+}
+
+static enum bridge_status pico_cdc_flush(void)
+{
+    if (open_pico() != 0) {
+        return BRIDGE_USB_UNAVAILABLE;
+    }
+    if (tcflush(pico_fd, TCIFLUSH) != 0) {
+        close_pico();
+        return BRIDGE_USB_IO_ERROR;
+    }
+    return BRIDGE_OK;
+}
+
 static enum bridge_status pico_transfer(
     uint8_t flags,
     uint16_t half_period_us,
@@ -417,9 +512,40 @@ static void service_udp(void)
                 flags, half_period_us, request + PICO_PACKET_HEADER,
                 tx_length, response + PICO_PACKET_HEADER, &rx_length);
         }
+        memcpy(response, "PSPR", 4u);
+    } else if (received >= (ssize_t)PICO_PACKET_HEADER &&
+               memcmp(request, "PCDC", 4u) == 0 &&
+               request[4] == PICO_PROTOCOL_VERSION) {
+        uint8_t operation = request[5];
+        uint16_t timeout_ms = get_u16_le(request + 6u);
+
+        sequence = get_u32_le(request + 8u);
+        tx_length = get_u16_le(request + 12u);
+        if (operation == PCDC_PROBE &&
+            tx_length == 0u &&
+            received == (ssize_t)PICO_PACKET_HEADER) {
+            status = BRIDGE_OK;
+        } else if (operation == PCDC_WRITE &&
+            tx_length != 0u && tx_length <= PICO_MAX_BYTES &&
+            received == (ssize_t)(PICO_PACKET_HEADER + tx_length)) {
+            status = pico_cdc_write(
+                request + PICO_PACKET_HEADER, tx_length);
+        } else if (operation == PCDC_READ &&
+                   tx_length != 0u && tx_length <= PICO_MAX_BYTES &&
+                   received == (ssize_t)PICO_PACKET_HEADER) {
+            status = pico_cdc_read(
+                tx_length, timeout_ms, response + PICO_PACKET_HEADER,
+                &rx_length);
+        } else if (operation == PCDC_FLUSH &&
+                   tx_length == 0u &&
+                   received == (ssize_t)PICO_PACKET_HEADER) {
+            status = pico_cdc_flush();
+        }
+        memcpy(response, "PCDR", 4u);
+    } else {
+        memcpy(response, "PSPR", 4u);
     }
 
-    memcpy(response, "PSPR", 4u);
     response[4] = PICO_PROTOCOL_VERSION;
     response[5] = (uint8_t)status;
     put_u16_le(response + 6u, rx_length);
@@ -449,14 +575,27 @@ static void service_mailbox(void)
     mailbox_write32(MB_STATUS, BRIDGE_BUSY);
     mailbox_write32(MB_RX_LENGTH, 0u);
 
-    if (tx_length == 0u || tx_length > PICO_MAX_BYTES ||
-        half_period_us == 0u || half_period_us > 100u) {
-        status = BRIDGE_BAD_REQUEST;
-    } else {
+    if ((flags & PICO_MODE_MASK) == PICO_MODE_SPI &&
+        tx_length != 0u && tx_length <= PICO_MAX_BYTES &&
+        half_period_us != 0u && half_period_us <= 100u) {
         mailbox_read_bytes(PICO_MAILBOX_DATA, tx, tx_length);
         status = pico_transfer(
             (uint8_t)flags, (uint16_t)half_period_us, tx,
             (uint16_t)tx_length, rx, &rx_length);
+    } else if ((flags & PICO_MODE_MASK) == PICO_MODE_CDC_WRITE &&
+               tx_length != 0u && tx_length <= PICO_MAX_BYTES) {
+        mailbox_read_bytes(PICO_MAILBOX_DATA, tx, tx_length);
+        status = pico_cdc_write(tx, (uint16_t)tx_length);
+    } else if ((flags & PICO_MODE_MASK) == PICO_MODE_CDC_READ &&
+               tx_length != 0u && tx_length <= PICO_MAX_BYTES &&
+               half_period_us <= PICO_CDC_TIMEOUT_MAX_MS) {
+        status = pico_cdc_read(
+            (uint16_t)tx_length, (uint16_t)half_period_us, rx, &rx_length);
+    } else if ((flags & PICO_MODE_MASK) == PICO_MODE_CDC_FLUSH &&
+               tx_length == 0u) {
+        status = pico_cdc_flush();
+    } else {
+        status = BRIDGE_BAD_REQUEST;
     }
     if (status == BRIDGE_OK) {
         mailbox_write_bytes(PICO_MAILBOX_DATA, rx, rx_length);

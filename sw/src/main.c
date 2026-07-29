@@ -298,6 +298,9 @@ static const u32 dac_program_bram_base[DAC_PROGRAM_CHANNELS] = {
 #define PICO_FLAG_LOOPBACK   1u
 #define PICO_STATUS_OK       0u
 #define PICO_STATUS_BUSY     5u
+#define PICO_MODE_CDC_WRITE  0x01000000u
+#define PICO_MODE_CDC_READ   0x02000000u
+#define PICO_MODE_CDC_FLUSH  0x03000000u
 #define STRM_MAGIC_RUNNING   0x53545201u
 #define STRM_MAGIC_STOPPED   0x53545200u
 #define RW6_STREAM_ENABLE    (1u << 31)
@@ -3285,6 +3288,65 @@ static int pico_hex_nibble(char c)
     return -1;
 }
 
+static int pico_mailbox_exchange(
+    u32 flags,
+    u32 parameter,
+    const u8 *tx,
+    u32 request_length,
+    u8 *rx,
+    u32 *rx_length,
+    u32 *bridge_status)
+{
+    u32 request;
+    u32 timeout;
+    u32 i;
+
+    if (Xil_In32(PICO_MAILBOX + 0x00u) != PICO_MAILBOX_MAGIC)
+        return -1;
+
+    if (tx != NULL) {
+        for (i = 0; i < (request_length + 3u) / 4u; i++) {
+            u32 word = 0u;
+            u32 byte_index = i * 4u;
+            u32 j;
+            for (j = 0; j < 4u && byte_index + j < request_length; j++)
+                word |= (u32)tx[byte_index + j] << (8u * j);
+            Xil_Out32(PICO_MAILBOX + PICO_MAILBOX_DATA + i * 4u, word);
+        }
+    }
+
+    request = Xil_In32(PICO_MAILBOX + 0x04u) + 1u;
+    if (request == 0u)
+        request = 1u;
+    Xil_Out32(PICO_MAILBOX + 0x10u, flags);
+    Xil_Out32(PICO_MAILBOX + 0x14u, parameter);
+    Xil_Out32(PICO_MAILBOX + 0x18u, request_length);
+    Xil_Out32(PICO_MAILBOX + 0x1Cu, 0u);
+    Xil_Out32(PICO_MAILBOX + 0x0Cu, PICO_STATUS_BUSY);
+    Xil_Out32(PICO_MAILBOX + 0x04u, request);
+
+    for (timeout = 0u; timeout < 100000000u; timeout++) {
+        if (Xil_In32(PICO_MAILBOX + 0x08u) == request)
+            break;
+    }
+    if (timeout == 100000000u)
+        return -2;
+
+    *bridge_status = Xil_In32(PICO_MAILBOX + 0x0Cu);
+    *rx_length = Xil_In32(PICO_MAILBOX + 0x1Cu);
+    if (*bridge_status == PICO_STATUS_OK && rx != NULL) {
+        for (i = 0; i < (*rx_length + 3u) / 4u; i++) {
+            u32 word =
+                Xil_In32(PICO_MAILBOX + PICO_MAILBOX_DATA + i * 4u);
+            u32 byte_index = i * 4u;
+            u32 j;
+            for (j = 0; j < 4u && byte_index + j < *rx_length; j++)
+                rx[byte_index + j] = (u8)(word >> (8u * j));
+        }
+    }
+    return 0;
+}
+
 /* PSPI <hex> [half_period_us] [external]
  *
  * Submit one Pico SPI transaction through the Linux-owned USB controller.
@@ -3301,11 +3363,10 @@ static void cmd_pico_spi(char *args)
     u32 length;
     u32 half_period_us = 5u;
     u32 flags = PICO_FLAG_LOOPBACK;
-    u32 request;
     u32 status;
     u32 rx_length;
-    u32 timeout;
     u32 i;
+    int result;
 
     while (*p == ' ' || *p == '\t')
         p++;
@@ -3344,39 +3405,16 @@ static void cmd_pico_spi(char *args)
         }
     }
 
-    if (Xil_In32(PICO_MAILBOX + 0x00u) != PICO_MAILBOX_MAGIC) {
+    result = pico_mailbox_exchange(
+        flags, half_period_us, tx, length, rx, &rx_length, &status);
+    if (result == -1) {
         send_str("ERR PSPI Linux Pico bridge unavailable\r\n");
         return;
     }
-    for (i = 0; i < (length + 3u) / 4u; i++) {
-        u32 word = 0u;
-        u32 byte_index = i * 4u;
-        u32 j;
-        for (j = 0; j < 4u && byte_index + j < length; j++)
-            word |= (u32)tx[byte_index + j] << (8u * j);
-        Xil_Out32(PICO_MAILBOX + PICO_MAILBOX_DATA + i * 4u, word);
-    }
-
-    request = Xil_In32(PICO_MAILBOX + 0x04u) + 1u;
-    if (request == 0u)
-        request = 1u;
-    Xil_Out32(PICO_MAILBOX + 0x10u, flags);
-    Xil_Out32(PICO_MAILBOX + 0x14u, half_period_us);
-    Xil_Out32(PICO_MAILBOX + 0x18u, length);
-    Xil_Out32(PICO_MAILBOX + 0x1Cu, 0u);
-    Xil_Out32(PICO_MAILBOX + 0x0Cu, PICO_STATUS_BUSY);
-    Xil_Out32(PICO_MAILBOX + 0x04u, request);
-
-    for (timeout = 0u; timeout < 100000000u; timeout++) {
-        if (Xil_In32(PICO_MAILBOX + 0x08u) == request)
-            break;
-    }
-    if (timeout == 100000000u) {
+    if (result == -2) {
         send_str("ERR PSPI Linux bridge timeout\r\n");
         return;
     }
-    status = Xil_In32(PICO_MAILBOX + 0x0Cu);
-    rx_length = Xil_In32(PICO_MAILBOX + 0x1Cu);
     if (status != PICO_STATUS_OK || rx_length != length) {
         send_str("ERR PSPI status=");
         send_uint(status);
@@ -3385,20 +3423,111 @@ static void cmd_pico_spi(char *args)
         send_str("\r\n");
         return;
     }
-    for (i = 0; i < (rx_length + 3u) / 4u; i++) {
-        u32 word = Xil_In32(PICO_MAILBOX + PICO_MAILBOX_DATA + i * 4u);
-        u32 byte_index = i * 4u;
-        u32 j;
-        for (j = 0; j < 4u && byte_index + j < rx_length; j++)
-            rx[byte_index + j] = (u8)(word >> (8u * j));
-    }
-
     send_str("OK PSPI n=");
     send_uint(rx_length);
     send_str(" rx=");
     for (i = 0; i < rx_length; i++) {
         send_byte((u8)"0123456789ABCDEF"[rx[i] >> 4]);
         send_byte((u8)"0123456789ABCDEF"[rx[i] & 0x0Fu]);
+    }
+    send_str("\r\n");
+}
+
+/* PICO W <hex>          write raw bytes to the Pico USB CDC endpoint
+ * PICO R [max] [ms]     read up to max bytes, waiting at most ms
+ * PICO F                discard queued Pico CDC input */
+static void cmd_pico_cdc(char *args)
+{
+    u8 data[PICO_MAX_BYTES];
+    char *p = args;
+    u32 length = 0u;
+    u32 timeout_ms = 100u;
+    u32 status = 0u;
+    u32 rx_length = 0u;
+    u32 i;
+    int result;
+    char operation;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+    operation = *p++;
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (operation == 'W' || operation == 'w') {
+        char *hex_start = p;
+        u32 hex_chars = 0u;
+        while (pico_hex_nibble(*p) >= 0) {
+            p++;
+            hex_chars++;
+        }
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (hex_chars == 0u || (hex_chars & 1u) != 0u ||
+            hex_chars > 2u * PICO_MAX_BYTES || *p != '\0') {
+            send_str("ERR PICO W expects 1..128 bytes of even-length hex\r\n");
+            return;
+        }
+        length = hex_chars / 2u;
+        for (i = 0; i < length; i++) {
+            data[i] = (u8)((pico_hex_nibble(hex_start[2u * i]) << 4) |
+                           pico_hex_nibble(hex_start[2u * i + 1u]));
+        }
+        result = pico_mailbox_exchange(
+            PICO_MODE_CDC_WRITE, 0u, data, length, NULL,
+            &rx_length, &status);
+    } else if (operation == 'R' || operation == 'r') {
+        length = PICO_MAX_BYTES;
+        parse_u32_arg(&p, &length);
+        parse_u32_arg(&p, &timeout_ms);
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (length == 0u || length > PICO_MAX_BYTES ||
+            timeout_ms > 60000u || *p != '\0') {
+            send_str("ERR PICO R expects max=1..128 and timeout_ms=0..60000\r\n");
+            return;
+        }
+        result = pico_mailbox_exchange(
+            PICO_MODE_CDC_READ, timeout_ms, NULL, length, data,
+            &rx_length, &status);
+    } else if (operation == 'F' || operation == 'f') {
+        if (*p != '\0') {
+            send_str("ERR PICO F takes no arguments\r\n");
+            return;
+        }
+        result = pico_mailbox_exchange(
+            PICO_MODE_CDC_FLUSH, 0u, NULL, 0u, NULL,
+            &rx_length, &status);
+    } else {
+        send_str("ERR PICO expects W hex, R [max] [timeout_ms], or F\r\n");
+        return;
+    }
+
+    if (result == -1) {
+        send_str("ERR PICO Linux bridge unavailable\r\n");
+        return;
+    }
+    if (result == -2) {
+        send_str("ERR PICO Linux bridge timeout\r\n");
+        return;
+    }
+    if (status != PICO_STATUS_OK) {
+        send_str("ERR PICO status=");
+        send_uint(status);
+        send_str("\r\n");
+        return;
+    }
+
+    send_str("OK PICO ");
+    send_byte((u8)operation);
+    send_str(" n=");
+    send_uint((operation == 'W' || operation == 'w') ? length : rx_length);
+    if (operation == 'R' || operation == 'r') {
+        send_str(" data=");
+        for (i = 0; i < rx_length; i++) {
+            send_byte((u8)"0123456789ABCDEF"[data[i] >> 4]);
+            send_byte((u8)"0123456789ABCDEF"[data[i] & 0x0Fu]);
+        }
     }
     send_str("\r\n");
 }
@@ -3678,6 +3807,7 @@ static void cmd_help(void)
     send_str("  BCPT [N[k|m] [reps]] multisample burst: reps trigger-synced captures of N/chip, strided in DDR (default 64k x16)\r\n");
     send_str("  BRDO             ask Linux to read the last BCAP regions out over UDP\r\n");
     send_str("  PSPI hex [half_us] [external]  forward 1..128 SPI bytes to Pico over Linux USB; default verifies loopback\r\n");
+    send_str("  PICO W hex | R [max] [timeout_ms] | F  raw Pico USB CDC write/read/flush for PC transport proxy\r\n");
     send_str("  BMAP [b0 b1]     show/set BCAP DDR bases (debug)\r\n");
     send_str("  STRM [decim [cic]]|STOP|STAT  continuous decimated stream into DDR rings (cyclic SG)\r\n");
     send_str("  STRM CIC on|off  live A/B toggle: chip1 ch2/3 CIC anti-alias (D=128) vs keep-1-of-D\r\n");
@@ -3958,6 +4088,8 @@ static void process_cmd(void)
 #if HAS_PS_DDR_DMA
     } else if (strncmp(cmd, "PSPI", 4) == 0) {
         cmd_pico_spi(&cmd[4]);
+    } else if (strncmp(cmd, "PICO", 4) == 0) {
+        cmd_pico_cdc(&cmd[4]);
     } else if (strncmp(cmd, "STRM", 4) == 0) {
         cmd_stream(&cmd[4]);
     } else if (strncmp(cmd, "BCAP", 4) == 0) {
