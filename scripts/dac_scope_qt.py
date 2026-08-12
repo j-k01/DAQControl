@@ -2580,9 +2580,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                   self.msamp_reps, self.msamp_btn, self.liveavg_btn,
                   self.liveavg_downsample_chk, self.liveavg_ghosts_chk,
                   self.defaults_btn, self.mzi_program_btn, self.mzi_point_btn,
-                  self.mzi_run_btn, self.mzi_set_selected_btn,
-                  self.mzi_zero_selected_btn, self.mzi_zero_all_btn,
-                  self.mzi_config_apply_btn,
+                  self.mzi_run_btn,
                   self.np_loadprof, self.np_saveprof, self.cur_preview_btn):
             w.setEnabled(on)
         for b in self.np_btns.values():
@@ -3293,6 +3291,15 @@ class ScopeWindow(QtWidgets.QMainWindow):
         target = QtWidgets.QGroupBox("Optical path and heaters (Pico-acknowledged V)")
         self.mzi_heater_group = target
         target_layout = QtWidgets.QVBoxLayout(target)
+        pico_row = QtWidgets.QHBoxLayout()
+        self.mzi_pico_test_btn = QtWidgets.QPushButton("Test Pico")
+        self.mzi_pico_test_btn.clicked.connect(self._on_mzi_test_pico)
+        self.mzi_pico_status = QtWidgets.QLabel("Pico: not tested")
+        self.mzi_pico_status.setWordWrap(True)
+        self.mzi_pico_status.setStyleSheet("color:#9fb3c8; font-size:11px;")
+        pico_row.addWidget(self.mzi_pico_test_btn)
+        pico_row.addWidget(self.mzi_pico_status, 1)
+        target_layout.addLayout(pico_row)
         heater_grid = QtWidgets.QGridLayout()
         heater_grid.setHorizontalSpacing(4)
         heater_grid.setVerticalSpacing(4)
@@ -3342,9 +3349,15 @@ class ScopeWindow(QtWidgets.QMainWindow):
         voltage_row.addWidget(self.mzi_zero_selected_btn)
         voltage_row.addWidget(self.mzi_zero_all_btn)
         target_layout.addLayout(voltage_row)
+        self.mzi_write_status = QtWidgets.QLabel(
+            "No heater writes acknowledged in this session.")
+        self.mzi_write_status.setWordWrap(True)
+        self.mzi_write_status.setStyleSheet("color:#9fb3c8; font-size:11px;")
+        target_layout.addWidget(self.mzi_write_status)
         self._mzi_heater_controls.extend([
             self.mzi_selected_voltage, self.mzi_set_selected_btn,
-            self.mzi_zero_selected_btn, self.mzi_zero_all_btn])
+            self.mzi_zero_selected_btn, self.mzi_zero_all_btn,
+            self.mzi_pico_test_btn])
 
         form = QtWidgets.QFormLayout()
         form.setRowWrapPolicy(QtWidgets.QFormLayout.WrapAllRows)
@@ -3657,6 +3670,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if net not in self._mzi_heater_voltages:
             return
         self._mzi_heater_voltages[net] = float(voltage)
+        self.mzi_write_status.setText(
+            f"ACK from PICO-002: {net} set to {float(voltage):.4f} V")
+        self.mzi_write_status.setStyleSheet("color:#81C784; font-size:11px;")
         self._refresh_mzi_heater_map()
 
     def _set_mzi_heater_voltages(self, requested):
@@ -3693,9 +3709,29 @@ class ScopeWindow(QtWidgets.QMainWindow):
         else:
             raise ValueError(f"unknown heater operation {mode!r}")
         settle_s = self.mzi_settle.value() / 1000.0
+        self.mzi_write_status.setText(
+            f"Connecting to PICO-002; writing {len(requested)} heater output(s)...")
+        self.mzi_write_status.setStyleSheet("color:#FFB74D; font-size:11px;")
         self._mzi_begin(0, f"Programming {len(requested)} heater outputs...")
         self._bg(lambda: self.mzi_cal_result.emit(
             self._run_mzi_set_heaters(requested, settle_s=settle_s)))
+
+    def _on_mzi_test_pico(self):
+        if self._mzi_running:
+            return
+        self.mzi_pico_status.setText("Pico: testing 5 handshakes...")
+        self.mzi_pico_status.setStyleSheet("color:#FFB74D; font-size:11px;")
+        self._mzi_begin(0, "Testing PICO-002 connection...")
+        self._bg(lambda: self.mzi_cal_result.emit(self._run_mzi_test_pico()))
+
+    def _run_mzi_test_pico(self):
+        try:
+            self._mzi_controller.connect(
+                board_ip=self.args.board_ip, local_ip=self.args.local_ip)
+            result = self._mzi_controller.test_connection(probes=5)
+            return {"kind": "pico_test", **result}
+        except Exception as exc:  # noqa: BLE001
+            return {"kind": "pico_test", "_err": f"{type(exc).__name__}: {exc}"}
 
     def _run_mzi_set_heaters(self, requested, *, settle_s=0.0):
         try:
@@ -3713,7 +3749,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return {"kind": "heater_set", "voltages": dict(requested),
                     "settle_s": settle_s}
         except Exception as exc:  # noqa: BLE001
-            return {"_err": f"{type(exc).__name__}: {exc}"}
+            return {"kind": "heater_set", "_err": f"{type(exc).__name__}: {exc}"}
 
     def _refresh_mzi_config_combo(self, selected=None):
         self.mzi_config_combo.blockSignals(True)
@@ -4261,11 +4297,28 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._mzi_resume_tap = False
         if not isinstance(result, dict) or "_err" in result:
             error = result.get("_err", "no result") if isinstance(result, dict) else "no result"
-
+            failed_kind = result.get("kind") if isinstance(result, dict) else None
+            if failed_kind == "pico_test":
+                self.mzi_pico_status.setText(f"Pico: FAIL - {error}")
+                self.mzi_pico_status.setStyleSheet(
+                    "color:#E57373; font-size:11px;")
+            elif failed_kind == "heater_set":
+                self.mzi_write_status.setText(f"Heater write failed: {error}")
+                self.mzi_write_status.setStyleSheet(
+                    "color:#E57373; font-size:11px;")
             self.mzi_status.setText(f"Optical test failed: {error}")
             return
         kind = result.get("kind")
         spec = result.get("spec", {})
+        if kind == "pico_test":
+            self.mzi_pico_status.setText(
+                f"Pico: PASS - {result['probes']}/5 handshakes, "
+                f"mean {result['mean_ms']:.1f} ms, max {result['max_ms']:.1f} ms")
+            self.mzi_pico_status.setStyleSheet(
+                "color:#81C784; font-size:11px;")
+            self.mzi_status.setText(
+                "PICO-002 connection passed without changing heater outputs.")
+            return
         if kind == "heater_set":
 
             if (self._mzi_staged_heater_voltages is not None and
@@ -4277,6 +4330,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 self._mzi_staged_heater_voltages = None
                 self.mzi_config_status.setText(f"Applied {name}")
             self._refresh_mzi_heater_map()
+            self.mzi_write_status.setText(
+                f"PASS: PICO-002 acknowledged all {len(result['voltages'])} "
+                "heater write(s).")
+            self.mzi_write_status.setStyleSheet(
+                "color:#81C784; font-size:11px;")
             self.mzi_status.setText(
                 f"Programmed {len(result['voltages'])} heater output(s); "
                 f"settled for {result.get('settle_s', 0.0) * 1000:.1f} ms.")

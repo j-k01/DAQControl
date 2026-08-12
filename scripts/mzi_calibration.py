@@ -7,6 +7,7 @@ import importlib
 from pathlib import Path
 import re
 import sys
+import time
 
 import numpy as np
 from spike_test_analysis import detect_spikes_output
@@ -310,6 +311,36 @@ class PydaqMziController:
         if not self.connected:
             raise RuntimeError("PyDAQ MZI controller is not connected")
         return tuple(self._config.MZI_NET_NAMES)
+
+    def test_connection(self, probes: int = 5) -> dict[str, object]:
+        """Exercise the live Pico CDC path without changing DAC outputs."""
+
+        if not self.connected:
+            raise RuntimeError("PyDAQ MZI controller is not connected")
+        serial_port = self._config.pico.serial
+        durations_ms = []
+        for _ in range(max(1, int(probes))):
+            started = time.monotonic()
+            serial_port.reset_input_buffer()
+            serial_port.write(b"HANDSHAKE\n")
+            uid = serial_port.readline().decode(
+                "ascii", errors="replace").strip()
+            # Always leave handshake mode, including after a bad UID response.
+            serial_port.write(b"ENDHS\n")
+            response = serial_port.readline().decode(
+                "ascii", errors="replace").strip()
+            if uid != "UID:PICO-002":
+                raise RuntimeError(
+                    f"Pico handshake returned {uid!r}, expected 'UID:PICO-002'")
+            if response != "HSOK":
+                raise RuntimeError(
+                    f"Pico handshake termination returned {response!r}")
+            durations_ms.append((time.monotonic() - started) * 1000.0)
+        return {
+            "probes": len(durations_ms),
+            "mean_ms": float(np.mean(durations_ms)),
+            "max_ms": float(np.max(durations_ms)),
+        }
 
     def set_voltage(self, net_name: str, voltage: float) -> None:
         if not self.connected:

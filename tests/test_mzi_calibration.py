@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 import unittest
 
 import numpy as np
@@ -16,10 +17,44 @@ from mzi_calibration import (
     measure_spikes_at_indices,
     measure_triggered_spikes,
     parse_heater_voltages,
+    PydaqMziController,
 )
 
 
+class FakePicoSerial:
+    def __init__(self):
+        self.commands = []
+        self.responses = []
+
+    def reset_input_buffer(self):
+        self.responses.clear()
+
+    def write(self, payload):
+        self.commands.append(payload)
+        if payload == b"HANDSHAKE\n":
+            self.responses.append(b"UID:PICO-002\n")
+        elif payload == b"ENDHS\n":
+            self.responses.append(b"HSOK\n")
+
+    def readline(self):
+        return self.responses.pop(0)
+
+
 class MziCalibrationTests(unittest.TestCase):
+    def test_pico_connection_probe_does_not_write_heater_outputs(self):
+        serial_port = FakePicoSerial()
+        controller = PydaqMziController()
+        controller._config = SimpleNamespace(
+            pico=SimpleNamespace(serial=serial_port), MZI_NET_NAMES=())
+
+        result = controller.test_connection(probes=5)
+
+        self.assertEqual(result["probes"], 5)
+        self.assertEqual(serial_port.commands,
+                         [b"HANDSHAKE\n", b"ENDHS\n"] * 5)
+        self.assertTrue(all(not command.startswith(b"W")
+                            for command in serial_port.commands))
+
     def test_aligns_shifted_positive_pulses(self):
         period, high, length = 128, 20, 4096
         base = np.zeros(length)

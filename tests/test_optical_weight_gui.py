@@ -66,6 +66,9 @@ class FakeMziController:
     def set_voltage(self, net, voltage):
         self.voltages.append((net, voltage))
 
+    def test_connection(self, probes=5):
+        return {"probes": probes, "mean_ms": 1.25, "max_ms": 2.5}
+
     def set_voltages(self, voltages, *, on_sent=None):
         for net, voltage in voltages.items():
             self.voltages.append((net, voltage))
@@ -122,6 +125,28 @@ class OpticalWeightGuiTests(unittest.TestCase):
         spec = self.window._mzi_gui_spec()
         self.assertEqual(spec["zero_count"] + spec["high_count"], 1024)
 
+    def test_pico_and_heater_controls_do_not_require_uart(self):
+        self.window._set_controls_enabled(False)
+
+        self.assertTrue(self.window.mzi_pico_test_btn.isEnabled())
+        self.assertTrue(self.window.mzi_set_selected_btn.isEnabled())
+        self.assertTrue(self.window.mzi_zero_selected_btn.isEnabled())
+        self.assertTrue(self.window.mzi_zero_all_btn.isEnabled())
+        self.assertTrue(self.window.mzi_config_apply_btn.isEnabled())
+        self.assertFalse(self.window.mzi_program_btn.isEnabled())
+
+    def test_pico_health_feedback(self):
+        self.window._mzi_controller = FakeMziController()
+
+        result = self.window._run_mzi_test_pico()
+        self.window._mzi_resume_autosample = False
+        self.window._mzi_resume_tap = False
+        self.window._on_mzi_cal_result(result)
+
+        self.assertEqual(result["probes"], 5)
+        self.assertIn("PASS", self.window.mzi_pico_status.text())
+        self.assertIn("5/5", self.window.mzi_pico_status.text())
+
     def test_program_test_zeros_both_static_currents(self):
         fake = FakeDac()
         self.window.dac = fake
@@ -161,6 +186,19 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertIn("0.375", self.window._mzi_heater_buttons["h_1_2"].text())
         self.assertIn("background: #245C3D",
                       self.window._mzi_heater_buttons["h_1_2"].styleSheet())
+        self.assertIn("acknowledged all 2", self.window.mzi_write_status.text())
+
+    def test_zero_voltage_is_visible_after_acknowledgement(self):
+        self.window._mzi_controller = FakeMziController()
+        result = self.window._run_mzi_set_heaters({"h_1_1": 0.0})
+        self.window._mzi_resume_autosample = False
+        self.window._mzi_resume_tap = False
+        self.window._on_mzi_cal_result(result)
+
+        self.assertIn("0.000 V", self.window._mzi_heater_buttons["h_1_1"].text())
+        self.assertIn("background: #245C3D",
+                      self.window._mzi_heater_buttons["h_1_1"].styleSheet())
+        self.assertIn("PASS", self.window.mzi_write_status.text())
 
     def test_partial_spi_failure_updates_only_successful_heater(self):
         class FailingMziController(FakeMziController):
@@ -179,6 +217,11 @@ class OpticalWeightGuiTests(unittest.TestCase):
         })
 
         self.assertIn("_err", result)
+        self.assertEqual(result["kind"], "heater_set")
+        self.window._mzi_resume_autosample = False
+        self.window._mzi_resume_tap = False
+        self.window._on_mzi_cal_result(result)
+        self.assertIn("failed", self.window.mzi_write_status.text())
         self.assertEqual(self.window._mzi_heater_voltages["h_1_1"], 0.25)
         self.assertIsNone(self.window._mzi_heater_voltages["h_1_2"])
         self.assertIn("background: #245C3D",
