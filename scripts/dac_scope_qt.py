@@ -185,6 +185,50 @@ def neuron_dt_label(label, dt_hex):
     """Dropdown text: speed label plus the actual integration dt in ms."""
     return f"{label}  (dt = {neuron_dt_ms(dt_hex):.3g} ms)"
 
+
+def describe_burst_capture_failure(command, reply):
+    """Turn BCAP/BCPT firmware replies into actionable, accurate diagnostics."""
+    command = str(command).upper()
+    reply = str(reply or "").strip()
+    if not reply:
+        return (f"{command} returned no UART reply after 180 s. The firmware "
+                "is still wedged in capture polling or UART is desynchronized; "
+                "recover/reprogram the board before retrying.")
+    if "current player not running" in reply:
+        return (f"{command} failed: {reply}. Program the current source and "
+                "verify its RW16 RUNNING readback before capturing.")
+    if "timeout (engine)" in reply:
+        statuses = []
+        for token in reply.split():
+            if not (token.startswith("st0=") or token.startswith("st1=")):
+                continue
+            try:
+                value = int(token.split("=", 1)[1], 0)
+            except ValueError:
+                continue
+            statuses.append({
+                "running": bool(value & (1 << 22)),
+                "tready": bool(value & (1 << 20)),
+                "axis": bool(value & (1 << 18)),
+                "remaining": value & 0x3FFFF,
+            })
+        if len(statuses) == 2 and all(
+                item["running"] and item["tready"] and item["axis"] and
+                item["remaining"] for item in statuses):
+            remaining = "/".join(str(item["remaining"]) for item in statuses)
+            return (f"{command} failed: {reply}. The trigger fired and both "
+                    "capture engines are ready, but ADC-valid beats did not "
+                    f"complete (remaining beats {remaining}). This is an "
+                    "ADC/JESD data-path failure, not a current-player failure; "
+                    "reinitialize/reprogram the board and verify the ADC links.")
+        return (f"{command} failed: {reply}. The hardware capture engine did "
+                "not complete; this is not evidence that the current player "
+                "failed to start.")
+    if "no trigger" in reply:
+        return (f"{command} failed: {reply}. The capture armed, but no "
+                "current-player cycle-start trigger reached the ADC domain.")
+    return f"{command} failed: {reply}"
+
 # Real-time Izhikevich parameters (physical units; converted to Q16.16 for the
 # NEUR command). param name matches the firmware NEUR param keyword.
 #   (param, label, lo, hi, default, step, decimals)
@@ -900,6 +944,25 @@ class DacControl:
             self.s.flush()
             return self._readuntil(("OK CURW", "ERR"))
 
+    def get_current_player_status(self, timeout=2.0):
+        """Read and decode the live current-player control register (RW16)."""
+        reply = self.cmd("RDRW 16", ok=("REG16", "ERR"), timeout=timeout)
+        if not reply.startswith("REG16"):
+            raise RuntimeError(
+                f"current-player readback failed ({reply or 'no UART reply'})")
+        try:
+            value = int(reply.split("=", 1)[1].strip(), 0)
+        except (IndexError, ValueError) as exc:
+            raise RuntimeError(
+                f"malformed current-player readback ({reply})") from exc
+        return {
+            "raw": value & 0xFFFFFFFF,
+            "cps": value & 0xFFFF,
+            "count": ((value >> 16) & 0x3FF) + 1,
+            "hold_last": bool(value & (1 << 26)),
+            "running": bool(value & (1 << 30)),
+        }
+
     def program_step_for_capture(self, frames, amp_ma, baseline_frac=0.15,
                                  settle_frac=0.10, cps=1):
         """One-shot current step [0..][amp..][0..] sized so the high region fills
@@ -1573,14 +1636,37 @@ class CurrentSourceWindow(QtWidgets.QWidget):
                 else:
                     self.done.emit(False, r or "(no reply)")
                     return
-            if self._kind.startswith("Step"):
+            is_step = self._kind.startswith("Step")
+            hold_last = is_step and not self._step_loop
+            if is_step:
                 r = dac.program_current_step(
                     cps, self._step_zero, self._step_high,
-                    self.amp_spin.value(), hold_last=not self._step_loop)
+                    self.amp_spin.value(), hold_last=hold_last)
+                expected_count = self._step_zero + self._step_high
             else:
                 r = dac.program_current(ys, cps, hold_last=False)
-            self.done.emit(bool(r and r.startswith("OK")),
-                           (r or "(no reply)") + gain_note)
+                expected_count = len(ys)
+            if not r or not r.startswith("OK"):
+                self.done.emit(False, (r or "(no reply)") + gain_note)
+                return
+            try:
+                player = dac.get_current_player_status()
+            except RuntimeError as exc:
+                self.done.emit(False, f"{r}; {exc}" + gain_note)
+                return
+            if (not player["running"] or player["cps"] != int(cps) or
+                    player["count"] != expected_count or
+                    player["hold_last"] != hold_last):
+                self.done.emit(
+                    False,
+                    f"{r}; RW16 verification mismatch: "
+                    f"0x{player['raw']:08X}, running={int(player['running'])}, "
+                    f"cps={player['cps']}, count={player['count']}, "
+                    f"hold={int(player['hold_last'])}" + gain_note)
+                return
+            self.done.emit(
+                True, f"{r}; verified RUNNING RW16=0x{player['raw']:08X}" +
+                gain_note)
         threading.Thread(target=work, daemon=True).start()
 
     def _on_stop(self):
@@ -3222,9 +3308,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
             # a cyclic stream and a one-shot burst can't share the DMA, so stop
             # streaming before BCAP (no-op if off).
             self.dac.stop_stream()
-            bcap = self.dac.cmd(f"BCAP {kb}k", ok=("OK BCAP", "ERR"))
+            # A failed engine can outlast the ordinary four-second UART wait.
+            # Wait for its real diagnostic instead of claiming no UART reply
+            # while MicroBlaze is still polling the capture hardware.
+            bcap = self.dac.cmd(f"BCAP {kb}k", ok=("OK BCAP", "ERR"),
+                                timeout=180.0)
             if not bcap.startswith("OK BCAP"):
-                return {"_err": f"BCAP failed: {bcap or '(no UART reply)'}"}
+                return {"_err": describe_burst_capture_failure("BCAP", bcap)}
             tries = max(1, int(drain_attempts))
             req = None
             for attempt in range(tries):
@@ -4128,6 +4218,20 @@ class ScopeWindow(QtWidgets.QMainWindow):
             if not reply or str(reply).startswith("ERR"):
                 raise RuntimeError(
                     f"experiment setup failed: {reply or 'no UART reply'}")
+        player = self.dac.get_current_player_status()
+        expected_count = len(current_samples)
+        if (not player["running"] or player["cps"] != int(current_cps) or
+                player["count"] != expected_count or player["hold_last"]):
+            raise RuntimeError(
+                "current-player verification failed: expected "
+                f"RUNNING loop cps={int(current_cps)} count={expected_count}, "
+                f"read RW16=0x{player['raw']:08X} "
+                f"running={int(player['running'])} cps={player['cps']} "
+                f"count={player['count']} hold={int(player['hold_last'])}")
+        spec["current_player_readback"] = player
+        self.mzi_setup_progress.emit(
+            f"Current player verified RUNNING (RW16=0x{player['raw']:08X}).")
+
     def _on_mzi_program_test(self):
         if not self.dac or self._mzi_running:
             return
@@ -4502,8 +4606,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if kind == "configured":
             profile_text = ", ".join(
                 f"N{neuron}={spec['profiles'][neuron]}" for neuron in range(4))
+            player = spec["current_player_readback"]
             self.mzi_status.setText(
-                f"Setup programmed: {profile_text}; every i/iconst=0 mA; "
+                f"Setup programmed and current player verified RUNNING "
+                f"(RW16=0x{player['raw']:08X}): {profile_text}; "
+                "every i/iconst=0 mA; "
                 f"{spec['current_ma']:.1f} mA, "
                 f"{spec['current_actual_frequency_hz'] / 1000.0:.3f} kHz square; "
                 "Spike n -> DACn.")
@@ -4581,15 +4688,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
             bcpt = self.dac.cmd(f"BCPT {kb}k {reps}", ok=("OK BCPT", "ERR"),
                                 timeout=180.0)
             if not bcpt:
-                return {"_err": "BCPT reply timed out -- the board is likely "
-                                "still capturing (reps x waveform period). Wait "
-                                "for it to finish, then retry; for slow loop "
-                                "waveforms use fewer reps or a Step (hold) "
-                                "current instead"}
+                return {"_err": describe_burst_capture_failure("BCPT", bcpt)}
             if not bcpt.startswith("OK BCPT"):
-                return {"_err": f"BCPT failed: {bcpt} -- the current player "
-                                "must be configured and RUNNING first "
-                                "(Chattering Demo Setup or current editor)"}
+                return {"_err": describe_burst_capture_failure("BCPT", bcpt)}
             meta = {}
             for tok in bcpt.split():
                 if "=" in tok:

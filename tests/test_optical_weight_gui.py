@@ -26,6 +26,8 @@ from dac_scope_qt import (
 class FakeDac:
     def __init__(self):
         self.calls = []
+        self.current_status = None
+        self.force_current_status = None
 
     def set_neuron_timing(self, dt_hex, period=1):
         self.calls.append(("timing", dt_hex, period))
@@ -54,7 +56,21 @@ class FakeDac:
     def program_current(self, samples, cps, hold_last=False):
         values = tuple(float(value) for value in samples)
         self.calls.append(("current_wave", values, cps, hold_last))
+        raw = ((int(cps) & 0xFFFF) |
+               (((len(values) - 1) & 0x3FF) << 16) |
+               ((1 if hold_last else 0) << 26) | (1 << 30))
+        self.current_status = {
+            "raw": raw, "cps": int(cps), "count": len(values),
+            "hold_last": bool(hold_last), "running": True,
+        }
         return "OK CURW"
+
+    def get_current_player_status(self, timeout=2.0):
+        self.calls.append(("current_status", timeout))
+        status = self.force_current_status or self.current_status
+        if status is None:
+            raise RuntimeError("current player was never programmed")
+        return dict(status)
 
 
 class FakeMziController:
@@ -208,6 +224,32 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertFalse(hold_last)
         self.assertEqual(set(samples), {0.0, 15.0})
         self.assertEqual(samples.count(15.0), 500)
+        self.assertIn(("current_status", 2.0), fake.calls)
+        self.assertTrue(spec["current_player_readback"]["running"])
+        self.assertEqual(spec["current_player_readback"]["count"], 1000)
+
+    def test_program_setup_rejects_false_current_player_success(self):
+        fake = FakeDac()
+        fake.force_current_status = {
+            "raw": (999 << 16) | 10,
+            "cps": 10,
+            "count": 1000,
+            "hold_last": False,
+            "running": False,
+        }
+        self.window.dac = fake
+
+        with self.assertRaisesRegex(RuntimeError, "verification failed"):
+            self.window._program_mzi_test(self.window._mzi_gui_spec())
+
+    def test_engine_timeout_is_reported_as_adc_path_failure(self):
+        reply = ("ERR BCPT timeout (engine) rep=0 "
+                 "st0=0xBC542000 st1=0xBC542000")
+        message = dac_scope_qt.describe_burst_capture_failure("BCPT", reply)
+
+        self.assertIn("ADC/JESD data-path failure", message)
+        self.assertIn("remaining beats 8192/8192", message)
+        self.assertNotIn("must be configured", message)
     def test_heater_map_multi_selection_and_programming(self):
         fake_mzi = FakeMziController()
         self.window.dac = FakeDac()
