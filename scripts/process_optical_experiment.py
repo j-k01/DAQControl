@@ -147,7 +147,11 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
     stimulus = manifest["stimulus"]
     detection = manifest["detection"]
     adc = int(acquisition["adc_channel"])
-    step_sample = int(stimulus["current_source"]["step_sample"])
+    # Periodic stimuli have no single programmed onset. Ignore only a short
+    # capture guard, then detect spikes from the averaged output itself.
+    step_sample = int(detection.get(
+        "response_start_sample",
+        stimulus.get("current_source", {}).get("step_sample", 64)))
 
     loaded = [_load_heater_capture(experiment_dir, descriptor, adc)
               for descriptor in heater_captures]

@@ -48,8 +48,13 @@ class FakeDac:
         return "OK NSRC"
 
     def program_current_step(self, cps, zero, high, current, hold_last=True):
-        self.calls.append(("current", cps, zero, high, current, hold_last))
+        self.calls.append(("current_step", cps, zero, high, current, hold_last))
         return "OK CURS"
+
+    def program_current(self, samples, cps, hold_last=False):
+        values = tuple(float(value) for value in samples)
+        self.calls.append(("current_wave", values, cps, hold_last))
+        return "OK CURW"
 
 
 class FakeMziController:
@@ -106,34 +111,62 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.capture_dir.cleanup()
 
     def test_optical_test_defaults(self):
-        self.assertEqual(self.window.tabs.tabText(3), "Optical Weight")
+        self.assertEqual(self.window.workspace_tabs.tabText(1), "Optical experiment")
+        self.assertNotIn(
+            "Optical Weight",
+            [self.window.tabs.tabText(i) for i in range(self.window.tabs.count())])
         self.assertEqual(self.window.liveavg_timer.interval(), 25)
-        self.assertEqual(self.window.mzi_current_ma.value(), 15.0)
         self.assertEqual(self.window.mzi_reps.value(), 16)
         self.assertEqual(self.window.mzi_experiment_name.text(), "optical_sweep")
         self.assertEqual(self.window.mzi_capture_size.currentData(), 64 * 1024)
         self.assertEqual(self.window.mzi_detect_sigma.value(), 5.0)
         self.assertEqual(self.window.mzi_boundary_sigma.value(), 2.0)
         self.assertEqual(self.window.mzi_min_seed.value(), 2)
-        self.assertEqual(self.window.mzi_spacing.currentData(), "power")
+        self.assertEqual(self.window.mzi_spacing.currentData(), "voltage")
+        self.assertEqual(self.window.mzi_points.value(), 20)
+        self.assertEqual(self.window.mzi_settle.value(), 20.0)
+        self.assertEqual(self.window.mzi_pulse_len.value(), 40)
+        self.assertEqual(self.window.mzi_pulse_ramp.value(), 5)
+        self.assertEqual(
+            [profile.currentText() for profile in self.window.mzi_profiles],
+            ["regular"] * 4)
         self.assertEqual(len(self.window._mzi_heater_buttons), 54)
         self.assertEqual(self.window._selected_mzi_nets(), ("h_1_1",))
-        self.assertIn("Pico-acknowledged V", self.window.mzi_heater_group.title())
+        self.assertEqual(self.window._mzi_sweep_net, "h_1_1")
+        self.assertIn("3px solid #EF5350",
+                      self.window._mzi_heater_buttons["h_1_1"].styleSheet())
         self.assertIn("-- V", self.window._mzi_heater_buttons["h_1_2"].text())
-        self.assertIn("background: #474D53",
-                      self.window._mzi_heater_buttons["h_1_2"].styleSheet())
         spec = self.window._mzi_gui_spec()
-        self.assertEqual(spec["zero_count"] + spec["high_count"], 1024)
-
+        self.assertEqual(spec["current_mode"], "Square")
+        self.assertEqual(spec["current_ma"], 15.0)
+        self.assertAlmostEqual(spec["current_actual_frequency_hz"], 5000.0)
+        self.assertEqual(spec["current_duty_percent"], 50.0)
+        self.assertEqual(spec["xbar_sources"],
+                         ["Spike 0", "Spike 1", "Spike 2", "Spike 3"])
+        self.assertEqual(spec["adc_channels"], [0, 1, 2, 3])
     def test_pico_and_heater_controls_do_not_require_uart(self):
         self.window._set_controls_enabled(False)
 
+        self.assertTrue(self.window.mzi_pico_init_btn.isEnabled())
         self.assertTrue(self.window.mzi_pico_test_btn.isEnabled())
         self.assertTrue(self.window.mzi_set_selected_btn.isEnabled())
         self.assertTrue(self.window.mzi_zero_selected_btn.isEnabled())
         self.assertTrue(self.window.mzi_zero_all_btn.isEnabled())
         self.assertTrue(self.window.mzi_config_apply_btn.isEnabled())
         self.assertFalse(self.window.mzi_program_btn.isEnabled())
+
+    def test_pico_initialization_feedback(self):
+        fake = FakeMziController()
+        self.window._mzi_controller = fake
+
+        result = self.window._run_mzi_init_pico()
+        self.window._mzi_resume_autosample = False
+        self.window._mzi_resume_tap = False
+        self.window._on_mzi_cal_result(result)
+
+        self.assertTrue(fake.connected)
+        self.assertEqual(result["heater_count"], 54)
+        self.assertIn("READY", self.window.mzi_pico_status.text())
 
     def test_pico_health_feedback(self):
         self.window._mzi_controller = FakeMziController()
@@ -147,22 +180,34 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertIn("PASS", self.window.mzi_pico_status.text())
         self.assertIn("5/5", self.window.mzi_pico_status.text())
 
-    def test_program_test_zeros_both_static_currents(self):
+    def test_program_setup_configures_all_neurons_routes_and_square(self):
         fake = FakeDac()
         self.window.dac = fake
+        self.window.mzi_profiles[1].setCurrentText("bursting")
+        self.window.mzi_profiles[2].setCurrentText("chattering")
+        self.window.mzi_profiles[3].setCurrentText("fast")
         spec = self.window._mzi_gui_spec()
 
         self.window._program_mzi_test(spec)
 
-        params = {(call[2], call[3]) for call in fake.calls if call[0] == "param"}
-        self.assertIn(("i", 0), params)
-        self.assertIn(("iconst", 0), params)
-        self.assertIn(("source", 0, "Spike 0"), fake.calls)
-        self.assertIn(("current", 1, 256, 768, 15.0, True), fake.calls)
-        pulse = next(call for call in fake.calls if call[0] == "pulse")
-        self.assertEqual(pulse[1], 0)
-        self.assertEqual(len(pulse[2]), 50)
-
+        for neuron in range(4):
+            neuron_params = {
+                (call[2], call[3]) for call in fake.calls
+                if call[0] == "param" and call[1] == neuron
+            }
+            self.assertIn(("i", 0), neuron_params)
+            self.assertIn(("iconst", 0), neuron_params)
+            self.assertIn(("source", neuron, f"Spike {neuron}"), fake.calls)
+            pulse = next(call for call in fake.calls
+                         if call[0] == "pulse" and call[1] == neuron)
+            self.assertEqual(len(pulse[2]), 40)
+        current = next(call for call in fake.calls if call[0] == "current_wave")
+        samples, cps, hold_last = current[1], current[2], current[3]
+        self.assertEqual(len(samples), 1000)
+        self.assertEqual(cps, 10)
+        self.assertFalse(hold_last)
+        self.assertEqual(set(samples), {0.0, 15.0})
+        self.assertEqual(samples.count(15.0), 500)
     def test_heater_map_multi_selection_and_programming(self):
         fake_mzi = FakeMziController()
         self.window.dac = FakeDac()
@@ -173,12 +218,12 @@ class OpticalWeightGuiTests(unittest.TestCase):
 
         result = self.window._run_mzi_set_heaters(
             {net: self.window.mzi_selected_voltage.value()
-             for net in spec["nets"]})
+             for net in self.window._selected_mzi_nets()})
         self.window._mzi_resume_autosample = False
         self.window._mzi_resume_tap = False
         self.window._on_mzi_cal_result(result)
 
-        self.assertEqual(spec["nets"], ("h_1_1", "h_1_2"))
+        self.assertEqual(spec["nets"], ("h_1_1",))
         self.assertEqual(fake_mzi.voltages, [
             ("h_1_1", 0.375), ("h_1_2", 0.375)])
         self.assertEqual(self.window._mzi_heater_voltages["h_1_1"], 0.375)
@@ -297,7 +342,8 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertEqual(calls, [(64 * 1024, 16)])
         self.assertEqual(fake_mzi.voltages, [("h_1_1", 0.375)])
         with np.load(result["path"]) as saved:
-            self.assertEqual(saved["raw_adc_counts"].shape, (16, 16384))
+            self.assertEqual(saved["raw_ch0"].shape, (16, 16384))
+            self.assertEqual(saved["raw_ch3"].shape, (16, 16384))
             self.assertEqual(saved["averaged_waveform_v"].shape, (16384,))
             np.testing.assert_array_equal(
                 saved["peak_indices"], [6000, 9000, 12000])
@@ -336,12 +382,13 @@ class OpticalWeightGuiTests(unittest.TestCase):
             self.assertEqual(raw["raw_ch3"].shape, (16, 16384))
         np.testing.assert_allclose(result["normalized"], [0.0, 0.5, 1.0])
 
-    def test_multi_heater_sweep_records_all_selected_heaters(self):
+    def test_sweep_varies_only_red_target_not_manual_selection(self):
         fake_dac = FakeDac()
         fake_mzi = FakeMziController()
         self.window.dac = fake_dac
         self.window._mzi_controller = fake_mzi
         self.window._mzi_selected_heaters = {"h_1_1", "h_1_2"}
+        self.window.mzi_sweep_combo.setCurrentText("h_1_2")
         self.window._multisample_once = self._capture_for(fake_mzi)
         spec = self.window._mzi_gui_spec()
         spec.update(
@@ -353,12 +400,11 @@ class OpticalWeightGuiTests(unittest.TestCase):
 
         self.assertNotIn("_err", result)
         manifest = json.loads((Path(result["path"]) / "experiment.json").read_text())
-        self.assertEqual(manifest["heater_sweep"]["heater_nets"],
-                         ["h_1_1", "h_1_2"])
-        self.assertTrue(manifest["heater_sweep"]["shared_sweep_voltage"])
-        self.assertEqual(fake_mzi.voltages[-2:], [
-            ("h_1_1", 0.0), ("h_1_2", 0.0)])
-
+        self.assertEqual(manifest["heater_sweep"]["heater_nets"], ["h_1_2"])
+        self.assertFalse(manifest["heater_sweep"]["shared_sweep_voltage"])
+        self.assertTrue(all(net == "h_1_2" for net, _voltage in fake_mzi.voltages))
+        self.assertIn("3px solid #EF5350",
+                      self.window._mzi_heater_buttons["h_1_2"].styleSheet())
 
 if __name__ == "__main__":
     unittest.main()
