@@ -55,12 +55,14 @@ From the repository root:
 Do not run program_board.ps1 first; this command replaces it for a Pico-enabled session.
 
 ```powershell
-uv run python pico_usb\load_and_test.py --local-jtag --port COM9
+uv run python pico_usb\load_and_test.py --local-jtag
 ```
 
 The directly connected PC Ethernet adapter must have `192.168.2.1/24`;
-`--local-ip` and `--board-ip` override the defaults. The loader leaves the
-normal MicroBlaze console on COM10 and Linux on COM9.
+`--local-ip` and `--board-ip` override the defaults. By default the loader
+selects CP2108 Interface 0 for the PS/Linux console and probes CP2108 Interface
+2 for the MicroBlaze DAQ console. Explicit overrides remain available, for
+example `--port COM11 --daq-port COM9` on the current target PC.
 
 With --local-jtag, the loader discovers the newest local Xilinx XSDB/XSCT
 installation and uses the JTAG cable attached to the target PC. Pass --xsdb
@@ -71,10 +73,12 @@ The local Python environment needs pyserial.
 
 The command programs the ZCU102 over its selected JTAG connection, prints the
 PS UART transcript locally, and leaves Pico flash untouched. It
-exits successfully only after Ethernet and the production Pico handshake pass:
+exits successfully only after the MicroBlaze responds, all JESD-ready flags are
+present, a real 64 KB ADC burst completes, Ethernet answers PING, and the
+production Pico handshake passes:
 
 ```text
-PASS: MicroBlaze is running, Linux DAQ Ethernet answered PING, and the preserved PICO-002 firmware completed its CDC handshake.
+PASS: MicroBlaze and both JESD links are ready, a real 64 KB ADC burst completed, Linux DAQ Ethernet answered PING, and PICO-002 completed its CDC handshake.
 ```
 
 Enumeration alone is not treated as success.
