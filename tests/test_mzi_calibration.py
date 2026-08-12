@@ -17,6 +17,7 @@ from mzi_calibration import (
     measure_spikes_at_indices,
     measure_triggered_spikes,
     parse_heater_voltages,
+    probe_fpga_pico_bridge,
     PydaqMziController,
 )
 
@@ -41,6 +42,47 @@ class FakePicoSerial:
 
 
 class MziCalibrationTests(unittest.TestCase):
+    def test_bridge_preflight_explains_independent_udp_services(self):
+        class MissingBridge:
+            def __init__(self, **_kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def reset_input_buffer(self):
+                raise OSError("timed out")
+
+        with self.assertRaisesRegex(
+                RuntimeError, r"5007.*5006 is a separate service"):
+            probe_fpga_pico_bridge(serial_factory=MissingBridge)
+
+    def test_bridge_preflight_does_not_send_pico_commands(self):
+        class LiveBridge:
+            instance = None
+
+            def __init__(self, **_kwargs):
+                self.flushed = False
+                self.writes = []
+                LiveBridge.instance = self
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def reset_input_buffer(self):
+                self.flushed = True
+
+        probe_fpga_pico_bridge(serial_factory=LiveBridge)
+
+        self.assertTrue(LiveBridge.instance.flushed)
+        self.assertEqual(LiveBridge.instance.writes, [])
+
     def test_pico_connection_probe_does_not_write_heater_outputs(self):
         serial_port = FakePicoSerial()
         controller = PydaqMziController()

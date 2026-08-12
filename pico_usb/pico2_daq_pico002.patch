@@ -1,0 +1,13 @@
+diff --git a/src/main.cpp b/src/main.cpp
+index e68c8da..b368f5e 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -24,7 +24,7 @@ Currently supported devices:
+
+ // UNIQUE IDENTIFIER
+ // *Overwrite* this when flashing multiple Pico boards
+-extern const char unique_id[] = "PICO-003";
++extern const char unique_id[] = "PICO-002";
+
+ // GLOBAL VARIABLES
+ char inputBuffer[256] = {0}; // input buffer for serial communication

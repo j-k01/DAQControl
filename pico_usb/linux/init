@@ -24,7 +24,7 @@ else
     echo "DAQ-ETH: WARNING - Linux GEM interface eth0 was not created"
 fi
 
-echo "PICO-HOST: Linux USB host started"
+echo "PICO-HOST: Linux USB host started; preserving installed Pico firmware"
 
 i=0
 while [ ! -e /dev/ttyACM0 ] && [ "$i" -lt 50 ]; do
@@ -32,59 +32,13 @@ while [ ! -e /dev/ttyACM0 ] && [ "$i" -lt 50 ]; do
     i=$((i + 1))
 done
 
-if [ -e /dev/ttyACM0 ]; then
-    echo "PICO-HOST: touching CDC at 1200 baud"
-    stty -F /dev/ttyACM0 1200 raw -echo || true
-    sleep 3
-else
-    echo "PICO-HOST: no CDC device; checking for BOOTSEL storage"
-fi
-
-i=0
-while [ ! -b /dev/sda1 ] && [ "$i" -lt 80 ]; do
-    sleep 0.1
-    i=$((i + 1))
-done
-
-if [ -b /dev/sda1 ]; then
-    mount -t vfat /dev/sda1 /mnt
-    echo "PICO-HOST: RP2350 BOOTSEL found; copying RAM-only UF2"
-    cp /pico2_usb_spi_test.uf2 /mnt/PICO2.UF2
-    sync
-    umount /mnt || true
-else
-    echo "PICO-HOST: ERROR - Pico did not enter BOOTSEL"
-fi
-
-sleep 5
-result=""
-for product in /sys/bus/usb/devices/*/product; do
-    [ -r "$product" ] || continue
-    value="$(cat "$product")"
-    case "$value" in
-        PICO2_USB_SPI_PASS|PICO2_USB_SPI_FAIL)
-            result="$value"
-            ;;
-    esac
-done
-
-if [ "$result" = "PICO2_USB_SPI_PASS" ]; then
-    echo "PICO-HOST: PASS - USB update, Pico execution, and SPI loopback verified"
-elif [ "$result" = "PICO2_USB_SPI_FAIL" ]; then
-    echo "PICO-HOST: FAIL - Pico ran, but SPI loopback failed"
-else
-    echo "PICO-HOST: ERROR - result identity not found"
-    for product in /sys/bus/usb/devices/*/product; do
-        [ -r "$product" ] && echo "PICO-HOST: USB product: $(cat "$product")"
-    done
-fi
-
 if [ -c /dev/ttyACM0 ]; then
     /usr/sbin/pico-bridge-service >/dev/ttyPS0 2>&1 &
     echo "PICO-BRIDGE: service launched at UDP port 5007 and MB mailbox 0x1003FE00"
+    echo "PICO-HOST: READY - existing Pico CDC firmware preserved"
 else
-    echo "PICO-BRIDGE: WARNING - /dev/ttyACM0 is unavailable"
+    echo "PICO-HOST: ERROR - installed Pico firmware did not expose USB CDC"
 fi
 
-echo "PICO-HOST: diagnostic shell ready"
+echo "PICO-HOST: maintenance shell ready"
 exec /bin/sh

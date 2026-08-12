@@ -4,7 +4,6 @@ import argparse
 import hashlib
 from pathlib import Path
 import socket
-import struct
 import subprocess
 import sys
 import tempfile
@@ -20,8 +19,7 @@ except ImportError:
 ROOT = Path(__file__).resolve().parent
 PREBUILT = ROOT / "prebuilt"
 REMOTE_DIR = "/tmp/daq_pico_usb"
-SUCCESS = b"PICO-HOST: PASS - USB update, Pico execution, and SPI loopback verified"
-PICO_HEADER = struct.Struct("<4sBBHIHH")
+SUCCESS = b"PICO-HOST: READY - existing Pico CDC firmware preserved"
 
 ARTIFACTS = {
     "bitstream": "top.bit",
@@ -30,8 +28,6 @@ ARTIFACTS = {
     "bl31": "bl31.elf",
     "uboot": "u-boot",
     "dtb": "u-boot.dtb",
-    "pico": "pico2_usb_spi_test.bin",
-    "pico_uf2": "pico2_usb_spi_test.uf2",
     "linux_image": "Image",
     "linux_dtb": "system.dtb",
     "initramfs": "pico-initramfs.cpio.gz",
@@ -107,16 +103,12 @@ set pmufw [file join $work_dir {ARTIFACTS["pmufw"]}]
 set bl31 [file join $work_dir {ARTIFACTS["bl31"]}]
 set uboot [file join $work_dir {ARTIFACTS["uboot"]}]
 set dtb [file join $work_dir {ARTIFACTS["dtb"]}]
-set pico_image [file join $work_dir {ARTIFACTS["pico"]}]
-set pico_uf2 [file join $work_dir {ARTIFACTS["pico_uf2"]}]
 set linux_image [file join $work_dir {ARTIFACTS["linux_image"]}]
 set linux_dtb [file join $work_dir {ARTIFACTS["linux_dtb"]}]
 set initramfs [file join $work_dir {ARTIFACTS["initramfs"]}]
 set mb_firmware [file join $work_dir {ARTIFACTS["mb_firmware"]}]
 set psu_init_tcl [file join $work_dir {ARTIFACTS["psu_init"]}]
 set dtb_addr 0x00100000
-set pico_image_addr 0x35000000
-set pico_uf2_addr 0x36000000
 set linux_addr 0x08000000
 set linux_dtb_addr 0x04000000
 set initramfs_addr 0x0C000000
@@ -176,8 +168,6 @@ catch {{stop}}
 rst -processor -clear-registers
 dow -data $dtb $dtb_addr
 dow $uboot
-dow -data $pico_image $pico_image_addr
-dow -data $pico_uf2 $pico_uf2_addr
 dow -data $linux_image $linux_addr
 dow -data $linux_dtb $linux_dtb_addr
 dow -data $initramfs $initramfs_addr
@@ -280,50 +270,45 @@ def verify_ethernet(board_ip: str, local_ip: str, timeout: float = 15.0) -> None
     )
 
 
+# Exercise the production protocol used by unmodified PyDAQ and always
+# terminate handshake mode before returning.
 def verify_pico_bridge(
     board_ip: str, local_ip: str, timeout: float = 15.0
 ) -> None:
-    tx = bytes.fromhex("00ffa55a3cc39669")
-    expected = bytes(value ^ 0xA5 for value in tx)
-    sequence = 0x5049434F
-    request = PICO_HEADER.pack(
-        b"PSPI", 1, 1, 5, sequence, len(tx), 0
-    ) + tx
-    deadline = time.monotonic() + timeout
-    last_error = "no response"
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.bind((local_ip, 0))
-        sock.settimeout(0.5)
-        while time.monotonic() < deadline:
-            try:
-                sock.sendto(request, (board_ip, 5007))
-                response, peer = sock.recvfrom(PICO_HEADER.size + 128)
-            except OSError as exc:
-                last_error = str(exc)
-                continue
-            if peer[0] != board_ip or len(response) < PICO_HEADER.size:
-                continue
-            magic, version, status, rx_length, reply_sequence, _, _ = (
-                PICO_HEADER.unpack_from(response)
-            )
-            rx = response[PICO_HEADER.size:]
-            if (
-                magic == b"PSPR"
-                and version == 1
-                and status == 0
-                and reply_sequence == sequence
-                and rx_length == len(rx)
-                and rx == expected
-            ):
-                return
-            last_error = (
-                f"unexpected status={status}, sequence={reply_sequence}, "
-                f"payload={rx.hex()}"
-            )
-    raise RuntimeError(
-        f"Pico USB bridge on {board_ip}:5007 failed: {last_error}"
-    )
+    parent = str(ROOT.parent)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+    from fpga_pico_serial import Serial as PicoSerial
 
+    try:
+        with PicoSerial(
+            transport="ethernet",
+            board_ip=board_ip,
+            local_ip=local_ip,
+            timeout=timeout,
+            write_timeout=2.0,
+        ) as pico:
+            pico.reset_input_buffer()
+            pico.write(b"HANDSHAKE\n")
+            uid = pico.readline().decode(
+                "ascii", errors="replace"
+            ).strip()
+            if uid != "UID:PICO-002":
+                raise RuntimeError(
+                    f"expected UID:PICO-002, received {uid!r}"
+                )
+            pico.write(b"ENDHS\n")
+            response = pico.readline().decode(
+                "ascii", errors="replace"
+            ).strip()
+            if response != "HSOK":
+                raise RuntimeError(
+                    f"handshake termination returned {response!r}"
+                )
+    except OSError as exc:
+        raise RuntimeError(
+            f"Pico production CDC bridge on {board_ip}:5007 failed: {exc}"
+        ) from exc
 
 def main() -> int:
     args = parse_args()
@@ -388,18 +373,14 @@ def main() -> int:
                 if not wait_for(output, lock, SUCCESS, 90):
                     with lock:
                         transcript = bytes(output)
-                    if b"PICO-HOST: FAIL" in transcript:
-                        raise RuntimeError(
-                            "Pico executed, but the GP6-GP13 SPI wiring test failed."
-                        )
                     if b"PICO-HOST: ERROR" in transcript:
                         raise RuntimeError(
-                            "The ZCU102 Linux USB updater reported an error; "
+                            "The ZCU102 Linux USB host reported an error; "
                             "inspect the UART transcript above."
                         )
                     raise RuntimeError(
-                        "Pico USB/SPI verification did not complete; inspect the "
-                        "UART transcript above."
+                        "Pico USB CDC startup did not complete; inspect the UART "
+                        "transcript above."
                     )
                 verify_ethernet(args.board_ip, args.local_ip)
                 verify_pico_bridge(args.board_ip, args.local_ip)
@@ -408,8 +389,8 @@ def main() -> int:
                 reader.join(timeout=1)
 
     print(
-        "\nPASS: MicroBlaze is running, Pico USB/SPI passed, Linux DAQ "
-        "Ethernet answered PING, and the Pico UDP bridge completed an SPI RPC."
+        "\nPASS: MicroBlaze is running, Linux DAQ Ethernet answered PING, "
+        "and the preserved PICO-002 firmware completed its CDC handshake."
     )
     return 0
 

@@ -26,11 +26,11 @@ CONFIG_VFAT_FS=y
 ```
 
 `init` is the initramfs PID 1 program. It assigns `192.168.2.10/24` to the
-ZCU102 GEM interface and starts `daq-eth-service`, then performs the Pico USB
-update. Ethernet failure is reported but does not prevent USB/Pico recovery.
-The updater resets a running Pico CDC application at 1200 baud, mounts the
-RP2350 BOOTSEL volume, copies the RAM-only UF2, and checks the resulting USB
-product string.
+ZCU102 GEM interface, starts `daq-eth-service`, waits for the already
+programmed Pico CDC endpoint, and starts `pico-bridge-service`. It deliberately
+does not request BOOTSEL or copy a UF2. Production `pico2_daq` firmware remains
+in Pico flash across normal FPGA loads; firmware updates are a separate,
+explicit operation.
 
 `daq_eth_service.c` is a static userspace replacement for the prior bare-metal
 A53 network loop. Linux owns GEM and the IP stack while the service preserves

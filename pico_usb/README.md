@@ -12,27 +12,25 @@ command:
 5. boots a minimal Linux USB-host and DAQ Ethernet environment from DDR;
 6. brings up `eth0` as `192.168.2.10/24` and serves the established UDP
    protocol on port 5006;
-7. requests RP2350 BOOTSEL through the Pico CDC 1200-baud reset mechanism;
-8. copies a RAM-only Pico application through USB mass storage;
-9. runs a full-duplex software-SPI test through the four jumper wires;
-10. starts a persistent Pico SPI bridge on both UDP and the MicroBlaze
-    UART-to-DDR-mailbox path; and
-11. verifies `PICO2_USB_SPI_PASS`, DAQ Ethernet `PING`/`PONG`, and a real Pico
-    SPI transaction.
+7. preserves the firmware already installed in Pico flash;
+8. starts the Pico CDC bridge on UDP and the MicroBlaze mailbox path; and
+9. verifies DAQ Ethernet `PING`/`PONG` plus the production Pico
+   `HANDSHAKE`/`UID:PICO-002` protocol.
 
-The successful hardware run started from the older Pico CDC firmware, entered
-BOOTSEL over USB without touching the button, loaded the application, and
-observed `PICO2_USB_SPI_PASS`.
+Routine FPGA loading never enters Pico BOOTSEL and never writes Pico flash.
+Program `pico2_daq_pico002.uf2` once from the PC (or with an explicit recovery
+procedure), then reconnect the Pico to ZCU102 J96. The Pico firmware persists
+across FPGA reloads and board power cycles.
 
-Nothing is written to Pico flash or ZCU102 nonvolatile storage. The kernel,
-initramfs, boot firmware, and Pico application are loaded into RAM.
-Power-cycling the Pico restores its prior flash firmware. Power-cycling the
-ZCU102 removes this runtime, so rerun the loader after a board power cycle.
+The ZCU102 kernel, initramfs, and boot firmware are loaded into DDR only.
+Power-cycling the ZCU102 removes that runtime, so rerun the loader after a
+board power cycle.
 
 ## Hardware
 
 - Configure J96 for USB host power and connect it to the Pico 2 USB connector.
-- Connect the loopback wires:
+The following jumper wiring is only for the explicit SPI-loopback diagnostic;
+it is not used by the production PyDAQ/DAC connection:
 
 | Master | Slave | Function |
 |---|---|---|
@@ -46,16 +44,16 @@ SPI1. The test therefore implements SPI mode 0 in software on the Pico's two
 cores. Both sides transmit different eight-byte patterns and verify every
 received byte.
 
-BOOTSEL does not need to be pressed. The minimal Linux host uses the standard
-CDC 1200-baud reset path. The loaded test application also includes both the
-1200-baud and Raspberry Pi vendor reset interfaces for later USB-only reloads.
+For production, connect the Pico's normal SPI0 DAC pins and chip-selects to the
+AD5370 boards. Programming the FPGA changes neither those Pico pins nor the
+firmware stored in Pico flash.
 
 ## Run
 
 From the repository root:
 
 ```powershell
-python pico_usb\load_and_test.py --port COM9
+uv run python pico_usb\load_and_test.py --port COM9
 ```
 
 The directly connected PC Ethernet adapter must have `192.168.2.1/24`;
@@ -66,15 +64,24 @@ Defaults target `jkincaid@capitolpeak.ece.ucdavis.edu` and the SSH key
 `~/.ssh/capitolpeak_auto`. Use `--remote` or `--identity` to override them.
 The local Python environment needs `pyserial`.
 
-The command programs the ZCU102 over its JTAG connection on capitolpeak and
-prints the PS UART transcript locally. It exits successfully only after Pico
-USB/SPI verification and a real UDP response:
+The command programs the ZCU102 over its JTAG connection on capitolpeak,
+prints the PS UART transcript locally, and leaves Pico flash untouched. It
+exits successfully only after Ethernet and the production Pico handshake pass:
 
 ```text
-PASS: MicroBlaze is running, Pico USB/SPI passed, and Linux DAQ Ethernet answered PING.
+PASS: MicroBlaze is running, Linux DAQ Ethernet answered PING, and the preserved PICO-002 firmware completed its CDC handshake.
 ```
 
 Enumeration alone is not treated as success.
+After the unified runtime is loaded, the same non-destructive bridge check used
+by the GUI is available without PyDAQ or heater writes:
+
+~~~powershell
+uv run python scripts\test_pico_bridge.py
+~~~
+
+Port 5006 is the independent ADC/DAQ service. A successful capture or PING on
+5006 does not imply that the Pico CDC bridge on port 5007 is running.
 
 ## Use an existing Pico controller
 
@@ -114,9 +121,58 @@ Both paths terminate in one Linux service, so Linux remains the only owner of
 the ZynqMP USB controller. Ethernet link failure does not prevent the COM10
 path from forwarding USB CDC bytes.
 
+### Use PyDAQ without modifying it
+
+The Pico must already be programmed with its normal `pico2_daq` firmware. The
+adapter below transports that firmware's existing serial protocol through the
+FPGA; it does not flash or replace Pico firmware.
+
+Install the FPGA transport before importing a configuration module that calls
+`pydaq.ser.find_boards()` or `config_detected_devices()`:
+
+```python
+from pydaq_fpga_transport import install
+
+install(
+    board_ip="192.168.2.10",
+    local_ip="192.168.2.1",
+    transport="ethernet",
+)
+
+from crossbar_config import netlist
+```
+
+`pydaq_fpga_transport.py` presents one virtual `FPGA-PICO` port only inside
+`pydaq.ser`. PyDAQ's normal `HANDSHAKE`, `UID`, board-definition, `Netlist`, and
+AD5370 write behavior is unchanged. Process-wide pyserial is not patched, so
+the DAQ GUI can continue using its ordinary FPGA UART connection. Ethernet is
+forced in the example because the GUI may already own COM10.
+
+The configuration's `BoardManager` UID must match the firmware running on the
+Pico. The included `scripts/mzi_pydaq_config.py` expects `PICO-002` and exposes
+all 54 crossbar heater nets as `h_<row>_<column>`.
+
+The GUI's **Optical Weight** tab uses this adapter to sweep one heater while the FPGA
+generates the periodic DAC waveform and performs trigger-aligned Ethernet ADC
+captures. It aligns each repetition in software, plots forward and reverse
+weight curves, reports extinction, and saves raw captures plus measurements as
+a compressed NPZ file.
+
+Current PyDAQ requires Python 3.11 or newer. This repository is a `uv` project;
+its `pyproject.toml` includes both the GUI dependencies and PyDAQ's Git source:
+
+```powershell
+cd C:\path\to\DAQControl
+uv sync
+uv run python scripts\dac_scope_qt.py --port COM10
+```
+
+No PyDAQ source changes are required. The Pico remains programmed with its
+normal firmware; the FPGA bridge only transports the same serial protocol.
+
 ## Low-level SPI diagnostic
 
-By default the Pico uses the four jumper wires as a self-checking SPI
+The explicit diagnostic Pico firmware uses the four jumper wires as a self-checking SPI
 loopback and returns each transmitted byte XOR `0xA5`. The client verifies
 that result. Add `--external` to drive GP6 (SCK), GP7 (MOSI), GP8 (MISO), and
 GP9 (CS) as an ordinary SPI mode-0 master without the internal loopback

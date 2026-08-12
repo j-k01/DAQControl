@@ -13,6 +13,7 @@ the board. The tested JTAG/RAM boot chain is:
 - `pico-initramfs.cpio.gz`
 - `pico2_usb_spi_test.bin`
 - `pico2_usb_spi_test.uf2`
+- `pico2_daq_pico002.uf2` (persistent production firmware; not auto-loaded)
 
 The DAQ bitstream, MicroBlaze application, and generated PS initialization are
 the repository's existing `prebuilt/top.bit`, `prebuilt/firmware.elf`, and
@@ -23,8 +24,9 @@ by this directory's manifest and verified before programming.
 `PRELOADED_BL33_BASE=0x30000000` to match this U-Boot image. `Image` and
 `system.dtb` are from Xilinx Linux 6.6 tag
 `xlnx_rebase_v6.6_LTS_2024.1`. The initramfs is based on Alpine 3.24.1 and
-contains the USB updater, Linux DAQ Ethernet service, DDR diagnostic utility,
-the dual-ingress Pico SPI bridge, their runtime, and the RAM-only UF2. The
+contains the Linux DAQ Ethernet service, DDR diagnostic utility, and the
+dual-ingress Pico CDC/SPI bridge. The production UF2 is included only for an
+explicit Pico firmware update and is not copied during normal startup. The
 bridge accepts requests directly on UDP port 5007 or through the MicroBlaze
 UART command and its separate DDR mailbox. Both paths support generic Pico
 USB CDC byte forwarding; SPI RPC remains available as a hardware diagnostic.

@@ -251,6 +251,37 @@ def measure_spikes_at_indices(
         noise_sigma_v=noise,
     )
 
+def probe_fpga_pico_bridge(
+    board_ip: str = "192.168.2.10",
+    local_ip: str = "192.168.2.1",
+    *,
+    timeout: float = 0.5,
+    serial_factory=None,
+) -> None:
+    """Verify that the Linux Pico bridge answers without touching the Pico."""
+
+    if serial_factory is None:
+        from fpga_pico_serial import Serial as serial_factory
+    try:
+        with serial_factory(
+            transport="ethernet",
+            board_ip=board_ip,
+            local_ip=local_ip,
+            timeout=timeout,
+            write_timeout=timeout,
+        ) as bridge:
+            bridge.reset_input_buffer()
+    except OSError as exc:
+        raise RuntimeError(
+            f"FPGA Pico bridge is not responding at {board_ip}:5007. "
+            f"ADC capture on {board_ip}:5006 is a separate service and can "
+            "still work. The ordinary program_board.ps1/program_board.tcl "
+            "runtime does not provide the USB host or Pico bridge. Load the "
+            "unified runtime with uv run python pico_usb\\load_and_test.py "
+            "--port COM9, then retry."
+        ) from exc
+
+
 class PydaqMziController:
     """Lazy connection to the FPGA-attached PICO-002 through unmodified PyDAQ."""
 
@@ -276,6 +307,7 @@ class PydaqMziController:
                 sys.path.insert(0, search_path)
         from pydaq_fpga_transport import install
 
+        probe_fpga_pico_bridge(board_ip, local_ip)
         installation = install(
             board_ip=board_ip,
             local_ip=local_ip,
@@ -293,10 +325,10 @@ class PydaqMziController:
             endpoint = f"{board_ip}:{installation.backend.config.udp_port}"
             if "No serial DAQ boards found" in message:
                 raise RuntimeError(
-                    f"PICO-002 did not answer HANDSHAKE through the FPGA "
-                    f"bridge at {endpoint}. This is not a missing PC serial "
-                    f"DAQ board; check the FPGA Linux Pico bridge service, "
-                    f"the Pico USB connection/firmware, and Ethernet."
+                    f"The FPGA Pico bridge answered at {endpoint}, but "
+                    "PICO-002 did not answer the PyDAQ HANDSHAKE. The bridge "
+                    "service is running; check the Pico USB cable and confirm "
+                    "the directly connected Pico still returns UID:PICO-002."
                 ) from exc
             if "Board PICO-002 not found" in message:
                 raise RuntimeError(
