@@ -7,8 +7,8 @@
     1. Configure and test the host NIC.
     2. Restart the host NIC and clear stale neighbor state.
     3. Restart only the Linux DAQ Ethernet service over the PS UART.
-    4. Reload the complete unified Linux/USB/DAQ runtime.
-    5. Optionally wait for a physical power cycle and try once more.
+    4. Reprogram the FPGA, MicroBlaze, and unified Linux/USB/DAQ runtime.
+    5. Optionally wait for a physical power cycle and fully reprogram once more.
 
   Success requires an actual UDP PING/PONG exchange with the DAQ service.
   ICMP ping alone is not considered sufficient.
@@ -35,7 +35,7 @@ param(
     [int]$ProbeTimeoutMs = 1500,
     [int]$LinkWaitSeconds = 20,
     [string]$PsPort = "COM9",
-    [string]$Python = "python",
+    [string]$Python,
     [string]$Remote,
     [string]$Identity,
     # Retained for command-line compatibility; the unified loader discovers
@@ -155,6 +155,30 @@ function Invoke-ChildPowerShell {
     return [int]$childExitCode
 }
 
+function Resolve-ProjectPython {
+    param([string]$RequestedPython)
+
+    if ($RequestedPython) {
+        return $RequestedPython
+    }
+
+    $venvPython = Join-Path $root ".venv\Scripts\python.exe"
+    if (Test-Path $venvPython -PathType Leaf) {
+        return $venvPython
+    }
+
+    throw ("The UV project environment is missing. From the repository root, " +
+        "run 'uv sync --frozen', then rerun this recovery script.")
+}
+
+function Assert-RecoveryPython {
+    & $Python -c "import serial"
+    if ($LASTEXITCODE -ne 0) {
+        throw ("The project Python environment cannot import pyserial. Run " +
+            "'uv sync --frozen' from the repository root before recovery.")
+    }
+}
+
 function Configure-HostPath {
     $arguments = @(
         "-InterfaceAlias", $script:Adapter.Name,
@@ -258,7 +282,8 @@ function Restart-LinuxDaqService {
 }
 
 function Program-CompleteBoard {
-    Write-Host "`nLoading the complete unified Linux/USB/DAQ runtime..." `
+    Write-Host ("`nFully reprogramming FPGA, MicroBlaze, and unified " +
+        "Linux/USB/DAQ runtime over JTAG...") `
         -ForegroundColor Yellow
     $arguments = @(
         (Join-Path $root "pico_usb\load_and_test.py"),
@@ -270,7 +295,8 @@ function Program-CompleteBoard {
     if ($Identity) { $arguments += @("--identity", $Identity) }
     & $Python @arguments
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Unified runtime load failed with exit code $LASTEXITCODE."
+        Write-Warning ("Full JTAG board programming failed with exit code " +
+            "$LASTEXITCODE.")
         return $false
     }
     Configure-HostPath
@@ -298,9 +324,9 @@ if ($PlanOnly) {
     Write-Host "  2. Require a valid UDP PONG from $BoardIp`:$CmdPort."
     Write-Host "  3. Clear ARP and restart only the selected NIC."
     Write-Host "  4. Restart only daq-eth-service through Linux on $PsPort."
-    Write-Host "  5. Load the complete unified Linux/USB/DAQ runtime."
+    Write-Host "  5. Fully reprogram the FPGA, MicroBlaze, and unified Linux runtime."
     if ($WaitForPowerCycle) {
-        Write-Host "  6. Wait for a physical power cycle and make one final attempt."
+        Write-Host "  6. Wait for a physical power cycle, then fully reprogram again."
     }
     exit 0
 }
@@ -327,6 +353,9 @@ try {
     Write-Host "Board-link adapter: $($script:Adapter.Name)"
     Write-Host "Local/board: $LocalIp -> $BoardIp`:$CmdPort"
     Write-Host "Linux PS UART: $PsPort"
+    $Python = Resolve-ProjectPython -RequestedPython $Python
+    Assert-RecoveryPython
+    Write-Host "Project Python: $Python"
     if ($Vivado -or $Xsdb) {
         Write-Warning ("-Vivado/-Xsdb are ignored by the unified recovery path; " +
             "the loader uses the available toolchain on its JTAG host.")
@@ -376,7 +405,8 @@ try {
     }
 
     if ($WaitForPowerCycle) {
-        Write-Host "`nPower-cycle the board, wait for its power rails to settle, then press Enter." `
+        Write-Host ("`nPower-cycle the board, wait for its power rails to settle, " +
+            "then press Enter. The board will be fully reprogrammed next.") `
             -ForegroundColor Yellow
         Read-Host | Out-Null
         if (-not $SkipFullProgram) {

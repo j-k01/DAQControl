@@ -19,7 +19,7 @@ param(
     [string]$InterfaceAlias = "Ethernet",
     [int]$CmdPort = 5006,
     [string]$PsPort = "COM9",
-    [string]$Python = "python",
+    [string]$Python,
     [string]$Remote,
     [string]$Identity,
     [switch]$SkipDiagnostics,
@@ -37,9 +37,9 @@ $arguments = @(
     "-LocalIp", $LocalIp,
     "-InterfaceAlias", $InterfaceAlias,
     "-CmdPort", "$CmdPort",
-    "-PsPort", $PsPort,
-    "-Python", $Python
+    "-PsPort", $PsPort
 )
+if ($Python) { $arguments += @("-Python", $Python) }
 if ($Remote) { $arguments += @("-Remote", $Remote) }
 if ($Identity) { $arguments += @("-Identity", $Identity) }
 
