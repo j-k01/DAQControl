@@ -70,7 +70,7 @@ on connect -- acquisition is opt-in:
 Prereqs: board programmed + A53 PS-eth app running; UART (default COM10); NIC at
 192.168.2.1/24. See notes/dac_sources_howto.md.
 
-  python scripts/dac_scope_qt.py
+  uv run python scripts/dac_scope_qt.py
 """
 from __future__ import annotations
 

@@ -73,6 +73,6 @@ Write-Host ""
 Write-Host "IPv4 addresses on '$InterfaceAlias':"
 Get-NetIPAddress -InterfaceAlias $InterfaceAlias -AddressFamily IPv4 |
     Select-Object IPAddress, PrefixLength, PrefixOrigin | Format-Table -AutoSize
-Write-Host "Find the board:  python scripts\find_daq_eth.py --target 192.168.2.10" -ForegroundColor Cyan
-Write-Host "Use the GUI:     python scripts\dac_scope_qt.py --port COMx --board-ip 192.168.2.10 --local-ip $LocalIP" -ForegroundColor Cyan
+Write-Host "Find the board:  uv run python scripts\find_daq_eth.py --target 192.168.2.10" -ForegroundColor Cyan
+Write-Host "Use the GUI:     uv run python scripts\dac_scope_qt.py --port COMx --board-ip 192.168.2.10 --local-ip $LocalIP" -ForegroundColor Cyan
 Write-Host "Undo this:       .\scripts\board_net_revert.ps1"

@@ -58,10 +58,11 @@ four chronological 16-bit samples.
 | Live scope (legacy matplotlib) | `scripts/dac_source_scope.py` |
 | A/B the chip-1 CIC anti-alias vs keep-1-of-D (rejection in dB) | `scripts/cic_alias_sweep_uart.py` |
 
-Run `.\setup_gui_env.ps1` once, then launch the supported Qt 5.15 GUI with
-`.\run_dac_scope.ps1`. Pass normal options through the launcher, for example
-`.\run_dac_scope.ps1 --cic`.  Defaults to decim=128 so chip 0
-(keep-1-of-D) and chip 1 (CIC) share one timebase for the built-in A/B.
+Run `uv sync` once while internet access is available, then launch the
+supported Qt 5.15 GUI with `uv run python scripts\dac_scope_qt.py`. Pass normal
+options directly, for example `uv run python scripts\dac_scope_qt.py --cic`.
+Defaults to decim=128 so chip 0 (keep-1-of-D) and chip 1 (CIC) share one
+timebase for the built-in A/B.
 
 ## Minimal manual recipe (e.g. for a new waveform)
 

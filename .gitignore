@@ -47,5 +47,6 @@ Thumbs.db
 *~
 __pycache__/
 *.pyc
+.venv/
 .venv-gui/
 .venv-pydaq/

@@ -20,7 +20,7 @@ direct-attached board shows up even if PONG is filtered.
   python scripts/find_daq_eth.py --target 192.168.50.77  # probe one IP
 
 Found a board? Drive it with the UART tools / GUI, pointing at the IP shown:
-  python scripts/dac_scope_qt.py --port COM10 --board-ip <ip>
+  uv run python scripts/dac_scope_qt.py --port COM10 --board-ip <ip>
 (control is still over UART; --board-ip only affects the Ethernet collect path.)
 """
 from __future__ import annotations
@@ -271,7 +271,7 @@ def main():
             print(f"  BOARD at {ip}  via {info['via']}  (PONG, rtt {rtt_s})"
                   f"{mac_note}")
         first = sorted(found, key=lambda x: ipaddress.ip_address(x))[0]
-        print(f"\nUse it:  python scripts/dac_scope_qt.py --port COM10 "
+        print(f"\nUse it:  uv run python scripts/dac_scope_qt.py --port COM10 "
               f"--board-ip {first}")
     else:
         print("  No PONG from any path.")

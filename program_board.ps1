@@ -245,4 +245,4 @@ if (-not $NoEth) {
     }
 }
 
-Write-Host "==> UART/XBar control ready. Launch: python scripts\dac_scope_qt.py --port COM10" -ForegroundColor Cyan
+Write-Host "==> UART/XBar control ready. Launch: uv run python scripts\dac_scope_qt.py --port COM10" -ForegroundColor Cyan

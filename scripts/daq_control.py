@@ -153,7 +153,7 @@ def _load_serial_module():
     try:
         import serial  # type: ignore
     except ImportError as exc:
-        raise DaqControlError("pyserial is required; run `pip install -r requirements.txt`") from exc
+        raise DaqControlError("pyserial is required; run `uv sync`") from exc
     return serial
 
 
@@ -694,7 +694,7 @@ def _load_numpy():
         import numpy as np  # type: ignore
     except ImportError as exc:
         raise DaqControlError(
-            "numpy is required for captures; run `pip install -r requirements.txt`"
+            "numpy is required for captures; run `uv sync`"
         ) from exc
     return np
 

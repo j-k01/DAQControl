@@ -188,7 +188,7 @@ if ($adapter.Status -ne "Up") {
 
 if (-not $SkipTest) {
     Write-Host "Running DAQ UDP PING/PONG test..." -ForegroundColor Cyan
-    & python "$root\scripts\test_board_ethernet.py" --board-ip $BoardIp --local-ip $LocalIp
+    & uv run --project $root python "$root\scripts\test_board_ethernet.py" --board-ip $BoardIp --local-ip $LocalIp
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "Host networking is configured, but the board did not answer UDP. Run diagnose_board_ethernet.ps1 next."
     }

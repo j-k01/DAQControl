@@ -1,0 +1,20 @@
+[project]
+name = "daq-control-host"
+version = "0.1.0"
+description = "Host control, visualization, and analysis tools for DAQControl"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "matplotlib>=3.3",
+    "numpy>=1.20",
+    "pydaq",
+    "pyqt5>=5.15,<5.16",
+    "pyqt5-qt5==5.15.2",
+    "pyqtgraph>=0.13.7,<0.14",
+    "pyserial>=3.4",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+pydaq = { git = "https://github.com/ngncs-neuromorphic/pydaq.git" }
