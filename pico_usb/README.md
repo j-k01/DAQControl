@@ -52,20 +52,25 @@ firmware stored in Pico flash.
 
 From the repository root:
 
+Do not run program_board.ps1 first; this command replaces it for a Pico-enabled session.
+
 ```powershell
-uv run python pico_usb\load_and_test.py --port COM9
+uv run python pico_usb\load_and_test.py --local-jtag --port COM9
 ```
 
 The directly connected PC Ethernet adapter must have `192.168.2.1/24`;
 `--local-ip` and `--board-ip` override the defaults. The loader leaves the
 normal MicroBlaze console on COM10 and Linux on COM9.
 
-Defaults target `jkincaid@capitolpeak.ece.ucdavis.edu` and the SSH key
-`~/.ssh/capitolpeak_auto`. Use `--remote` or `--identity` to override them.
-The local Python environment needs `pyserial`.
+With --local-jtag, the loader discovers the newest local Xilinx XSDB/XSCT
+installation and uses the JTAG cable attached to the target PC. Pass --xsdb
+only when automatic discovery is insufficient. Omit --local-jtag only when
+the JTAG cable is intentionally attached to a remote host; that mode defaults
+to jkincaid@capitolpeak.ece.ucdavis.edu and accepts --remote/--identity.
+The local Python environment needs pyserial.
 
-The command programs the ZCU102 over its JTAG connection on capitolpeak,
-prints the PS UART transcript locally, and leaves Pico flash untouched. It
+The command programs the ZCU102 over its selected JTAG connection, prints the
+PS UART transcript locally, and leaves Pico flash untouched. It
 exits successfully only after Ethernet and the production Pico handshake pass:
 
 ```text

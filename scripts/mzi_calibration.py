@@ -278,7 +278,7 @@ def probe_fpga_pico_bridge(
             "still work. The ordinary program_board.ps1/program_board.tcl "
             "runtime does not provide the USB host or Pico bridge. Load the "
             "unified runtime with uv run python pico_usb\\load_and_test.py "
-            "--port COM9, then retry."
+            "--local-jtag --port COM9, then retry."
         ) from exc
 
 

@@ -39,7 +39,7 @@ def main() -> int:
             f"FAIL: no usable Pico bridge at {args.board_ip}:5007: {exc}\n"
             f"NOTE: ADC Ethernet on {args.board_ip}:5006 is independent. "
             "Load the unified USB-host runtime with:\n"
-            "  uv run python pico_usb\\load_and_test.py --port COM9",
+            "  uv run python pico_usb\\load_and_test.py --local-jtag --port COM9",
             file=sys.stderr,
         )
         return 1

@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 from pathlib import Path
+import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -94,9 +96,9 @@ def discover_xsdb(ssh: list[str]) -> str:
     return path[-1]
 
 
-def make_tcl() -> str:
+def make_tcl(work_dir: str = REMOTE_DIR) -> str:
     return f"""\
-set work_dir "{REMOTE_DIR}"
+set work_dir "{work_dir}"
 set bitstream [file join $work_dir {ARTIFACTS["bitstream"]}]
 set fsbl [file join $work_dir {ARTIFACTS["fsbl"]}]
 set pmufw [file join $work_dir {ARTIFACTS["pmufw"]}]
@@ -225,6 +227,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--port", default="COM9", help="ZCU102 PS UART0")
     parser.add_argument(
+        "--local-jtag",
+        action="store_true",
+        help="use XSDB and JTAG attached to this PC instead of SSH",
+    )
+    parser.add_argument(
+        "--xsdb",
+        help="local xsdb/xsct executable (used with --local-jtag)",
+    )
+    parser.add_argument(
         "--remote",
         default="jkincaid@capitolpeak.ece.ucdavis.edu",
         help="SSH host with the ZCU102 JTAG connection",
@@ -241,6 +252,47 @@ def parse_args() -> argparse.Namespace:
         "--local-ip", default="192.168.2.1", help="direct-link host address"
     )
     return parser.parse_args()
+
+
+def discover_local_xsdb(explicit: str | None = None) -> Path:
+    if explicit:
+        path = Path(explicit).expanduser().resolve()
+        if not path.is_file():
+            raise RuntimeError(f"local XSDB/XSCT does not exist: {path}")
+        return path
+
+    candidates = []
+    for name in ("xsdb", "xsdb.bat", "xsct", "xsct.bat"):
+        found = shutil.which(name)
+        if found:
+            candidates.append(Path(found))
+    for pattern in (
+        "Xilinx/*/Vivado/bin/xsdb.bat",
+        "Xilinx/Vivado/*/bin/xsdb.bat",
+        "Xilinx/*/Vitis/bin/xsct.bat",
+        "Xilinx/Vitis/*/bin/xsct.bat",
+    ):
+        candidates.extend(Path("C:/").glob(pattern))
+    if not candidates:
+        raise RuntimeError(
+            "could not find local xsdb/xsct. Install Xilinx tools or pass "
+            "--xsdb C:\\Xilinx\\<version>\\Vivado\\bin\\xsdb.bat"
+        )
+
+    def version_key(path: Path) -> tuple[int, int, int]:
+        match = re.search(r"(20\d{2})[./\\](\d+)", str(path))
+        year, minor = ((int(match.group(1)), int(match.group(2)))
+                       if match else (0, 0))
+        return year, minor, int(path.name.lower().startswith("xsdb"))
+
+    return max(set(path.resolve() for path in candidates), key=version_key)
+
+
+def local_xsdb_command(executable: Path, tcl_path: Path) -> list[str]:
+    command = [str(executable), str(tcl_path)]
+    if executable.suffix.lower() in {".bat", ".cmd"}:
+        return ["cmd.exe", "/d", "/c", *command]
+    return command
 
 
 def verify_ethernet(board_ip: str, local_ip: str, timeout: float = 15.0) -> None:
@@ -316,14 +368,32 @@ def main() -> int:
         raise RuntimeError("pyserial is required: python -m pip install pyserial")
     paths = require_artifacts()
     initramfs_size = paths["initramfs"].stat().st_size
-    ssh, scp = command_bases(args)
-    xsdb = discover_xsdb(ssh)
+    if args.local_jtag:
+        local_xsdb = discover_local_xsdb(args.xsdb)
+        ssh = scp = None
+    else:
+        ssh, scp = command_bases(args)
+        remote_xsdb = discover_xsdb(ssh)
 
     with tempfile.TemporaryDirectory(prefix="daq_pico_usb_") as temp_dir:
-        tcl_path = Path(temp_dir) / "load_usb_host.tcl"
-        with tcl_path.open("w", encoding="utf-8", newline="\n") as tcl_file:
-            tcl_file.write(make_tcl())
-        upload(args, ssh, scp, paths, tcl_path)
+        if args.local_jtag:
+            stage_dir = Path(temp_dir) / "artifacts"
+            stage_dir.mkdir()
+            for path in paths.values():
+                shutil.copy2(path, stage_dir / path.name)
+            tcl_path = stage_dir / "load_usb_host.tcl"
+            with tcl_path.open("w", encoding="utf-8", newline="\n") as tcl_file:
+                tcl_file.write(make_tcl(stage_dir.as_posix()))
+            load_command = local_xsdb_command(local_xsdb, tcl_path)
+        else:
+            tcl_path = Path(temp_dir) / "load_usb_host.tcl"
+            with tcl_path.open("w", encoding="utf-8", newline="\n") as tcl_file:
+                tcl_file.write(make_tcl())
+            upload(args, ssh, scp, paths, tcl_path)
+            load_command = [
+                *ssh,
+                f"{remote_xsdb} {REMOTE_DIR}/{tcl_path.name}",
+            ]
 
         output = bytearray()
         lock = threading.Lock()
@@ -339,13 +409,7 @@ def main() -> int:
             )
             reader.start()
             try:
-                load = run_checked(
-                    [
-                        *ssh,
-                        f"{xsdb} {REMOTE_DIR}/{tcl_path.name}",
-                    ],
-                    timeout=240,
-                )
+                load = run_checked(load_command, timeout=240)
                 sys.stdout.write(
                     "\n=== XSDB ===\n"
                     + load.stdout.decode("utf-8", errors="replace")
