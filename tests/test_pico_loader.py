@@ -23,6 +23,13 @@ class PicoLoaderTests(unittest.TestCase):
         self.assertIn('set work_dir "C:/Temp/daq pico/artifacts"', text)
         self.assertIn("fpga -file $bitstream", text)
         self.assertIn("dow -data $initramfs $initramfs_addr", text)
+        self.assertIn("catch {stop}", text)
+        self.assertIn('name =~ "*xczu9*"', text)
+        self.assertNotIn('name =~ "PL"', text)
+        self.assertNotIn("}after", text)
+        self.assertNotIn("}rst", text)
+        self.assertIn("}\nafter 1000", text)
+        self.assertIn("catch {stop}\nrst -processor", text)
 
     def test_explicit_local_xsdb_is_accepted(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -30,6 +37,28 @@ class PicoLoaderTests(unittest.TestCase):
             tool.write_text("@echo off\n", encoding="ascii")
 
             self.assertEqual(discover_local_xsdb(str(tool)), tool.resolve())
+
+    def test_artifact_toolchain_is_preferred_over_newer_fallback(self):
+        compatible = Path("C:/Xilinx/2024.1/Vivado/bin/xsdb.bat")
+        newer = Path("C:/Xilinx/2025.1/Vivado/bin/xsdb.bat")
+
+        ranked = loader.rank_xsdb_candidates([newer, compatible])
+
+        self.assertEqual(ranked[0], compatible.resolve())
+
+    def test_standard_initialization_uses_program_board_ps1(self):
+        command = loader.standard_daq_command(
+            Path("C:/Xilinx/2024.1/Vivado/bin/xsdb.bat")
+        )
+
+        self.assertEqual(command[0], "powershell.exe")
+        self.assertIn("-NoPing", command)
+        self.assertIn("-NoNicSetup", command)
+        self.assertEqual(command[-2:], ["-Vivado", "2024.1"])
+        self.assertTrue(
+            any(part.endswith("program_board.ps1") for part in command)
+        )
+        self.assertFalse(any(part.endswith("program_board.tcl") for part in command))
 
     def test_batch_xsdb_runs_through_cmd(self):
         command = local_xsdb_command(

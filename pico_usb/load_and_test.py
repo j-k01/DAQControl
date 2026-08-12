@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent
 PREBUILT = ROOT / "prebuilt"
 REMOTE_DIR = "/tmp/daq_pico_usb"
 SUCCESS = b"PICO-HOST: READY - existing Pico CDC firmware preserved"
+VALIDATED_XILINX_VERSION = (2024, 1)
 GTH_REQUIRED = {
     "hmc_done", "qpll_locked", "tx_ready", "rx_ready",
     "litejesd_active", "litejesd_ready",
@@ -60,8 +61,17 @@ def run_checked(command: list[str], **kwargs) -> subprocess.CompletedProcess:
         **kwargs,
     )
     if result.returncode:
-        text = result.stdout.decode("utf-8", errors="replace")
-        raise RuntimeError(f"command failed ({result.returncode}):\n{text}")
+        detail = result.stdout.decode("utf-8", errors="replace")
+        rendered = subprocess.list2cmdline([str(part) for part in command])
+        sys.stderr.write(
+            f"\n=== FAILED COMMAND (exit {result.returncode}) ===\n"
+            f"{rendered}\n{detail}\n=== END FAILED COMMAND ===\n"
+        )
+        sys.stderr.flush()
+        raise RuntimeError(
+            f"command failed with exit code {result.returncode}; complete tool "
+            "output is printed above"
+        )
     return result
 
 
@@ -145,12 +155,23 @@ rst -processor
 dow $fsbl
 con
 after 20000
-stop
+catch {{stop}}
 
 # Configure the PL after the system reset.  A system reset after `fpga` erases
 # the configuration and was invisible in the original USB-only proof.
-targets -set -filter {{name =~ "PL"}}
-fpga -file $bitstream
+if {{[catch {{fpga -file $bitstream}} fpga_err]}} {{
+    set pl_ok 0
+    foreach filt {{{{name =~ "*xczu9*"}} {{name =~ "*PL*"}}}} {{
+        if {{![catch {{targets -set -nocase -filter $filt}}]}} {{
+            set pl_ok 1
+            break
+        }}
+    }}
+    if {{!$pl_ok}} {{
+        error "FPGA configuration failed and no PL target was found: $fpga_err"
+    }}
+    fpga -file $bitstream
+}}
 after 1000
 
 # Use the exact, known-good DAQ JTAG initialization path.  It configures DDR,
@@ -165,7 +186,14 @@ foreach p {{psu_init psu_ps_pl_isolation_removal psu_ps_pl_reset_config}} {{
 
 # Start the existing DAQ MicroBlaze after FSBL has established the final PS,
 # DDR, isolation, and reset state and the PL is configured.
-targets -set -filter {{name =~ "MicroBlaze #*"}}
+set mb_ok 0
+foreach filt {{{{name =~ "MicroBlaze #*"}} {{name =~ "*MicroBlaze*"}} {{name =~ "*microblaze*"}}}} {{
+    if {{![catch {{targets -set -nocase -filter $filt}}]}} {{
+        set mb_ok 1
+        break
+    }}
+}}
+if {{!$mb_ok}} {{ error "No MicroBlaze target after FPGA configuration" }}
 catch {{stop}}
 rst -processor
 dow $mb_firmware
@@ -443,13 +471,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def discover_local_xsdb(explicit: str | None = None) -> Path:
-    if explicit:
-        path = Path(explicit).expanduser().resolve()
-        if not path.is_file():
-            raise RuntimeError(f"local XSDB/XSCT does not exist: {path}")
-        return path
+def xilinx_version(path: Path) -> tuple[int, int]:
+    match = re.search(r"(20\d{2})[./\\](\d+)", str(path))
+    return ((int(match.group(1)), int(match.group(2)))
+            if match else (0, 0))
 
+
+def rank_xsdb_candidates(candidates: list[Path]) -> list[Path]:
+    """Prefer the artifact-producing 2024.1 tools, then newer fallbacks."""
+    unique = set(path.resolve() for path in candidates)
+
+    def key(path: Path) -> tuple[int, int, int, int]:
+        version = xilinx_version(path)
+        return (
+            int(version == VALIDATED_XILINX_VERSION),
+            version[0], version[1],
+            int(path.name.lower().startswith("xsdb")),
+        )
+
+    return sorted(unique, key=key, reverse=True)
+
+
+def find_local_xsdb_candidates() -> list[Path]:
     candidates = []
     for name in ("xsdb", "xsdb.bat", "xsct", "xsct.bat"):
         found = shutil.which(name)
@@ -462,20 +505,23 @@ def discover_local_xsdb(explicit: str | None = None) -> Path:
         "Xilinx/Vitis/*/bin/xsct.bat",
     ):
         candidates.extend(Path("C:/").glob(pattern))
+    return rank_xsdb_candidates(candidates)
+
+
+def discover_local_xsdb(explicit: str | None = None) -> Path:
+    if explicit:
+        path = Path(explicit).expanduser().resolve()
+        if not path.is_file():
+            raise RuntimeError(f"local XSDB/XSCT does not exist: {path}")
+        return path
+
+    candidates = find_local_xsdb_candidates()
     if not candidates:
         raise RuntimeError(
             "could not find local xsdb/xsct. Install Xilinx tools or pass "
             "--xsdb C:\\Xilinx\\<version>\\Vivado\\bin\\xsdb.bat"
         )
-
-    def version_key(path: Path) -> tuple[int, int, int]:
-        match = re.search(r"(20\d{2})[./\\](\d+)", str(path))
-        year, minor = ((int(match.group(1)), int(match.group(2)))
-                       if match else (0, 0))
-        return year, minor, int(path.name.lower().startswith("xsdb"))
-
-    return max(set(path.resolve() for path in candidates), key=version_key)
-
+    return candidates[0]
 
 def local_xsdb_command(executable: Path, tcl_path: Path) -> list[str]:
     command = [str(executable), str(tcl_path)]
@@ -551,11 +597,31 @@ def verify_pico_bridge(
             f"Pico production CDC bridge on {board_ip}:5007 failed: {exc}"
         ) from exc
 
-def restore_standard_daq(local_xsdb: Path) -> None:
-    """Return a failed local unified load to the proven ordinary DAQ image."""
-    tcl = ROOT.parent / "program_board.tcl"
-    run_checked(local_xsdb_command(local_xsdb, tcl), timeout=240)
+def standard_daq_command(local_xsdb: Path) -> list[str]:
+    """Build the real target-PC program_board.ps1 invocation."""
+    script = ROOT.parent / "program_board.ps1"
+    command = [
+        "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", str(script), "-NoPing", "-NoNicSetup",
+    ]
+    version = xilinx_version(local_xsdb)
+    if version != (0, 0):
+        command += ["-Vivado", f"{version[0]}.{version[1]}"]
+    return command
 
+
+def program_standard_daq(local_xsdb: Path, *, label: str) -> None:
+    """Run the established full target-PC DAQ programming procedure."""
+    print(f"\n{label}: program_board.ps1")
+    result = run_checked(standard_daq_command(local_xsdb), timeout=600)
+    output = result.stdout.decode("utf-8", errors="replace")
+    if output:
+        print(output)
+
+
+def restore_standard_daq(local_xsdb: Path) -> None:
+    """Return a failed unified load to the proven ordinary DAQ image."""
+    program_standard_daq(local_xsdb, label="Restoring standard DAQ runtime")
 
 def main() -> int:
     args = parse_args()
@@ -567,6 +633,14 @@ def main() -> int:
     print(f"PS/Linux UART: {ps_port}")
     if args.local_jtag:
         local_xsdb = discover_local_xsdb(args.xsdb)
+        version = xilinx_version(local_xsdb)
+        version_text = (
+            f"{version[0]}.{version[1]}" if version != (0, 0) else "unknown"
+        )
+        print(
+            f"JTAG tool: {local_xsdb} (version {version_text}; "
+            "2024.1 preferred when installed)"
+        )
         ssh = scp = None
     else:
         ssh, scp = command_bases(args)
@@ -574,6 +648,20 @@ def main() -> int:
 
     programming_started = False
     try:
+        if args.local_jtag:
+            # The unified image replaces only the A53 runtime. The external
+            # converter clocks, JESD links, and MicroBlaze application must
+            # first be initialized by the same sequence used by the normal
+            # DAQ workflow. This is why an earlier unified load worked only
+            # after program_board.ps1 had already run.
+            program_standard_daq(
+                local_xsdb,
+                label=(
+                    "Initializing complete DAQ hardware before unified "
+                    "Linux/Pico boot"
+                ),
+            )
+
         with tempfile.TemporaryDirectory(prefix="daq_pico_usb_") as temp_dir:
             if args.local_jtag:
                 stage_dir = Path(temp_dir) / "artifacts"

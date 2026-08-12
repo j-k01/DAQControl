@@ -5,8 +5,9 @@ controls a Pico 2 as a USB host through J96 while the existing DAQ
 MicroBlaze/UART/XBar control and UDP Ethernet readout remain active. One
 command:
 
-1. restores the tracked DAQ bitstream;
-2. starts the project FSBL and PMU firmware;
+1. runs the established `program_board.ps1` sequence to initialize the full
+   converter, JESD, MicroBlaze, and FPGA state;
+2. starts the project FSBL and PMU firmware for the unified A53 runtime;
 3. enters U-Boot through a matching ARM Trusted Firmware (BL31) handoff;
 4. starts the existing DAQ MicroBlaze firmware;
 5. boots a minimal Linux USB-host and DAQ Ethernet environment from DDR;
@@ -52,7 +53,9 @@ firmware stored in Pico flash.
 
 From the repository root:
 
-Do not run program_board.ps1 first; this command replaces it for a Pico-enabled session.
+Do not run `program_board.ps1` manually first. The loader calls it internally,
+verifies that the established hardware initialization completes, and then
+installs the unified Linux/Pico A53 runtime.
 
 ```powershell
 uv run python pico_usb\load_and_test.py --local-jtag
@@ -64,15 +67,18 @@ selects CP2108 Interface 0 for the PS/Linux console and probes CP2108 Interface
 2 for the MicroBlaze DAQ console. Explicit overrides remain available, for
 example `--port COM11 --daq-port COM9` on the current target PC.
 
-With --local-jtag, the loader discovers the newest local Xilinx XSDB/XSCT
-installation and uses the JTAG cable attached to the target PC. Pass --xsdb
-only when automatic discovery is insufficient. Omit --local-jtag only when
-the JTAG cable is intentionally attached to a remote host; that mode defaults
-to jkincaid@capitolpeak.ece.ucdavis.edu and accepts --remote/--identity.
-The local Python environment needs pyserial.
+With `--local-jtag`, the loader discovers local Xilinx XSDB/XSCT installations
+and prefers 2024.1, the toolchain used to produce the tracked boot artifacts.
+If 2024.1 is absent it uses the newest available installation and prints the
+selected path and version. Pass `--xsdb` only to override discovery. Omit
+`--local-jtag` only when the JTAG cable is intentionally attached to a remote
+host; that mode defaults to `jkincaid@capitolpeak.ece.ucdavis.edu` and accepts
+`--remote`/`--identity`. The local Python environment needs pyserial.
 
-The command programs the ZCU102 over its selected JTAG connection, prints the
-PS UART transcript locally, and leaves Pico flash untouched. It
+The command first runs the proven standard board setup, then programs the
+unified A53 runtime over its selected JTAG connection, prints the PS UART
+transcript locally, and leaves Pico flash untouched. If the unified phase
+fails, it runs `program_board.ps1` again to restore the ordinary DAQ runtime. It
 exits successfully only after the MicroBlaze responds, all JESD-ready flags are
 present, a real 64 KB ADC burst completes, Ethernet answers PING, and the
 production Pico handshake passes:
