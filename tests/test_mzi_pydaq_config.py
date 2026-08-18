@@ -85,6 +85,19 @@ class MziPydaqConfigTests(unittest.TestCase):
         self.assertEqual(module.netlist.pins_dict["h_1_2"].writes, [0.50])
         self.assertEqual(sent, [("h_1_1", 0.25), ("h_1_2", 0.50)])
 
+        writes_before = {
+            net: list(module.netlist.pins_dict[net].writes)
+            for net in ("h_1_1", "h_1_2")
+        }
+        sent.clear()
+        with self.assertRaisesRegex(ValueError, "outside 0..1 V"):
+            module.set_mzi_voltages(
+                {"h_1_1": 1.0001, "h_1_2": 0.50},
+                on_sent=lambda net, voltage: sent.append((net, voltage)))
+        self.assertEqual(sent, [])
+        for net, previous in writes_before.items():
+            self.assertEqual(module.netlist.pins_dict[net].writes, previous)
+
         module.eval0.ack_response = ""
         sent.clear()
         with self.assertRaisesRegex(RuntimeError, "not acknowledged"):

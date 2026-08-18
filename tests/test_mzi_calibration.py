@@ -148,6 +148,16 @@ class MziCalibrationTests(unittest.TestCase):
             voltage, [0.0, 0.12, 0.41, 0.9, 0.9, 0.41, 0.12, 0.0])
         np.testing.assert_array_equal(direction, [0, 0, 0, 0, 1, 1, 1, 1])
 
+    def test_generated_and_explicit_sweeps_reject_unsafe_voltage(self):
+        with self.assertRaisesRegex(ValueError, "outside 0..1 V"):
+            calibration_voltage_sequence(0.0, 5.0, 3, False)
+        with self.assertRaisesRegex(ValueError, "between 0 and 1 V"):
+            parse_heater_voltages("0, 0.5, 5.0")
+        with self.assertRaisesRegex(ValueError, "outside 0..1 V"):
+            calibration_voltage_sequence(
+                0.0, 1.0, 3, False,
+                explicit=np.asarray([0.0, 0.5, 1.0001]))
+
     def test_triggered_spike_measurement_uses_fixed_hardware_indices(self):
         rng = np.random.default_rng(7)
         repetitions, length, step = 16, 2048, 400

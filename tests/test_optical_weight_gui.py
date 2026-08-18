@@ -176,6 +176,19 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertFalse(self.window.mzi_program_btn.isEnabled())
         self.assertFalse(self.window.mzi_quick_btn.isEnabled())
 
+    def test_heater_limits_are_consistent_and_reject_before_controller(self):
+        self.assertEqual(self.window.mzi_selected_voltage.maximum(), 1.0)
+        self.assertEqual(self.window.mzi_vstart.maximum(), 1.0)
+        self.assertEqual(self.window.mzi_vstop.maximum(), 1.0)
+        self.assertEqual(self.window.mzi_restore.maximum(), 1.0)
+        fake = FakeMziController()
+        self.window._mzi_controller = fake
+
+        with self.assertRaisesRegex(ValueError, "outside 0..1 V"):
+            self.window._set_mzi_heater_voltages({"h_1_1": 5.0})
+
+        self.assertEqual(fake.voltages, [])
+
     def test_pico_initialization_feedback(self):
         fake = FakeMziController()
         self.window._mzi_controller = fake

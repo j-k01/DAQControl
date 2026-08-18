@@ -91,6 +91,7 @@ import pyqtgraph as pg
 from mzi_heater_map import (
     BOARD_DEFINITIONS, HEATER_HARDWARE, HEATER_MAX_V, HEATER_MIN_V,
     MZI_NET_NAMES, ordered_heater_nets, validate_heater_voltages,
+    validate_requested_heater_voltages,
 )
 from mzi_calibration import (
     PydaqMziController,
@@ -3643,13 +3644,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_spacing.addItem("Explicit voltage list", "explicit")
         cf.addRow("Sweep spacing", self.mzi_spacing)
         self.mzi_vstart = QtWidgets.QDoubleSpinBox()
-        self.mzi_vstart.setRange(0.0, 1.0)
+        self.mzi_vstart.setRange(HEATER_MIN_V, HEATER_MAX_V)
         self.mzi_vstart.setValue(0.0)
         self.mzi_vstart.setDecimals(4)
         self.mzi_vstart.setSuffix(" V")
         self.mzi_vstop = QtWidgets.QDoubleSpinBox()
-        self.mzi_vstop.setRange(0.0, 1.0)
-        self.mzi_vstop.setValue(1.0)
+        self.mzi_vstop.setRange(HEATER_MIN_V, HEATER_MAX_V)
+        self.mzi_vstop.setValue(HEATER_MAX_V)
         self.mzi_vstop.setDecimals(4)
         self.mzi_vstop.setSuffix(" V")
         self.mzi_points = QtWidgets.QSpinBox()
@@ -3688,7 +3689,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "After the forward sweep, visit the same voltages in reverse order.")
         cf.addRow("", self.mzi_reverse)
         self.mzi_restore = QtWidgets.QDoubleSpinBox()
-        self.mzi_restore.setRange(0.0, 1.0)
+        self.mzi_restore.setRange(HEATER_MIN_V, HEATER_MAX_V)
         self.mzi_restore.setValue(0.0)
         self.mzi_restore.setDecimals(4)
         self.mzi_restore.setSuffix(" V")
@@ -3932,6 +3933,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._refresh_mzi_heater_map()
 
     def _set_mzi_heater_voltages(self, requested):
+        requested = validate_requested_heater_voltages(dict(requested))
         self._mzi_controller.set_voltages(
             requested, on_sent=self.mzi_heater_programmed.emit)
 

@@ -10,6 +10,10 @@ import sys
 import time
 
 import numpy as np
+from mzi_heater_map import (
+    HEATER_MAX_V, HEATER_MIN_V, validate_heater_voltage,
+    validate_requested_heater_voltages,
+)
 from spike_test_analysis import detect_spikes_output
 
 
@@ -106,7 +110,7 @@ def measure_periodic_pulses(
 
 
 def parse_heater_voltages(text: str) -> np.ndarray:
-    """Parse a comma/space/semicolon separated 0..1 V heater list."""
+    """Parse a separated list within the photonic-heater safety range."""
 
     tokens = [token for token in re.split(r"[,;\s]+", str(text).strip()) if token]
     if len(tokens) < 2:
@@ -117,8 +121,10 @@ def parse_heater_voltages(text: str) -> np.ndarray:
         raise ValueError("heater voltage list contains a non-number") from exc
     if not np.all(np.isfinite(values)):
         raise ValueError("heater voltages must be finite")
-    if np.any(values < 0.0) or np.any(values > 1.0):
-        raise ValueError("heater voltages must be between 0 and 1 V")
+    if np.any(values < HEATER_MIN_V) or np.any(values > HEATER_MAX_V):
+        raise ValueError(
+            f"heater voltages must be between {HEATER_MIN_V:g} and "
+            f"{HEATER_MAX_V:g} V")
     return values
 
 
@@ -387,12 +393,13 @@ class PydaqMziController:
     def set_voltage(self, net_name: str, voltage: float) -> None:
         if not self.connected:
             raise RuntimeError("PyDAQ MZI controller is not connected")
-        self._config.set_mzi_voltage(net_name, float(voltage))
+        requested = validate_requested_heater_voltages({net_name: voltage})
+        self._config.set_mzi_voltage(net_name, requested[net_name])
     def set_voltages(self, voltages, *, on_sent=None) -> None:
         if not self.connected:
             raise RuntimeError("PyDAQ MZI controller is not connected")
-        requested = {str(net): float(voltage)
-                     for net, voltage in voltages.items()}
+        requested = validate_requested_heater_voltages(
+            {str(net): voltage for net, voltage in voltages.items()})
         if hasattr(self._config, "set_mzi_voltages"):
             self._config.set_mzi_voltages(requested, on_sent=on_sent)
         else:
@@ -435,6 +442,8 @@ def calibration_voltage_sequence(
             forward = np.sqrt(np.linspace(start * start, stop * stop, int(points)))
         else:
             raise ValueError("spacing must be voltage or power")
+    for voltage in forward:
+        validate_heater_voltage(voltage)
     if not reverse:
         return forward, np.zeros(forward.size, dtype=np.int8)
     backward = forward[::-1]

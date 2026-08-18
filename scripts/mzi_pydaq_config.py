@@ -11,8 +11,8 @@ import time
 import pydaq.daq as daq
 import pydaq.ser as ser
 from mzi_heater_map import (
-    EVAL0_CHANNELS, EVAL1_CHANNELS, HEATER_MAX_V, HEATER_MIN_V,
-    MZI_NET_NAMES,
+    EVAL0_CHANNELS, EVAL1_CHANNELS, MZI_NET_NAMES,
+    validate_requested_heater_voltages,
 )
 
 HEATER_SPI_GUARD_S = 0.001
@@ -47,28 +47,17 @@ def _strict_mzi_vout(net_name: str, voltage: float) -> str:
 def set_mzi_voltage(net_name: str, voltage: float) -> None:
     """Set one crossing heater without resetting unrelated PyDAQ outputs."""
 
-    if net_name not in MZI_NET_NAMES:
-        raise KeyError(f"Unknown crossbar heater net {net_name!r}")
-    if not HEATER_MIN_V <= float(voltage) <= HEATER_MAX_V:
-        raise ValueError(
-            f"heater voltage must be {HEATER_MIN_V:g}..{HEATER_MAX_V:g} V")
+    requested = validate_requested_heater_voltages({net_name: voltage})
     # Netlist.__exit__ resets every board and every output. Calibration owns
     # only this heater, so deliberately address its configured pin directly.
-    _strict_mzi_vout(net_name, float(voltage))
+    _strict_mzi_vout(net_name, requested[net_name])
 
 
 def set_mzi_voltages(voltages, *, on_sent=None) -> None:
     """Set several crossing heaters while preserving every other output."""
 
-    requested = {str(net): float(voltage) for net, voltage in voltages.items()}
-    unknown = sorted(set(requested) - set(MZI_NET_NAMES))
-    if unknown:
-        raise KeyError(f"Unknown crossbar heater nets {unknown!r}")
-    invalid = {net: voltage for net, voltage in requested.items()
-               if not HEATER_MIN_V <= voltage <= HEATER_MAX_V}
-    if invalid:
-        raise ValueError(
-            f"heater voltages must be {HEATER_MIN_V:g}..{HEATER_MAX_V:g} V: {invalid}")
+    requested = validate_requested_heater_voltages(
+        {str(net): voltage for net, voltage in voltages.items()})
     written = 0
     for net_name in MZI_NET_NAMES:
         if net_name in requested:

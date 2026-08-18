@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import math
 
+
+# PyDAQ's EVAL-AD5370 transport accepts the board's much wider electrical
+# range (-4..8 V by default). These are photonic-heater safety limits, not
+# DAC capability limits, and every application write must be checked here.
 HEATER_MIN_V = 0.0
 HEATER_MAX_V = 1.0
 
@@ -52,23 +57,40 @@ HEATER_HARDWARE = {
 }
 
 
-def validate_heater_voltages(voltages) -> dict[str, float]:
-    """Return a complete, range-checked heater-voltage mapping."""
+def validate_heater_voltage(value, *, label="heater") -> float:
+    """Return one finite heater voltage inside the application safety range."""
+
+    voltage = float(value)
+    if (not math.isfinite(voltage) or
+            not HEATER_MIN_V <= voltage <= HEATER_MAX_V):
+        raise ValueError(
+            f"{label} voltage {voltage:g} V is outside "
+            f"{HEATER_MIN_V:g}..{HEATER_MAX_V:g} V")
+    return voltage
+
+
+def validate_requested_heater_voltages(voltages) -> dict[str, float]:
+    """Return only the requested heaters after strict safety validation."""
 
     if not isinstance(voltages, dict):
         raise ValueError("heater voltages must be a net-to-voltage mapping")
     unknown = sorted(set(voltages) - set(MZI_NET_NAMES))
     if unknown:
         raise ValueError(f"unknown heater nets: {', '.join(unknown)}")
-    result = {net: 0.0 for net in MZI_NET_NAMES}
+    result = {}
     for net, value in voltages.items():
-        voltage = float(value)
-        if not HEATER_MIN_V <= voltage <= HEATER_MAX_V:
-            raise ValueError(
-                f"{net} voltage {voltage:g} V is outside "
-                f"{HEATER_MIN_V:g}..{HEATER_MAX_V:g} V")
-        result[net] = voltage
+        result[net] = validate_heater_voltage(value, label=net)
     return result
+
+
+def validate_heater_voltages(voltages) -> dict[str, float]:
+    """Return a complete, range-checked heater-voltage mapping."""
+
+    requested = validate_requested_heater_voltages(voltages)
+    return {
+        net: requested.get(net, 0.0)
+        for net in MZI_NET_NAMES
+    }
 
 
 def ordered_heater_nets(nets) -> tuple[str, ...]:
