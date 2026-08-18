@@ -99,7 +99,9 @@ from mzi_calibration import (
     measure_triggered_spikes,
     parse_heater_voltages,
 )
-from optical_experiment import create_experiment, save_heater_capture, update_manifest
+from optical_experiment import (
+    create_experiment, load_manifest, save_heater_capture, update_manifest,
+)
 from process_optical_experiment import process_experiment
 
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
@@ -1817,6 +1819,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
     mzi_setup_progress = QtCore.pyqtSignal(str)
     mzi_heater_programmed = QtCore.pyqtSignal(str, float)
     mzi_cal_result = QtCore.pyqtSignal(object)
+    mzi_import_result = QtCore.pyqtSignal(object)
     scal_done = QtCore.pyqtSignal(str, bool, str)  # (neuron, ok, detail) spike-cal result
 
     def __init__(self, args):
@@ -1835,6 +1838,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._mzi_staged_heater_voltages = None
         self._mzi_selected_heaters = {MZI_NET_NAMES[0]}
         self._mzi_heater_configs = load_heater_configs()
+        self._mzi_result_datasets = {}
         self._mzi_active_config_name = None
         self._mzi_heater_controls = []
         self.main_y_link = [False] * 4
@@ -2425,6 +2429,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_setup_progress.connect(self.mzi_status.setText)
         self.mzi_heater_programmed.connect(self._on_mzi_heater_programmed)
         self.mzi_cal_result.connect(self._on_mzi_cal_result)
+        self.mzi_import_result.connect(self._on_mzi_import_result)
 
         self.msamp_result.connect(self._show_multisample)
         self.liveavg_result.connect(self._on_liveavg_batch)
@@ -3795,6 +3800,30 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     def _build_mzi_results_panel(self, layout):
         layout.setContentsMargins(8, 8, 8, 8)
+        dataset_row = QtWidgets.QHBoxLayout()
+        self.mzi_import_btn = QtWidgets.QPushButton("Import experiment")
+        self.mzi_import_btn.setIcon(
+            self.style().standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
+        self.mzi_import_btn.setToolTip(
+            "Open any saved optical experiment directory and re-run analysis "
+            "from its raw trigger-aligned captures.")
+        self.mzi_import_btn.clicked.connect(self._on_mzi_import_experiment)
+        self.mzi_dataset_combo = QtWidgets.QComboBox()
+        self.mzi_dataset_combo.setEnabled(False)
+        self.mzi_dataset_combo.setToolTip(
+            "Switch between optical experiments loaded during this session.")
+        self.mzi_dataset_combo.currentIndexChanged.connect(
+            self._on_mzi_dataset_selected)
+        dataset_row.addWidget(self.mzi_import_btn)
+        dataset_row.addWidget(self.mzi_dataset_combo, 1)
+        layout.addLayout(dataset_row)
+        self.mzi_dataset_status = QtWidgets.QLabel(
+            "No optical experiment loaded.")
+        self.mzi_dataset_status.setWordWrap(True)
+        self.mzi_dataset_status.setStyleSheet(
+            "color:#9fb3c8; font-size:11px;")
+        layout.addWidget(self.mzi_dataset_status)
+
         self.mzi_results_tabs = QtWidgets.QTabWidget()
         layout.addWidget(self.mzi_results_tabs, 1)
 
@@ -4588,6 +4617,96 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 max(0, int(starts[0]) - margin),
                 min(trace_mv.size - 1, int(ends[-1]) + margin), padding=0)
 
+    def _on_mzi_import_experiment(self):
+        start = os.path.abspath(os.path.expanduser(self.args.capture_dir))
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Import optical experiment", start)
+        if not path:
+            return
+        self.mzi_import_btn.setEnabled(False)
+        self.mzi_dataset_status.setText(
+            f"Loading and analyzing {os.path.abspath(path)}...")
+        self.mzi_dataset_status.setStyleSheet(
+            "color:#FFB74D; font-size:11px;")
+        self._bg(lambda: self.mzi_import_result.emit(
+            self._run_mzi_import_experiment(path)))
+
+    def _run_mzi_import_experiment(self, path):
+        try:
+            experiment_dir = os.path.abspath(os.path.expanduser(str(path)))
+            manifest = load_manifest(experiment_dir)
+            if not isinstance(manifest.get("heater_captures"), list):
+                raise ValueError(
+                    "experiment.json does not contain heater_captures")
+            result = process_experiment(experiment_dir)
+            result["kind"] = "imported_sweep"
+            result["manifest"] = load_manifest(experiment_dir)
+            result["path"] = experiment_dir
+            return result
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "kind": "imported_sweep",
+                "_err": f"{type(exc).__name__}: {exc}",
+                "path": os.path.abspath(os.path.expanduser(str(path))),
+            }
+
+    def _on_mzi_import_result(self, result):
+        self.mzi_import_btn.setEnabled(True)
+        if not isinstance(result, dict) or "_err" in result:
+            error = (result.get("_err", "no result")
+                     if isinstance(result, dict) else "no result")
+            self.mzi_dataset_status.setText(
+                f"Import failed: {error}")
+            self.mzi_dataset_status.setStyleSheet(
+                "color:#E57373; font-size:11px;")
+            return
+        self._remember_mzi_dataset(result)
+
+    def _remember_mzi_dataset(self, result):
+        path = os.path.normcase(os.path.abspath(result["path"]))
+        if "manifest" not in result:
+            try:
+                result["manifest"] = load_manifest(path)
+            except (OSError, ValueError, json.JSONDecodeError):
+                result["manifest"] = {}
+        self._mzi_result_datasets[path] = result
+        manifest = result["manifest"]
+        name = str(manifest.get("experiment_name") or os.path.basename(path))
+        label = f"{name} | {os.path.basename(path)}"
+        index = self.mzi_dataset_combo.findData(path)
+        self.mzi_dataset_combo.blockSignals(True)
+        if index < 0:
+            self.mzi_dataset_combo.addItem(label, path)
+            index = self.mzi_dataset_combo.count() - 1
+        else:
+            self.mzi_dataset_combo.setItemText(index, label)
+        self.mzi_dataset_combo.setCurrentIndex(index)
+        self.mzi_dataset_combo.setEnabled(True)
+        self.mzi_dataset_combo.blockSignals(False)
+        self._display_mzi_dataset(result)
+
+    def _on_mzi_dataset_selected(self, index):
+        if index < 0:
+            return
+        path = self.mzi_dataset_combo.itemData(index)
+        result = self._mzi_result_datasets.get(path)
+        if result is not None:
+            self._display_mzi_dataset(result)
+
+    def _display_mzi_dataset(self, result):
+        self._show_mzi_sweep_measurements(result)
+        self._show_mzi_result_curve(result)
+        manifest = result.get("manifest", {})
+        point_count = len(result.get("measurements", []))
+        name = str(
+            manifest.get("experiment_name") or os.path.basename(result["path"]))
+        self.mzi_dataset_status.setText(
+            f"Loaded {name}: {point_count} processed point(s). "
+            f"Directory: {result['path']}")
+        self.mzi_dataset_status.setStyleSheet(
+            "color:#81C784; font-size:11px;")
+        self.workspace_tabs.setCurrentIndex(2)
+        self.mzi_results_tabs.setCurrentIndex(0)
     def _clear_mzi_trace_grid(self):
         while self.mzi_trace_grid.count():
             item = self.mzi_trace_grid.takeAt(0)
@@ -4815,10 +4934,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 voltage[direction == 0], weight[direction == 0])
             self.mzi_curve_rev.setData(
                 voltage[direction == 1], weight[direction == 1])
-        self._show_mzi_sweep_measurements(result)
-        self._show_mzi_result_curve(result)
-        self.workspace_tabs.setCurrentIndex(2)
-        self.mzi_results_tabs.setCurrentIndex(0)
+        if result.get("measurements"):
+            self._remember_mzi_dataset(result)
         reference = result.get("reference_measurement")
         if reference is not None:
             self._show_mzi_spikes(

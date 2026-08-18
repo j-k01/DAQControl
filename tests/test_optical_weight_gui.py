@@ -172,7 +172,9 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertTrue(self.window.mzi_zero_selected_btn.isEnabled())
         self.assertTrue(self.window.mzi_zero_all_btn.isEnabled())
         self.assertTrue(self.window.mzi_config_apply_btn.isEnabled())
+        self.assertTrue(self.window.mzi_import_btn.isEnabled())
         self.assertFalse(self.window.mzi_program_btn.isEnabled())
+        self.assertFalse(self.window.mzi_quick_btn.isEnabled())
 
     def test_pico_initialization_feedback(self):
         fake = FakeMziController()
@@ -432,6 +434,32 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertEqual(len(self.window.mzi_sweep_trace_plots), 3)
         self.assertEqual(self.window.workspace_tabs.currentIndex(), 2)
 
+    def test_saved_experiment_imports_without_board_connection(self):
+        fake_mzi = FakeMziController()
+        self.window.dac = FakeDac()
+        self.window._mzi_controller = fake_mzi
+        self.window._multisample_once = self._capture_for(fake_mzi)
+        spec = self.window._mzi_gui_spec()
+        spec.update(
+            voltages=np.asarray([0.0, 0.5, 1.0]),
+            directions=np.asarray([0, 0, 0], dtype=np.int8),
+            spacing="voltage")
+        captured = self.window._run_mzi_calibration(spec)
+        experiment = captured["path"]
+
+        self.window.dac = None
+        imported = self.window._run_mzi_import_experiment(experiment)
+        self.window._on_mzi_import_result(imported)
+
+        self.assertNotIn("_err", imported)
+        self.assertEqual(imported["kind"], "imported_sweep")
+        self.assertEqual(len(imported["measurements"]), 3)
+        self.assertEqual(self.window.mzi_dataset_combo.count(), 1)
+        self.assertEqual(len(self.window.mzi_sweep_trace_plots), 3)
+        self.assertEqual(self.window.workspace_tabs.currentIndex(), 2)
+        self.assertIn("Loaded", self.window.mzi_dataset_status.text())
+        self.window._on_mzi_import_result(imported)
+        self.assertEqual(self.window.mzi_dataset_combo.count(), 1)
     def test_checked_heaters_are_swept_together(self):
         fake_dac = FakeDac()
         fake_mzi = FakeMziController()
