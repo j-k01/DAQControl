@@ -95,11 +95,11 @@ from mzi_heater_map import (
 )
 from mzi_calibration import (
     PydaqMziController,
+    analyze_optical_peaks,
     calibration_voltage_sequence,
     measure_spikes_at_indices,
     measure_triggered_spikes,
     parse_heater_voltages,
-    select_positive_average_peaks,
 )
 from optical_experiment import (
     create_experiment, load_manifest, save_heater_capture, update_manifest,
@@ -1428,6 +1428,30 @@ class PulseShapeWindow(QtWidgets.QWidget):
         self.info.setText(("OK — " if ok else "ERR — ") + (reply or "").strip())
 
 
+class OpticalNeuronProfilesWindow(QtWidgets.QWidget):
+    """Compact per-neuron profile editor used by the optical experiment."""
+
+    def __init__(self, parent_scope, profiles):
+        super().__init__(parent_scope, QtCore.Qt.Window)
+        self.scope = parent_scope
+        self.profiles = profiles
+        self.setWindowTitle("Optical experiment neuron profiles")
+        self.setMinimumWidth(380)
+        layout = QtWidgets.QFormLayout(self)
+        for neuron, profile in enumerate(self.profiles):
+            profile.setToolTip(
+                f"Profile for neuron {neuron}; optical setup forces i and "
+                "iconst to 0 mA.")
+            layout.addRow(f"Neuron {neuron}", profile)
+        self.program_btn = QtWidgets.QPushButton("Program optical setup")
+        self.program_btn.setToolTip(
+            "Program these profiles with zero static current, the pulse-editor "
+            "waveform, the square current source, and Spike n to DACn routes.")
+        self.program_btn.clicked.connect(
+            self.scope._on_mzi_program_test)
+        layout.addRow("", self.program_btn)
+
+
 class CurrentSourceWindow(QtWidgets.QWidget):
     """Window showing the current-source waveform programmed into cur_wave RAM.
     Presets: Sine (5 kHz default), Square (programmable duty), Constant current,
@@ -1855,6 +1879,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._mzi_cancel = threading.Event()
         self._mzi_running = False
         self._pulse_win = None      # PulseShapeWindow (lazily created)
+        self._mzi_neuron_win = None
         # crossbar routing state: solid lines / summary reflect the APPLIED route
         # (only updated once a route is committed), never the staged dropdown.
         self.custom_profiles = load_custom_profiles()
@@ -2776,6 +2801,23 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._pulse_win.raise_()
         self._pulse_win.activateWindow()
 
+    def _open_mzi_pulse_window(self):
+        self._open_pulse_window()
+        self._pulse_win.target_cb.setCurrentIndex(0)
+
+    def _open_mzi_neuron_window(self):
+        if self._mzi_neuron_win is None:
+            self._mzi_neuron_win = OpticalNeuronProfilesWindow(
+                self, self.mzi_profiles)
+        self._mzi_neuron_win.show()
+        self._mzi_neuron_win.raise_()
+        self._mzi_neuron_win.activateWindow()
+
+    def _optical_pulse_counts(self):
+        if self._pulse_win is None:
+            return list(PULSE_DEFAULT)
+        return [clamp_s16(value) for value in self._pulse_win.editor.values()]
+
     def _program_dac(self, ch):
         """Commit DACn's staged source using NSRC only.
 
@@ -3583,10 +3625,22 @@ class ScopeWindow(QtWidgets.QMainWindow):
             profile = QtWidgets.QComboBox()
             profile.addItems(NEURON_PROFILES)
             profile.setCurrentText("regular")
-            profile.setToolTip(
-                f"Izhikevich profile for neuron {neuron}; i and iconst are forced to 0 mA.")
             self.mzi_profiles.append(profile)
-            sf.addRow(f"Neuron {neuron}", profile)
+        editor_row = QtWidgets.QHBoxLayout()
+        self.mzi_neuron_editor_btn = QtWidgets.QPushButton("Neuron profiles...")
+        self.mzi_neuron_editor_btn.setToolTip(
+            "Open per-neuron optical profile selection and programming.")
+        self.mzi_neuron_editor_btn.clicked.connect(
+            self._open_mzi_neuron_window)
+        self.mzi_pulse_editor_btn = QtWidgets.QPushButton("Pulse shape...")
+        self.mzi_pulse_editor_btn.setToolTip(
+            "Open the shared trapezoid/freeform pulse editor. The optical "
+            "setup uses its current waveform for all four neuron shapers.")
+        self.mzi_pulse_editor_btn.clicked.connect(
+            self._open_mzi_pulse_window)
+        editor_row.addWidget(self.mzi_neuron_editor_btn)
+        editor_row.addWidget(self.mzi_pulse_editor_btn)
+        sf.addRow("Editors", editor_row)
 
         current_summary = QtWidgets.QLabel(
             "Current source: Square, 15.0 mA, 5.0 kHz, 50% duty. "
@@ -3595,22 +3649,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
         current_summary.setStyleSheet("color:#81C784; font-size:11px;")
         sf.addRow("Stimulus", current_summary)
 
-        self.mzi_pulse_len = QtWidgets.QSpinBox()
-        self.mzi_pulse_len.setRange(3, PULSE_MAX_SAMPLES)
-        self.mzi_pulse_len.setValue(PULSE_DEFAULT_LEN)
-        self.mzi_pulse_len.setSuffix(" DAC points")
-        self.mzi_pulse_len.setToolTip(
-            "Pulse-shaper length programmed independently into all four neuron shapers.")
-        self.mzi_pulse_ramp = QtWidgets.QSpinBox()
-        self.mzi_pulse_ramp.setRange(1, 2048)
-        self.mzi_pulse_ramp.setValue(PULSE_DEFAULT_RAMP)
-        self.mzi_pulse_ramp.setToolTip(
-            "Rise and fall length in DAC points; the remaining points form the flat top.")
-        pulse_row = QtWidgets.QHBoxLayout()
-        pulse_row.addWidget(self.mzi_pulse_len)
-        pulse_row.addWidget(QtWidgets.QLabel("ramp"))
-        pulse_row.addWidget(self.mzi_pulse_ramp)
-        sf.addRow("Spike pulse", pulse_row)
 
         route_summary = QtWidgets.QLabel(
             "Routes: Spike 0 -> DAC0, Spike 1 -> DAC1, Spike 2 -> DAC2, Spike 3 -> DAC3. "
@@ -3826,6 +3864,36 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "color:#9fb3c8; font-size:11px;")
         layout.addWidget(self.mzi_dataset_status)
 
+        analysis_row = QtWidgets.QHBoxLayout()
+        analysis_row.addWidget(QtWidgets.QLabel("Peak polarity"))
+        self.mzi_peak_polarity = QtWidgets.QComboBox()
+        self.mzi_peak_polarity.addItem("Auto dominant", "auto")
+        self.mzi_peak_polarity.addItem("Negative", "negative")
+        self.mzi_peak_polarity.addItem("Positive", "positive")
+        self.mzi_peak_polarity.setToolTip(
+            "Auto selects the polarity with the larger median peak magnitude.")
+        self.mzi_outlier_filter = QtWidgets.QCheckBox("Reject height outliers")
+        self.mzi_outlier_filter.setChecked(True)
+        self.mzi_outlier_filter.setToolTip(
+            "Iteratively reject peak amplitudes outside the selected sigma limit.")
+        self.mzi_outlier_sigma = QtWidgets.QDoubleSpinBox()
+        self.mzi_outlier_sigma.setRange(0.5, 10.0)
+        self.mzi_outlier_sigma.setDecimals(1)
+        self.mzi_outlier_sigma.setSingleStep(0.5)
+        self.mzi_outlier_sigma.setValue(2.5)
+        self.mzi_outlier_sigma.setSuffix(" sigma")
+        self.mzi_outlier_apply = QtWidgets.QPushButton("Apply analysis")
+        self.mzi_outlier_apply.setToolTip(
+            "Recalculate markers and both optical curves from the loaded data.")
+        self.mzi_outlier_apply.clicked.connect(
+            self._apply_mzi_peak_analysis)
+        analysis_row.addWidget(self.mzi_peak_polarity)
+        analysis_row.addWidget(self.mzi_outlier_filter)
+        analysis_row.addWidget(self.mzi_outlier_sigma)
+        analysis_row.addWidget(self.mzi_outlier_apply)
+        analysis_row.addStretch(1)
+        layout.addLayout(analysis_row)
+
         self.mzi_results_tabs = QtWidgets.QTabWidget()
         layout.addWidget(self.mzi_results_tabs, 1)
 
@@ -3887,12 +3955,21 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_result_curve_plot.setLabel("left", "normalized optical weight")
         self.mzi_result_curve_plot.setLabel("bottom", "heater", units="V")
         self.mzi_result_curve_plot.setYRange(-0.05, 1.05)
+        self.mzi_result_curve_plot.addLegend(offset=(10, 10))
+        self.mzi_result_curve_raw_fwd = self.mzi_result_curve_plot.plot(
+            pen=pg.mkPen("#90A4AE", width=1.2, style=QtCore.Qt.DashLine),
+            symbol="o", symbolSize=4, symbolBrush="#90A4AE",
+            name="raw forward")
+        self.mzi_result_curve_raw_rev = self.mzi_result_curve_plot.plot(
+            pen=pg.mkPen("#B0BEC5", width=1.2, style=QtCore.Qt.DotLine),
+            symbol="o", symbolSize=4, symbolBrush="#B0BEC5",
+            name="raw reverse")
         self.mzi_result_curve_fwd = self.mzi_result_curve_plot.plot(
-            pen=pg.mkPen("#4FC3F7", width=1.5), symbol="o",
-            symbolSize=5, symbolBrush="#4FC3F7")
+            pen=pg.mkPen("#4FC3F7", width=1.8), symbol="o",
+            symbolSize=5, symbolBrush="#4FC3F7", name="filtered forward")
         self.mzi_result_curve_rev = self.mzi_result_curve_plot.plot(
-            pen=pg.mkPen("#FFB74D", width=1.5), symbol="o",
-            symbolSize=5, symbolBrush="#FFB74D")
+            pen=pg.mkPen("#FFB74D", width=1.8), symbol="o",
+            symbolSize=5, symbolBrush="#FFB74D", name="filtered reverse")
         curve_layout.addWidget(self.mzi_result_curve_plot, 1)
         self.mzi_results_tabs.addTab(curve_tab, "Optical curve")
 
@@ -4144,10 +4221,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_config_status.setText(f"Exported {path}")
 
     def _mzi_gui_spec(self):
-        pulse_len = self.mzi_pulse_len.value()
-        ramp = self.mzi_pulse_ramp.value()
-        if 2 * ramp > pulse_len:
-            raise ValueError("spike-shape ramp must be at most half the pulse length")
+        pulse_counts = self._optical_pulse_counts()
+        if not pulse_counts:
+            raise ValueError("the optical spike pulse must contain at least one point")
         experiment_name = self.mzi_experiment_name.text().strip()
         if not experiment_name:
             raise ValueError("enter an experiment name")
@@ -4177,8 +4253,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "current_sample_count": int(current_samples.size),
             "cps": int(current_cps),
             "response_start_sample": 64,
-            "pulse_len": pulse_len,
-            "pulse_ramp": ramp,
+            "pulse_counts": pulse_counts,
+            "pulse_len": len(pulse_counts),
             "reps": self.mzi_reps.value(),
             "detect_sigma": self.mzi_detect_sigma.value(),
             "boundary_sigma": self.mzi_boundary_sigma.value(),
@@ -4244,9 +4320,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     "cycles_per_sample": spec["cps"],
                 },
                 "spike_pulse": {
-                    "shape": "inverted_trapezoid",
+                    "shape": "pulse_editor_waveform",
                     "length_dac_points": spec["pulse_len"],
-                    "ramp_dac_points": spec["pulse_ramp"],
+                    "samples_counts": list(spec["pulse_counts"]),
+                    "minimum_count": int(min(spec["pulse_counts"])),
+                    "maximum_count": int(max(spec["pulse_counts"])),
                     "programmed_independently_to_neurons": [0, 1, 2, 3],
                 },
             },
@@ -4300,8 +4378,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
     def _program_mzi_test(self, spec):
         self.mzi_setup_progress.emit("Programming shared neuron timing...")
         replies = list(self.dac.set_neuron_timing(0x8000, period=1))
-        pulse = build_trapezoid_pulse(
-            spec["pulse_len"], ramp_samples=spec["pulse_ramp"])
+        pulse = list(spec["pulse_counts"])
         for neuron in range(4):
             self.mzi_setup_progress.emit(
                 f"Programming neuron {neuron}: {spec['profiles'][neuron]}...")
@@ -4782,11 +4859,49 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_trace_y_max.setValue(upper + padding)
         self._apply_mzi_trace_scale()
 
+    def _apply_mzi_peak_analysis(self):
+        index = self.mzi_dataset_combo.currentIndex()
+        if index < 0:
+            return
+        path = self.mzi_dataset_combo.itemData(index)
+        result = self._mzi_result_datasets.get(path)
+        if result is None:
+            return
+        active_tab = self.mzi_results_tabs.currentIndex()
+        self._show_mzi_sweep_measurements(result)
+        self._show_mzi_result_curve(result)
+        self.mzi_results_tabs.setCurrentIndex(active_tab)
+
+    def _mzi_peak_analyses(self, result):
+        measurements = list(result.get("measurements", []))
+        detected = list(result.get("independent_measurements", []))
+        polarity = str(self.mzi_peak_polarity.currentData())
+        sigma_limit = float(self.mzi_outlier_sigma.value())
+        filter_enabled = bool(self.mzi_outlier_filter.isChecked())
+        return [
+            analyze_optical_peaks(
+                measurement,
+                detected[index] if index < len(detected) else None,
+                polarity=polarity, sigma_limit=sigma_limit,
+                filter_enabled=filter_enabled)
+            for index, measurement in enumerate(measurements)
+        ]
+
+    @staticmethod
+    def _normalize_mzi_values(values, constant_voltage):
+        values = np.asarray(values, dtype=np.float64)
+        if constant_voltage:
+            return np.full_like(values, np.nan)
+        minimum = float(np.min(values))
+        span = float(np.max(values) - minimum)
+        return ((values - minimum) / span
+                if span > np.finfo(np.float64).eps
+                else np.zeros_like(values))
+
     def _show_mzi_sweep_measurements(self, result):
         self._clear_mzi_trace_grid()
         measurements = list(result.get("measurements", []))
-        independently_detected = list(
-            result.get("independent_measurements", []))
+        analyses = self._mzi_peak_analyses(result)
         voltages = np.asarray(result.get("voltages", []), dtype=np.float64)
         directions = np.asarray(result.get("directions", []), dtype=np.int8)
         if not measurements:
@@ -4799,7 +4914,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         for column in range(columns):
             self.mzi_trace_grid.setColumnStretch(column, 1)
 
-        for index, measurement in enumerate(measurements):
+        for index, (measurement, analysis) in enumerate(
+                zip(measurements, analyses)):
             plot = pg.PlotWidget()
             plot.setMinimumSize(250, 145)
             plot.setMaximumHeight(185)
@@ -4814,33 +4930,48 @@ class ScopeWindow(QtWidgets.QMainWindow):
             display_x, display_y = peak_envelope(average_mv, max_points=1200)
             plot.plot(
                 display_x, display_y, pen=pg.mkPen("#E8EDF2", width=1.0))
-            detected = (independently_detected[index]
-                        if index < len(independently_detected) else None)
-            peak_indices, peak_values_v, peak_source = (
-                select_positive_average_peaks(measurement, detected))
-            peak_values_mv = peak_values_v * 1e3
-            mean_mv = (float(np.mean(peak_values_mv))
-                       if peak_values_mv.size else float("nan"))
-            if peak_values_mv.size:
+
+            accepted = analysis.accepted
+            rejected = ~accepted
+            peak_y_mv = analysis.waveform_values_v * 1e3
+            accepted_count = int(np.count_nonzero(accepted))
+            total_count = int(analysis.peak_indices.size)
+            sign = -1.0 if analysis.polarity == "negative" else 1.0
+            if accepted_count:
+                filtered_line_mv = sign * analysis.filtered_mean_v * 1e3
                 plot.addItem(pg.InfiniteLine(
-                    pos=mean_mv, angle=0, movable=False,
-                    pen=pg.mkPen("#F6AE2D", width=1.4)))
+                    pos=filtered_line_mv, angle=0, movable=False,
+                    pen=pg.mkPen("#F6AE2D", width=1.5)))
                 plot.plot(
-                    peak_indices, peak_values_mv, pen=None, symbol="x",
-                    symbolSize=7,
+                    analysis.peak_indices[accepted], peak_y_mv[accepted],
+                    pen=None, symbol="x", symbolSize=7,
                     symbolPen=pg.mkPen("#F6AE2D", width=1.5),
                     symbolBrush=None)
-            voltage = float(voltages[index]) if index < voltages.size else float("nan")
-            direction = ("reverse" if index < directions.size and directions[index]
-                         else "forward")
-            direction_label = "R" if direction == "reverse" else "F"
+            if np.any(rejected):
+                raw_line_mv = sign * analysis.raw_mean_v * 1e3
+                plot.addItem(pg.InfiniteLine(
+                    pos=raw_line_mv, angle=0, movable=False,
+                    pen=pg.mkPen(
+                        "#90A4AE", width=1.0, style=QtCore.Qt.DashLine)))
+                plot.plot(
+                    analysis.peak_indices[rejected], peak_y_mv[rejected],
+                    pen=None, symbol="x", symbolSize=7,
+                    symbolPen=pg.mkPen("#EF5350", width=1.5),
+                    symbolBrush=None)
+
+            voltage = (float(voltages[index])
+                       if index < voltages.size else float("nan"))
+            direction = ("R" if index < directions.size and directions[index]
+                         else "F")
             plot.setTitle(
-                f"#{index + 1} | {voltage:.4f} V {direction_label} | "
-                f"{mean_mv:.3f} mV | {peak_indices.size} peaks",
+                f"#{index + 1} | {voltage:.4f} V {direction} | "
+                f"{analysis.filtered_mean_v * 1e3:.3f} mV | "
+                f"{accepted_count}/{total_count} {analysis.polarity}",
                 size="8pt")
             plot.setToolTip(
-                f"Peak source: {peak_source}. Gold x marks positive peaks; "
-                "the gold line is their arithmetic mean.")
+                f"{analysis.source}; raw mean "
+                f"{analysis.raw_mean_v * 1e3:.3f} mV; accepted "
+                f"{accepted_count} of {total_count} peaks.")
             plot.setYRange(
                 float(self.mzi_trace_y_min.value()),
                 float(self.mzi_trace_y_max.value()), padding=0.0)
@@ -4848,44 +4979,90 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 plot, index // columns, index % columns)
             self.mzi_sweep_trace_plots.append(plot)
 
-        spread_mv = float(result.get("repeatability_peak_to_peak_v", 0.0)) * 1e3
-        if result.get("constant_voltage_control"):
-            self.mzi_results_summary.setText(
-                f"Constant-voltage repeatability control: {len(measurements)} points, "
-                f"peak-to-peak amplitude variation {spread_mv:.3f} mV. "
-                "Gold x marks each detected positive peak; the gold horizontal "
-                "line is the mean of those marked peak amplitudes.")
-        else:
-            self.mzi_results_summary.setText(
-                f"{len(measurements)} processed sweep points. Gold x marks each "
-                "detected positive peak; the gold horizontal line is the mean of "
-                "those marked peak amplitudes.")
+        filtered = np.asarray([
+            analysis.filtered_mean_v for analysis in analyses])
+        spread_mv = float(np.ptp(filtered)) * 1e3 if filtered.size else 0.0
+        filter_text = (
+            f"{self.mzi_outlier_sigma.value():.1f} sigma filtering"
+            if self.mzi_outlier_filter.isChecked() else "filtering disabled")
+        prefix = (
+            "Constant-voltage repeatability control"
+            if result.get("constant_voltage_control")
+            else "Optical sweep")
+        self.mzi_results_summary.setText(
+            f"{prefix}: {len(measurements)} points, {filter_text}, "
+            f"peak-to-peak filtered variation {spread_mv:.3f} mV. "
+            "Gold x marks accepted peaks; red x marks rejected outliers. "
+            "The gold line is the filtered mean and the dashed gray line is "
+            "the unfiltered mean.")
 
     def _show_mzi_result_curve(self, result):
         voltage = np.asarray(result.get("voltages", []), dtype=np.float64)
         direction = np.asarray(result.get("directions", []), dtype=np.int8)
-        if result.get("constant_voltage_control"):
+        analyses = self._mzi_peak_analyses(result)
+        if not analyses:
+            for curve in (
+                    self.mzi_result_curve_raw_fwd,
+                    self.mzi_result_curve_raw_rev,
+                    self.mzi_result_curve_fwd,
+                    self.mzi_result_curve_rev):
+                curve.setData([], [])
+            return
+        raw = np.asarray([analysis.raw_mean_v for analysis in analyses])
+        filtered = np.asarray([
+            analysis.filtered_mean_v for analysis in analyses])
+        use_filter = bool(self.mzi_outlier_filter.isChecked())
+        constant = bool(result.get("constant_voltage_control"))
+
+        if constant:
             x = np.arange(voltage.size)
-            amplitude_mv = np.asarray(
-                result.get("absolute", []), dtype=np.float64) * 1e3
             self.mzi_result_curve_plot.setLabel(
-                "left", "mean spike amplitude", units="mV")
+                "left", "mean peak amplitude", units="mV")
             held = float(voltage[0]) if voltage.size else float("nan")
             self.mzi_result_curve_plot.setLabel(
                 "bottom", f"capture index (heater held at {held:.4f} V)")
-            self.mzi_result_curve_plot.enableAutoRange()
-            self.mzi_result_curve_fwd.setData(x, amplitude_mv)
+            raw_mv = raw * 1e3
+            filtered_mv = filtered * 1e3
+            if use_filter:
+                self.mzi_result_curve_raw_fwd.setData(x, raw_mv)
+                self.mzi_result_curve_fwd.setData(x, filtered_mv)
+            else:
+                self.mzi_result_curve_raw_fwd.setData([], [])
+                self.mzi_result_curve_fwd.setData(x, raw_mv)
+            self.mzi_result_curve_raw_rev.setData([], [])
             self.mzi_result_curve_rev.setData([], [])
+            visible = np.concatenate(
+                (raw_mv, filtered_mv) if use_filter else (raw_mv,))
+            lower = float(np.min(visible))
+            upper = float(np.max(visible))
+            padding = max(0.05 * (upper - lower), 0.01)
+            self.mzi_result_curve_plot.setYRange(
+                lower - padding, upper + padding, padding=0.0)
         else:
-            weight = np.asarray(result.get("normalized", []), dtype=np.float64)
+            raw_weight = self._normalize_mzi_values(raw, False)
+            filtered_weight = self._normalize_mzi_values(filtered, False)
             self.mzi_result_curve_plot.setLabel(
                 "left", "normalized optical weight")
             self.mzi_result_curve_plot.setLabel("bottom", "heater", units="V")
-            self.mzi_result_curve_plot.setYRange(-0.05, 1.05)
-            self.mzi_result_curve_fwd.setData(
-                voltage[direction == 0], weight[direction == 0])
-            self.mzi_result_curve_rev.setData(
-                voltage[direction == 1], weight[direction == 1])
+            self.mzi_result_curve_plot.setYRange(-0.05, 1.05, padding=0.0)
+            forward = direction == 0
+            reverse = direction == 1
+            if use_filter:
+                self.mzi_result_curve_raw_fwd.setData(
+                    voltage[forward], raw_weight[forward])
+                self.mzi_result_curve_raw_rev.setData(
+                    voltage[reverse], raw_weight[reverse])
+                self.mzi_result_curve_fwd.setData(
+                    voltage[forward], filtered_weight[forward])
+                self.mzi_result_curve_rev.setData(
+                    voltage[reverse], filtered_weight[reverse])
+            else:
+                self.mzi_result_curve_raw_fwd.setData([], [])
+                self.mzi_result_curve_raw_rev.setData([], [])
+                self.mzi_result_curve_fwd.setData(
+                    voltage[forward], raw_weight[forward])
+                self.mzi_result_curve_rev.setData(
+                    voltage[reverse], raw_weight[reverse])
     def _on_mzi_cal_result(self, result):
         self._mzi_running = False
         enabled = bool(self.dac)
@@ -5869,7 +6046,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.timer.stop()
         self.autosample_timer.stop()
         self.liveavg_timer.stop()
-        for w in (self._cur_win, self._pulse_win, self._liveavg_win):
+        for w in (self._cur_win, self._pulse_win, self._mzi_neuron_win,
+                  self._liveavg_win):
             if w is not None:
                 w.close()
         self._mzi_cancel.set()

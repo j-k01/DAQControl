@@ -46,33 +46,141 @@ class TriggeredSpikeMeasurement:
     noise_sigma_v: float
 
 
+@dataclass(frozen=True)
+class OpticalPeakAnalysis:
+    peak_indices: np.ndarray
+    waveform_values_v: np.ndarray
+    amplitudes_v: np.ndarray
+    accepted: np.ndarray
+    polarity: str
+    source: str
+    raw_mean_v: float
+    filtered_mean_v: float
+    standard_deviation_v: float
+
+
+def _sigma_clip_peak_amplitudes(
+    amplitudes: np.ndarray,
+    *,
+    sigma_limit: float,
+    enabled: bool,
+) -> np.ndarray:
+    accepted = np.ones(amplitudes.size, dtype=bool)
+    if not enabled or amplitudes.size < 3:
+        return accepted
+    limit = max(0.1, float(sigma_limit))
+    for _iteration in range(8):
+        selected = amplitudes[accepted]
+        if selected.size < 3:
+            break
+        center = float(np.mean(selected))
+        deviation = float(np.std(selected))
+        if deviation <= np.finfo(np.float64).eps:
+            break
+        updated = np.abs(amplitudes - center) <= limit * deviation
+        if np.count_nonzero(updated) < 2 or np.array_equal(updated, accepted):
+            break
+        accepted = updated
+    return accepted
+
+
+def analyze_optical_peaks(
+    measurement: TriggeredSpikeMeasurement,
+    detected: TriggeredSpikeMeasurement | None = None,
+    *,
+    polarity: str = "auto",
+    sigma_limit: float = 2.5,
+    filter_enabled: bool = True,
+) -> OpticalPeakAnalysis:
+    """Select the optical pulse polarity and optionally reject height outliers."""
+
+    requested = str(polarity).strip().lower()
+    if requested not in {"auto", "positive", "negative"}:
+        raise ValueError("polarity must be auto, positive, or negative")
+
+    candidates = []
+    if detected is not None:
+        candidates.append((detected, "detected"))
+    candidates.append((measurement, "reference fallback"))
+
+    selected = None
+    for source_measurement, source_name in candidates:
+        waveform = np.asarray(
+            source_measurement.averaged_waveform, dtype=np.float64)
+        peaks = np.asarray(source_measurement.peak_indices, dtype=np.int32)
+        signs = np.asarray(source_measurement.polarities, dtype=np.int8)
+        in_bounds = (peaks >= 0) & (peaks < waveform.size)
+        values = np.zeros(peaks.size, dtype=np.float64)
+        values[in_bounds] = waveform[peaks[in_bounds]]
+        finite = in_bounds & np.isfinite(values) & (values != 0.0)
+
+        chosen = requested
+        if chosen == "auto":
+            scores = {}
+            for label, sign in (("positive", 1), ("negative", -1)):
+                subset = np.abs(values[finite & (signs == sign)])
+                scores[label] = (
+                    float(np.median(subset)) if subset.size else -1.0)
+            chosen = ("negative" if scores["negative"] >= scores["positive"]
+                      else "positive")
+        sign = 1 if chosen == "positive" else -1
+        keep = finite & (signs == sign)
+        if np.any(keep):
+            selected = (
+                peaks[keep], values[keep], np.abs(values[keep]),
+                chosen, source_name)
+            break
+
+    if selected is None:
+        return OpticalPeakAnalysis(
+            peak_indices=np.empty(0, dtype=np.int32),
+            waveform_values_v=np.empty(0, dtype=np.float64),
+            amplitudes_v=np.empty(0, dtype=np.float64),
+            accepted=np.empty(0, dtype=bool),
+            polarity=requested,
+            source="none",
+            raw_mean_v=float("nan"),
+            filtered_mean_v=float("nan"),
+            standard_deviation_v=float("nan"),
+        )
+
+    peaks, values, amplitudes, chosen, source_name = selected
+    accepted = _sigma_clip_peak_amplitudes(
+        amplitudes, sigma_limit=sigma_limit, enabled=filter_enabled)
+    raw_mean = float(np.mean(amplitudes))
+    filtered_mean = float(np.mean(amplitudes[accepted]))
+    return OpticalPeakAnalysis(
+        peak_indices=peaks,
+        waveform_values_v=values,
+        amplitudes_v=amplitudes,
+        accepted=accepted,
+        polarity=chosen,
+        source=source_name,
+        raw_mean_v=raw_mean,
+        filtered_mean_v=filtered_mean,
+        standard_deviation_v=float(np.std(amplitudes)),
+    )
+
+
 def positive_average_peaks(
     measurement: TriggeredSpikeMeasurement,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return positive detected peaks on the 16-capture averaged waveform."""
+    """Compatibility wrapper returning positive averaged-waveform peaks."""
 
-    waveform = np.asarray(measurement.averaged_waveform, dtype=np.float64)
-    peaks = np.asarray(measurement.peak_indices, dtype=np.int32)
-    polarities = np.asarray(measurement.polarities, dtype=np.int8)
-    valid = (polarities > 0) & (peaks >= 0) & (peaks < waveform.size)
-    selected = peaks[valid]
-    amplitudes = waveform[selected]
-    keep = np.isfinite(amplitudes) & (amplitudes > 0.0)
-    return selected[keep], amplitudes[keep]
+    analysis = analyze_optical_peaks(
+        measurement, polarity="positive", filter_enabled=False)
+    return analysis.peak_indices, analysis.amplitudes_v
 
 
 def select_positive_average_peaks(
     measurement: TriggeredSpikeMeasurement,
     detected: TriggeredSpikeMeasurement | None = None,
 ) -> tuple[np.ndarray, np.ndarray, str]:
-    """Use independently detected positive peaks, with fixed-index fallback."""
+    """Compatibility wrapper for the historical positive-only selection."""
 
-    if detected is not None:
-        peaks, amplitudes = positive_average_peaks(detected)
-        if peaks.size:
-            return peaks, amplitudes, "detected"
-    peaks, amplitudes = positive_average_peaks(measurement)
-    return peaks, amplitudes, "reference fallback"
+    analysis = analyze_optical_peaks(
+        measurement, detected, polarity="positive", filter_enabled=False)
+    return analysis.peak_indices, analysis.amplitudes_v, analysis.source
 
 
 def _phase_average(trace: np.ndarray, period: int) -> np.ndarray:

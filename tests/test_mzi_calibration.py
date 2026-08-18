@@ -12,6 +12,8 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from mzi_calibration import (
+    TriggeredSpikeMeasurement,
+    analyze_optical_peaks,
     calibration_voltage_sequence,
     measure_periodic_pulses,
     measure_spikes_at_indices,
@@ -234,6 +236,35 @@ class MziCalibrationTests(unittest.TestCase):
         self.assertAlmostEqual(result.signed_height, -0.15)
         self.assertAlmostEqual(result.absolute_height, 0.15)
 
+    def test_optical_analysis_selects_negative_pulses_and_rejects_outlier(self):
+        peaks = np.asarray([100, 200, 300, 400, 500, 600, 700, 800])
+        waveform = np.zeros(1024, dtype=np.float64)
+        waveform[peaks[:5]] = [-0.2, -0.2, -0.2, -0.2, -0.6]
+        waveform[peaks[5:]] = [0.08, 0.09, 0.10]
+        measurement = TriggeredSpikeMeasurement(
+            signed_height=0.0, absolute_height=0.0,
+            per_rep_height=np.zeros(16),
+            per_peak_height=np.zeros((16, peaks.size)),
+            peak_indices=peaks, baseline_levels=np.zeros(16),
+            averaged_waveform=waveform,
+            start_indices=peaks - 1, end_indices=peaks + 1,
+            polarities=np.asarray([-1] * 5 + [1] * 3, dtype=np.int8),
+            widths_samples=np.full(peaks.size, 3),
+            fwhm_samples=np.full(peaks.size, 1),
+            areas_v_samples=np.zeros(peaks.size),
+            detection_threshold_v=0.01,
+            boundary_thresholds_v=np.zeros(peaks.size),
+            noise_sigma_v=0.001)
+
+        analysis = analyze_optical_peaks(
+            measurement, polarity="auto", sigma_limit=1.5,
+            filter_enabled=True)
+
+        self.assertEqual(analysis.polarity, "negative")
+        self.assertEqual(analysis.peak_indices.size, 5)
+        self.assertEqual(np.count_nonzero(analysis.accepted), 4)
+        self.assertAlmostEqual(analysis.raw_mean_v, 0.28)
+        self.assertAlmostEqual(analysis.filtered_mean_v, 0.2)
     def test_rejects_invalid_shape(self):
         with self.assertRaises(ValueError):
             measure_periodic_pulses(np.zeros(8), 4, 1)

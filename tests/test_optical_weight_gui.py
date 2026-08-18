@@ -142,8 +142,12 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertEqual(self.window.mzi_spacing.currentData(), "voltage")
         self.assertEqual(self.window.mzi_points.value(), 20)
         self.assertEqual(self.window.mzi_settle.value(), 20.0)
-        self.assertEqual(self.window.mzi_pulse_len.value(), 40)
-        self.assertEqual(self.window.mzi_pulse_ramp.value(), 5)
+        pulse = self.window._optical_pulse_counts()
+        self.assertEqual(len(pulse), 40)
+        self.assertLess(min(pulse), 0)
+        self.assertEqual(self.window.mzi_peak_polarity.currentData(), "auto")
+        self.assertTrue(self.window.mzi_outlier_filter.isChecked())
+        self.assertEqual(self.window.mzi_outlier_sigma.value(), 2.5)
         self.assertEqual(self.window.mzi_trace_y_min.value(), -30.0)
         self.assertEqual(self.window.mzi_trace_y_max.value(), 30.0)
         self.assertEqual(
@@ -248,6 +252,23 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertTrue(spec["current_player_readback"]["running"])
         self.assertEqual(spec["current_player_readback"]["count"], 1000)
 
+    def test_optical_editor_windows_stage_profiles_and_pulse(self):
+        self.window._open_mzi_neuron_window()
+        self.assertTrue(self.window._mzi_neuron_win.isVisible())
+        self.window._open_mzi_pulse_window()
+        self.assertTrue(self.window._pulse_win.isVisible())
+        self.assertEqual(self.window._pulse_win.target_cb.currentData(), "all")
+        custom_pulse = [0, 4000, 8000, 4000, 0]
+        self.window._pulse_win.editor.set_values(custom_pulse)
+        spec = self.window._mzi_gui_spec()
+        self.assertEqual(spec["pulse_counts"], custom_pulse)
+
+        fake = FakeDac()
+        self.window.dac = fake
+        self.window._program_mzi_test(spec)
+        programmed = [
+            call[2] for call in fake.calls if call[0] == "pulse"]
+        self.assertEqual(programmed, [tuple(custom_pulse)] * 4)
     def test_program_setup_rejects_false_current_player_success(self):
         fake = FakeDac()
         fake.force_current_status = {
