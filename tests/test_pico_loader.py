@@ -214,6 +214,39 @@ class PicoLoaderTests(unittest.TestCase):
         self.assertEqual(FakeSerial.captures, 2)
         self.assertEqual(FakeSerial.commands.count("TXRS"), 0)
 
+    def test_receiver_recovery_parses_firmware_rw3_format(self):
+        class FakePort:
+            def __init__(self):
+                self.lines = []
+                self.commands = []
+
+            def reset_input_buffer(self):
+                self.lines.clear()
+
+            def write(self, data):
+                command = data.decode("ascii").strip()
+                self.commands.append(command)
+                if command == "RDRW 3":
+                    self.lines.append(b"RW3 = 0x00001900\r\n")
+                elif command.startswith("WRTE 3") or command == "TXRS":
+                    self.lines.append(b"OK\r\n")
+                elif command == "ADCS":
+                    self.lines.append(b"ADC frontend RO4=0xAD806000\r\n")
+
+            def flush(self):
+                pass
+
+            def readline(self):
+                return self.lines.pop(0) if self.lines else b""
+
+        port = FakePort()
+        with patch.object(loader.time, "sleep", return_value=None):
+            ready = loader.recover_adc_receivers(port)
+
+        self.assertEqual(ready, (True, True, 0xAD806000))
+        self.assertIn("WRTE 3 0x00001904", port.commands)
+        self.assertIn("WRTE 3 0x00001900", port.commands)
+
 
 if __name__ == "__main__":
     unittest.main()

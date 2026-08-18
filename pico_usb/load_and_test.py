@@ -354,14 +354,20 @@ def read_adc_frontend_ready(port: object) -> tuple[bool, bool, int]:
     return bool(value & (1 << 13)), bool(value & (1 << 14)), value
 
 
+def read_rw_register(port: object, index: int) -> int:
+    """Read one of the firmware's low RW0..RW7 registers."""
+    reply = daq_command(port, f"RDRW {index}", (f"RW{index}", "ERR"), 3.0)
+    match = re.fullmatch(
+        rf"RW{index}\s*=\s*(0x[0-9A-Fa-f]+|\d+)", reply
+    )
+    if not match:
+        raise RuntimeError(f"cannot read RW{index}: {reply or 'no reply'}")
+    return int(match.group(1), 0)
+
+
 def recover_adc_receivers(port: object) -> tuple[bool, bool, int]:
     """Reinitialize both ADS54J60s and the shared GTH/LiteJESD path."""
-    rw3_reply = daq_command(port, "RDRW 3", ("REG3", "ERR"), 3.0)
-    if not rw3_reply.startswith("REG3"):
-        raise RuntimeError(
-            f"cannot preserve RW3 for ADC restart: {rw3_reply or 'no reply'}"
-        )
-    rw3 = int(rw3_reply.split("=", 1)[1].strip(), 0)
+    rw3 = read_rw_register(port, 3)
     for value in (rw3 | 0x4, rw3 & ~0x4):
         reply = daq_command(
             port, f"WRTE 3 0x{value:08X}", ("OK", "ERR"), 3.0
