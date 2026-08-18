@@ -3835,6 +3835,38 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "Run a sweep to inspect every post-processed voltage point.")
         self.mzi_results_summary.setWordWrap(True)
         traces_layout.addWidget(self.mzi_results_summary)
+        trace_scale_row = QtWidgets.QHBoxLayout()
+        trace_scale_row.addWidget(QtWidgets.QLabel("Trace Y range (mV)"))
+        self.mzi_trace_y_min = QtWidgets.QDoubleSpinBox()
+        self.mzi_trace_y_min.setRange(-10000.0, 9999.0)
+        self.mzi_trace_y_min.setDecimals(3)
+        self.mzi_trace_y_min.setValue(-30.0)
+        self.mzi_trace_y_min.setSuffix(" mV")
+        self.mzi_trace_y_min.setToolTip(
+            "Lower Y-axis limit shared by every averaged sweep trace.")
+        self.mzi_trace_y_max = QtWidgets.QDoubleSpinBox()
+        self.mzi_trace_y_max.setRange(-9999.0, 10000.0)
+        self.mzi_trace_y_max.setDecimals(3)
+        self.mzi_trace_y_max.setValue(30.0)
+        self.mzi_trace_y_max.setSuffix(" mV")
+        self.mzi_trace_y_max.setToolTip(
+            "Upper Y-axis limit shared by every averaged sweep trace.")
+        self.mzi_trace_scale_apply = QtWidgets.QPushButton("Apply")
+        self.mzi_trace_scale_apply.setToolTip(
+            "Apply this fixed Y range to every averaged sweep trace.")
+        self.mzi_trace_scale_apply.clicked.connect(
+            self._apply_mzi_trace_scale)
+        self.mzi_trace_scale_fit = QtWidgets.QPushButton("Fit data")
+        self.mzi_trace_scale_fit.setToolTip(
+            "Set one shared Y range that fits the currently loaded traces.")
+        self.mzi_trace_scale_fit.clicked.connect(
+            self._fit_mzi_trace_scale)
+        trace_scale_row.addWidget(self.mzi_trace_y_min)
+        trace_scale_row.addWidget(self.mzi_trace_y_max)
+        trace_scale_row.addWidget(self.mzi_trace_scale_apply)
+        trace_scale_row.addWidget(self.mzi_trace_scale_fit)
+        trace_scale_row.addStretch(1)
+        traces_layout.addLayout(trace_scale_row)
         self.mzi_trace_scroll = QtWidgets.QScrollArea()
         self.mzi_trace_scroll.setWidgetResizable(True)
         self.mzi_trace_panel = QtWidgets.QWidget()
@@ -4718,6 +4750,38 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 widget.deleteLater()
         self.mzi_sweep_trace_plots = []
 
+    def _apply_mzi_trace_scale(self):
+        lower = float(self.mzi_trace_y_min.value())
+        upper = float(self.mzi_trace_y_max.value())
+        if lower >= upper:
+            self.mzi_results_summary.setText(
+                "Trace Y minimum must be lower than the maximum.")
+            return
+        for plot in self.mzi_sweep_trace_plots:
+            plot.setYRange(lower, upper, padding=0.0)
+
+    def _fit_mzi_trace_scale(self):
+        values = []
+        for plot in self.mzi_sweep_trace_plots:
+            for item in plot.listDataItems():
+                _x, y = item.getData()
+                if y is None:
+                    continue
+                finite = np.asarray(y, dtype=np.float64)
+                finite = finite[np.isfinite(finite)]
+                if finite.size:
+                    values.append(finite)
+        if not values:
+            return
+        combined = np.concatenate(values)
+        lower = float(np.min(combined))
+        upper = float(np.max(combined))
+        span = upper - lower
+        padding = 0.05 * span if span > 0.0 else max(abs(upper) * 0.05, 1.0)
+        self.mzi_trace_y_min.setValue(lower - padding)
+        self.mzi_trace_y_max.setValue(upper + padding)
+        self._apply_mzi_trace_scale()
+
     def _show_mzi_sweep_measurements(self, result):
         self._clear_mzi_trace_grid()
         measurements = list(result.get("measurements", []))
@@ -4730,13 +4794,21 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 "No completed post-processed sweep points are available.")
             return
 
+        columns = 4
+        rows = (len(measurements) + columns - 1) // columns
+        for column in range(columns):
+            self.mzi_trace_grid.setColumnStretch(column, 1)
+
         for index, measurement in enumerate(measurements):
             plot = pg.PlotWidget()
-            plot.setMinimumSize(360, 220)
+            plot.setMinimumSize(250, 145)
+            plot.setMaximumHeight(185)
             plot.setBackground("#101418")
             plot.showGrid(x=True, y=True, alpha=0.18)
-            plot.setLabel("left", "averaged output", units="mV")
-            plot.setLabel("bottom", "ADC sample", units="ns")
+            if index % columns == 0:
+                plot.setLabel("left", "output", units="mV")
+            if index // columns == rows - 1:
+                plot.setLabel("bottom", "ADC sample", units="ns")
             average_mv = np.asarray(
                 measurement.averaged_waveform, dtype=np.float64) * 1e3
             display_x, display_y = peak_envelope(average_mv, max_points=1200)
@@ -4761,11 +4833,19 @@ class ScopeWindow(QtWidgets.QMainWindow):
             voltage = float(voltages[index]) if index < voltages.size else float("nan")
             direction = ("reverse" if index < directions.size and directions[index]
                          else "forward")
+            direction_label = "R" if direction == "reverse" else "F"
             plot.setTitle(
-                f"#{index + 1}: {voltage:.4f} V {direction} | "
-                f"{mean_mv:.3f} mV | {peak_indices.size} positive spikes "
-                f"({peak_source})")
-            self.mzi_trace_grid.addWidget(plot, index // 2, index % 2)
+                f"#{index + 1} | {voltage:.4f} V {direction_label} | "
+                f"{mean_mv:.3f} mV | {peak_indices.size} peaks",
+                size="8pt")
+            plot.setToolTip(
+                f"Peak source: {peak_source}. Gold x marks positive peaks; "
+                "the gold line is their arithmetic mean.")
+            plot.setYRange(
+                float(self.mzi_trace_y_min.value()),
+                float(self.mzi_trace_y_max.value()), padding=0.0)
+            self.mzi_trace_grid.addWidget(
+                plot, index // columns, index % columns)
             self.mzi_sweep_trace_plots.append(plot)
 
         spread_mv = float(result.get("repeatability_peak_to_peak_v", 0.0)) * 1e3

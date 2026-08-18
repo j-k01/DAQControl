@@ -144,6 +144,8 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertEqual(self.window.mzi_settle.value(), 20.0)
         self.assertEqual(self.window.mzi_pulse_len.value(), 40)
         self.assertEqual(self.window.mzi_pulse_ramp.value(), 5)
+        self.assertEqual(self.window.mzi_trace_y_min.value(), -30.0)
+        self.assertEqual(self.window.mzi_trace_y_max.value(), 30.0)
         self.assertEqual(
             [profile.currentText() for profile in self.window.mzi_profiles],
             ["regular"] * 4)
