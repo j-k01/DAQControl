@@ -99,6 +99,7 @@ from mzi_calibration import (
     measure_spikes_at_indices,
     measure_triggered_spikes,
     parse_heater_voltages,
+    select_positive_average_peaks,
 )
 from optical_experiment import (
     create_experiment, load_manifest, save_heater_capture, update_manifest,
@@ -4741,29 +4742,29 @@ class ScopeWindow(QtWidgets.QMainWindow):
             display_x, display_y = peak_envelope(average_mv, max_points=1200)
             plot.plot(
                 display_x, display_y, pen=pg.mkPen("#E8EDF2", width=1.0))
-            mean_mv = float(measurement.signed_height) * 1e3
-            plot.addItem(pg.InfiniteLine(
-                pos=mean_mv, angle=0, movable=False,
-                pen=pg.mkPen("#F6AE2D", width=1.4)))
             detected = (independently_detected[index]
                         if index < len(independently_detected) else None)
-            boundaries = detected if detected is not None else measurement
-            for start, end in zip(
-                    boundaries.start_indices, boundaries.end_indices):
+            peak_indices, peak_values_v, peak_source = (
+                select_positive_average_peaks(measurement, detected))
+            peak_values_mv = peak_values_v * 1e3
+            mean_mv = (float(np.mean(peak_values_mv))
+                       if peak_values_mv.size else float("nan"))
+            if peak_values_mv.size:
                 plot.addItem(pg.InfiniteLine(
-                    pos=int(start), angle=90, movable=False,
-                    pen=pg.mkPen("#4FC3F7", width=1.0)))
-                plot.addItem(pg.InfiniteLine(
-                    pos=int(end), angle=90, movable=False,
-                    pen=pg.mkPen("#EF5350", width=1.0)))
+                    pos=mean_mv, angle=0, movable=False,
+                    pen=pg.mkPen("#F6AE2D", width=1.4)))
+                plot.plot(
+                    peak_indices, peak_values_mv, pen=None, symbol="x",
+                    symbolSize=7,
+                    symbolPen=pg.mkPen("#F6AE2D", width=1.5),
+                    symbolBrush=None)
             voltage = float(voltages[index]) if index < voltages.size else float("nan")
             direction = ("reverse" if index < directions.size and directions[index]
                          else "forward")
-            boundary_source = "detected" if detected is not None else "reference fallback"
             plot.setTitle(
                 f"#{index + 1}: {voltage:.4f} V {direction} | "
-                f"{mean_mv:.3f} mV | {boundaries.peak_indices.size} spikes "
-                f"({boundary_source})")
+                f"{mean_mv:.3f} mV | {peak_indices.size} positive spikes "
+                f"({peak_source})")
             self.mzi_trace_grid.addWidget(plot, index // 2, index % 2)
             self.mzi_sweep_trace_plots.append(plot)
 
@@ -4772,13 +4773,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.mzi_results_summary.setText(
                 f"Constant-voltage repeatability control: {len(measurements)} points, "
                 f"peak-to-peak amplitude variation {spread_mv:.3f} mV. "
-                "Blue/red vertical lines are detected spike boundaries; "
-                "the amber horizontal line is the calculated mean spike height.")
+                "Gold x marks each detected positive peak; the gold horizontal "
+                "line is the mean of those marked peak amplitudes.")
         else:
             self.mzi_results_summary.setText(
-                f"{len(measurements)} processed sweep points. Blue/red vertical lines "
-                "are detected spike boundaries; the amber horizontal line is the "
-                "calculated mean spike height.")
+                f"{len(measurements)} processed sweep points. Gold x marks each "
+                "detected positive peak; the gold horizontal line is the mean of "
+                "those marked peak amplitudes.")
 
     def _show_mzi_result_curve(self, result):
         voltage = np.asarray(result.get("voltages", []), dtype=np.float64)

@@ -10,7 +10,10 @@ from pathlib import Path
 
 import numpy as np
 
-from mzi_calibration import measure_spikes_at_indices, measure_triggered_spikes
+from mzi_calibration import (
+    measure_spikes_at_indices, measure_triggered_spikes,
+    select_positive_average_peaks,
+)
 from optical_experiment import load_manifest, update_manifest, utc_now, write_json
 
 
@@ -214,8 +217,21 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
         _write_heater_analysis(
             heater_dir, measurement, descriptor, independently_detected)
 
-    signed = np.asarray([measurement.signed_height for measurement in measurements])
-    absolute = np.abs(signed)
+    selected_peak_data = [
+        select_positive_average_peaks(measurement, detected)
+        for measurement, detected in zip(measurements, independent_measurements)
+    ]
+    if any(amplitudes.size == 0
+           for _peaks, amplitudes, _source in selected_peak_data):
+        raise ValueError(
+            "one or more heater captures contain no positive spike peaks")
+    positive_peak_means = np.asarray([
+        float(np.mean(amplitudes))
+        for _peaks, amplitudes, _source in selected_peak_data
+    ])
+    # Historical result names are retained for GUI/import compatibility.
+    signed = positive_peak_means.copy()
+    absolute = positive_peak_means.copy()
     minimum = float(np.min(absolute))
     maximum = float(np.max(absolute))
     span = maximum - minimum
@@ -260,6 +276,7 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
         "reference_heater_index": int(heater_captures[reference_index]["index"]),
         "reference_heater_directory": heater_captures[reference_index]["directory"],
         "reference_spike_count": int(reference.peak_indices.size),
+        "amplitude_metric": "mean_positive_peak_on_16_capture_average",
         "minimum_amplitude_v": minimum,
         "maximum_amplitude_v": maximum,
         "minimum_voltage_v": float(voltages[int(np.argmin(absolute))]),
@@ -285,6 +302,10 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
         "reference_measurement": reference,
         "measurements": measurements,
         "independent_measurements": independent_measurements,
+        "positive_peak_means_v": positive_peak_means,
+        "selected_peak_indices": [item[0] for item in selected_peak_data],
+        "selected_peak_amplitudes_v": [item[1] for item in selected_peak_data],
+        "selected_peak_sources": [item[2] for item in selected_peak_data],
         "heater_captures": heater_captures,
         "reference_heater_capture_index": reference_index,
         "path": str(experiment_dir),

@@ -46,6 +46,35 @@ class TriggeredSpikeMeasurement:
     noise_sigma_v: float
 
 
+def positive_average_peaks(
+    measurement: TriggeredSpikeMeasurement,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return positive detected peaks on the 16-capture averaged waveform."""
+
+    waveform = np.asarray(measurement.averaged_waveform, dtype=np.float64)
+    peaks = np.asarray(measurement.peak_indices, dtype=np.int32)
+    polarities = np.asarray(measurement.polarities, dtype=np.int8)
+    valid = (polarities > 0) & (peaks >= 0) & (peaks < waveform.size)
+    selected = peaks[valid]
+    amplitudes = waveform[selected]
+    keep = np.isfinite(amplitudes) & (amplitudes > 0.0)
+    return selected[keep], amplitudes[keep]
+
+
+def select_positive_average_peaks(
+    measurement: TriggeredSpikeMeasurement,
+    detected: TriggeredSpikeMeasurement | None = None,
+) -> tuple[np.ndarray, np.ndarray, str]:
+    """Use independently detected positive peaks, with fixed-index fallback."""
+
+    if detected is not None:
+        peaks, amplitudes = positive_average_peaks(detected)
+        if peaks.size:
+            return peaks, amplitudes, "detected"
+    peaks, amplitudes = positive_average_peaks(measurement)
+    return peaks, amplitudes, "reference fallback"
+
+
 def _phase_average(trace: np.ndarray, period: int) -> np.ndarray:
     phase = np.arange(trace.size) % period
     sums = np.bincount(phase, weights=trace, minlength=period)
