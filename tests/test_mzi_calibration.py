@@ -127,6 +127,13 @@ class MziCalibrationTests(unittest.TestCase):
         np.testing.assert_allclose(voltage, [0.0, 0.5, 1.0, 1.0, 0.5, 0.0])
         np.testing.assert_array_equal(direction, [0, 0, 0, 1, 1, 1])
 
+    def test_constant_voltage_sequence_is_valid_repeatability_control(self):
+        voltage, direction = calibration_voltage_sequence(
+            0.0, 0.0, 4, False)
+
+        np.testing.assert_allclose(voltage, [0.0, 0.0, 0.0, 0.0])
+        np.testing.assert_array_equal(direction, [0, 0, 0, 0])
+
     def test_power_spaced_voltage_sequence(self):
         voltage, direction = calibration_voltage_sequence(
             0.0, 1.0, 3, False, spacing="power")
@@ -192,6 +199,22 @@ class MziCalibrationTests(unittest.TestCase):
         self.assertAlmostEqual(result.signed_height, 0.0, places=12)
         self.assertAlmostEqual(result.absolute_height, 0.0, places=12)
 
+
+    def test_fixed_boundaries_tolerate_one_sample_peak_motion(self):
+        reps = np.zeros((4, 1024), dtype=np.float64)
+        for repetition, shift in enumerate((-1, 0, 1, -1)):
+            for peak in (350, 700):
+                moved = peak + shift
+                reps[repetition, moved - 1:moved + 2] = [0.1, 0.2, 0.1]
+
+        result = measure_spikes_at_indices(
+            reps, 200, np.asarray([350, 700]),
+            start_indices=np.asarray([347, 697]),
+            end_indices=np.asarray([353, 703]),
+            polarities=np.asarray([1, 1]))
+
+        self.assertAlmostEqual(result.signed_height, 0.2)
+        np.testing.assert_allclose(result.per_peak_height, 0.2)
 
     def test_triggered_spike_measurement_preserves_negative_sign(self):
         reps = np.zeros((8, 1024), dtype=np.float64)

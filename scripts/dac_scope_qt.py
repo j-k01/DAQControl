@@ -1834,7 +1834,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._mzi_heater_voltages = {net: None for net in MZI_NET_NAMES}
         self._mzi_staged_heater_voltages = None
         self._mzi_selected_heaters = {MZI_NET_NAMES[0]}
-        self._mzi_sweep_net = MZI_NET_NAMES[0]
         self._mzi_heater_configs = load_heater_configs()
         self._mzi_active_config_name = None
         self._mzi_heater_controls = []
@@ -1871,8 +1870,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         scope_root.setContentsMargins(0, 0, 0, 0)
         experiment_workspace = QtWidgets.QWidget()
         experiment_layout = QtWidgets.QVBoxLayout(experiment_workspace)
+        results_workspace = QtWidgets.QWidget()
+        results_layout = QtWidgets.QVBoxLayout(results_workspace)
         self.workspace_tabs.addTab(scope_workspace, "Scope and control")
         self.workspace_tabs.addTab(experiment_workspace, "Optical experiment")
+        self.workspace_tabs.addTab(results_workspace, "Optical results")
 
         # ---- plots ----
         self.glw = pg.GraphicsLayoutWidget()
@@ -1952,6 +1954,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
         self.tabs.addTab(wave_tab, "Waveforms")
         self._build_mzi_calibration_panel(experiment_layout)
+        self._build_mzi_results_panel(results_layout)
 
         left = xbar_lay
         right = neuron_lay
@@ -2673,8 +2676,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                   self.burst_btn, self.burst_n, self.burst_step_chk, self.burst_amp,
                   self.msamp_reps, self.msamp_btn, self.liveavg_btn,
                   self.liveavg_downsample_chk, self.liveavg_ghosts_chk,
-                  self.defaults_btn, self.mzi_program_btn, self.mzi_point_btn,
-                  self.mzi_run_btn,
+                  self.defaults_btn, self.mzi_program_btn, self.mzi_quick_btn,
+                  self.mzi_point_btn, self.mzi_run_btn,
                   self.np_loadprof, self.np_saveprof, self.cur_preview_btn):
             w.setEnabled(on)
         for b in self.np_btns.values():
@@ -3437,20 +3440,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         target = QtWidgets.QGroupBox("Sweep heater and manual heater control")
         self.mzi_heater_group = target
         target_layout = QtWidgets.QVBoxLayout(target)
-        sweep_row = QtWidgets.QHBoxLayout()
-        sweep_row.addWidget(QtWidgets.QLabel("Sweep target"))
-        self.mzi_sweep_combo = QtWidgets.QComboBox()
-        self.mzi_sweep_combo.addItems(MZI_NET_NAMES)
-        self.mzi_sweep_combo.setCurrentText(self._mzi_sweep_net)
-        self.mzi_sweep_combo.currentTextChanged.connect(
-            self._on_mzi_sweep_target_changed)
-        self.mzi_sweep_combo.setToolTip(
-            "Exactly this heater is varied by Capture at Manual Voltage and Run Sweep.")
-        sweep_row.addWidget(self.mzi_sweep_combo, 1)
-        target_layout.addLayout(sweep_row)
         sweep_hint = QtWidgets.QLabel(
-            "The red outline is the sweep target. Double-click any heater to make it the target; "
-            "single-click selects heaters for manual writes and saved configurations.")
+            "Checked heaters are swept together at the same voltage. Click individual heaters, "
+            "or use a row or column header to select a group.")
         sweep_hint.setWordWrap(True)
         sweep_hint.setStyleSheet("color:#9fb3c8; font-size:11px;")
         target_layout.addWidget(sweep_hint)
@@ -3459,13 +3451,23 @@ class ScopeWindow(QtWidgets.QMainWindow):
         heater_grid.setHorizontalSpacing(4)
         heater_grid.setVerticalSpacing(4)
         for column in range(1, 7):
-            label = QtWidgets.QLabel(str(column))
-            label.setAlignment(QtCore.Qt.AlignCenter)
-            heater_grid.addWidget(label, 0, column)
+            header = QtWidgets.QToolButton()
+            header.setText(str(column))
+            header.setToolTip(f"Select or clear every heater in column {column}.")
+            header.clicked.connect(
+                lambda _checked=False, col=column:
+                self._on_mzi_group_toggle(
+                    [f"h_{row}_{col}" for row in range(1, 10)]))
+            heater_grid.addWidget(header, 0, column)
         for row in range(1, 10):
-            label = QtWidgets.QLabel(str(row))
-            label.setAlignment(QtCore.Qt.AlignCenter)
-            heater_grid.addWidget(label, row, 0)
+            header = QtWidgets.QToolButton()
+            header.setText(str(row))
+            header.setToolTip(f"Select or clear every heater in row {row}.")
+            header.clicked.connect(
+                lambda _checked=False, selected_row=row:
+                self._on_mzi_group_toggle(
+                    [f"h_{selected_row}_{column}" for column in range(1, 7)]))
+            heater_grid.addWidget(header, row, 0)
             for column in range(1, 7):
                 net = f"h_{row}_{column}"
                 button = QtWidgets.QToolButton()
@@ -3474,7 +3476,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 button.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
                 button.setChecked(net in self._mzi_selected_heaters)
                 button.setProperty("mziNet", net)
-                button.installEventFilter(self)
                 button.toggled.connect(
                     lambda checked, heater=net:
                     self._on_mzi_heater_toggled(heater, checked))
@@ -3522,8 +3523,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._mzi_heater_controls.extend([
             self.mzi_selected_voltage, self.mzi_set_selected_btn,
             self.mzi_zero_selected_btn, self.mzi_zero_all_btn,
-            self.mzi_pico_init_btn, self.mzi_pico_test_btn,
-            self.mzi_sweep_combo])
+            self.mzi_pico_init_btn, self.mzi_pico_test_btn])
         heater_column.addWidget(target)
         self._refresh_mzi_heater_map()
 
@@ -3688,7 +3688,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_restore.setDecimals(4)
         self.mzi_restore.setSuffix(" V")
         self.mzi_restore.setToolTip(
-            "Voltage written to the red-outlined sweep heater when the sweep ends or fails.")
+            "Voltage written to every checked sweep heater when the sweep ends or fails.")
         cf.addRow("Restore after sweep", self.mzi_restore)
         setup_column.addWidget(capture)
 
@@ -3755,29 +3755,35 @@ class ScopeWindow(QtWidgets.QMainWindow):
         result_column.addWidget(self.mzi_spike_plot)
 
         buttons = QtWidgets.QGridLayout()
-        self.mzi_point_btn = QtWidgets.QPushButton("Capture manual voltage")
+        self.mzi_quick_btn = QtWidgets.QPushButton("Test one trigger")
+        self.mzi_quick_btn.setToolTip(
+            "Program the setup, write the manual voltage to every checked heater, "
+            "then capture and display one trigger-aligned acquisition.")
+        self.mzi_quick_btn.clicked.connect(self._on_mzi_quick_capture)
+        self.mzi_point_btn = QtWidgets.QPushButton("Capture averaged point")
         self.mzi_point_btn.setToolTip(
-            "Program the setup, write the manual voltage to the red-outlined heater, "
-            "wait for settling, then save 16 trigger-aligned captures from every ADC.")
+            "Program the setup, write the manual voltage to every checked heater, "
+            "wait for settling, then save the configured number of aligned captures.")
         self.mzi_point_btn.clicked.connect(self._on_mzi_capture_point)
         self.mzi_run_btn = QtWidgets.QPushButton("Run sweep")
         self.mzi_run_btn.setToolTip(
-            "Program the setup, sweep only the red-outlined heater over the configured voltages, "
+            "Program the setup, sweep every checked heater together over the configured voltages, "
             "and save every raw ADC capture under the named experiment directory.")
         self.mzi_run_btn.clicked.connect(self._on_mzi_calibrate)
         self.mzi_cancel_btn = QtWidgets.QPushButton("Stop")
         self.mzi_cancel_btn.setEnabled(False)
         self.mzi_cancel_btn.clicked.connect(self._on_mzi_cal_cancel)
-        buttons.addWidget(self.mzi_point_btn, 0, 0)
-        buttons.addWidget(self.mzi_run_btn, 1, 0)
-        buttons.addWidget(self.mzi_cancel_btn, 2, 0)
+        buttons.addWidget(self.mzi_quick_btn, 0, 0)
+        buttons.addWidget(self.mzi_point_btn, 1, 0)
+        buttons.addWidget(self.mzi_run_btn, 2, 0)
+        buttons.addWidget(self.mzi_cancel_btn, 3, 0)
         result_column.addLayout(buttons)
         self.mzi_progress = QtWidgets.QProgressBar()
         self.mzi_progress.setRange(0, 1)
         self.mzi_progress.setValue(0)
         result_column.addWidget(self.mzi_progress)
         self.mzi_status = QtWidgets.QLabel(
-            "Initialize PICO-002, choose the red sweep heater, then program the experiment setup.")
+            "Initialize PICO-002, select one or more heaters, then program the experiment setup.")
         self.mzi_status.setWordWrap(True)
         self.mzi_status.setStyleSheet("color:#9fb3c8; font-size:11px;")
         result_column.addWidget(self.mzi_status)
@@ -3786,24 +3792,63 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.liveavg_timer = QtCore.QTimer(self)
         self.liveavg_timer.setInterval(25)
         self.liveavg_timer.timeout.connect(self._on_liveavg_tick)
-    def eventFilter(self, watched, event):
-        net = watched.property("mziNet") if hasattr(watched, "property") else None
-        if net and event.type() == QtCore.QEvent.MouseButtonDblClick:
-            self.mzi_sweep_combo.setCurrentText(str(net))
-            return True
-        return super().eventFilter(watched, event)
+
+    def _build_mzi_results_panel(self, layout):
+        layout.setContentsMargins(8, 8, 8, 8)
+        self.mzi_results_tabs = QtWidgets.QTabWidget()
+        layout.addWidget(self.mzi_results_tabs, 1)
+
+        traces_tab = QtWidgets.QWidget()
+        traces_layout = QtWidgets.QVBoxLayout(traces_tab)
+        self.mzi_results_summary = QtWidgets.QLabel(
+            "Run a sweep to inspect every post-processed voltage point.")
+        self.mzi_results_summary.setWordWrap(True)
+        traces_layout.addWidget(self.mzi_results_summary)
+        self.mzi_trace_scroll = QtWidgets.QScrollArea()
+        self.mzi_trace_scroll.setWidgetResizable(True)
+        self.mzi_trace_panel = QtWidgets.QWidget()
+        self.mzi_trace_grid = QtWidgets.QGridLayout(self.mzi_trace_panel)
+        self.mzi_trace_grid.setContentsMargins(6, 6, 6, 6)
+        self.mzi_trace_grid.setHorizontalSpacing(8)
+        self.mzi_trace_grid.setVerticalSpacing(8)
+        self.mzi_trace_scroll.setWidget(self.mzi_trace_panel)
+        traces_layout.addWidget(self.mzi_trace_scroll, 1)
+        self.mzi_sweep_trace_plots = []
+        self.mzi_results_tabs.addTab(traces_tab, "Averaged sweep traces")
+
+        curve_tab = QtWidgets.QWidget()
+        curve_layout = QtWidgets.QVBoxLayout(curve_tab)
+        self.mzi_result_curve_plot = pg.PlotWidget()
+        self.mzi_result_curve_plot.setBackground("#101418")
+        self.mzi_result_curve_plot.showGrid(x=True, y=True, alpha=0.22)
+        self.mzi_result_curve_plot.setLabel("left", "normalized optical weight")
+        self.mzi_result_curve_plot.setLabel("bottom", "heater", units="V")
+        self.mzi_result_curve_plot.setYRange(-0.05, 1.05)
+        self.mzi_result_curve_fwd = self.mzi_result_curve_plot.plot(
+            pen=pg.mkPen("#4FC3F7", width=1.5), symbol="o",
+            symbolSize=5, symbolBrush="#4FC3F7")
+        self.mzi_result_curve_rev = self.mzi_result_curve_plot.plot(
+            pen=pg.mkPen("#FFB74D", width=1.5), symbol="o",
+            symbolSize=5, symbolBrush="#FFB74D")
+        curve_layout.addWidget(self.mzi_result_curve_plot, 1)
+        self.mzi_results_tabs.addTab(curve_tab, "Optical curve")
 
     def _selected_mzi_nets(self):
         return ordered_heater_nets(self._mzi_selected_heaters)
 
-    def _on_mzi_sweep_target_changed(self, net):
-        if net not in MZI_NET_NAMES:
-            return
-        self._mzi_sweep_net = net
+    def _on_mzi_group_toggle(self, nets):
+        group = set(ordered_heater_nets(nets))
+        select_group = not group.issubset(self._mzi_selected_heaters)
+        if select_group:
+            self._mzi_selected_heaters.update(group)
+        else:
+            self._mzi_selected_heaters.difference_update(group)
+        for net in group:
+            button = self._mzi_heater_buttons[net]
+            button.blockSignals(True)
+            button.setChecked(net in self._mzi_selected_heaters)
+            button.blockSignals(False)
         self._refresh_mzi_heater_map()
-        if hasattr(self, "mzi_status"):
-            self.mzi_status.setText(
-                f"Sweep target: {net}. Only this red-outlined heater will vary.")
 
     def _on_mzi_heater_toggled(self, net, checked):
         if checked:
@@ -3835,10 +3880,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 tooltip += f"\nStaged: {float(staged[net]):.4f} V"
             button.setToolTip(tooltip)
             background = "#474D53" if voltage is None else "#245C3D"
-            if net == self._mzi_sweep_net:
+            if button.isChecked():
                 border = "3px solid #EF5350"
-            elif button.isChecked():
-                border = "2px solid #4FC3F7"
             elif pending:
                 border = "2px solid #FFB74D"
             else:
@@ -4044,9 +4087,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
         experiment_name = self.mzi_experiment_name.text().strip()
         if not experiment_name:
             raise ValueError("enter an experiment name")
-        sweep_net = self._mzi_sweep_net
-        if sweep_net not in MZI_NET_NAMES:
-            raise ValueError("select one heater as the sweep target")
+        sweep_nets = self._selected_mzi_nets()
+        if not sweep_nets:
+            raise ValueError("select at least one heater to sweep")
+        sweep_net = sweep_nets[0]
         capture_bytes = int(self.mzi_capture_size.currentData())
         current_samples, current_cps, actual_frequency = gen_current_wave(
             "Square", 15.0, 5000.0, square_duty=50.0)
@@ -4054,7 +4098,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "experiment_name": experiment_name,
             "capture_bytes": capture_bytes,
             "net": sweep_net,
-            "nets": (sweep_net,),
+            "nets": sweep_nets,
+            "sweep_label": (sweep_net if len(sweep_nets) == 1 else
+                            f"{len(sweep_nets)} selected heaters"),
             "profiles": {
                 neuron: self.mzi_profiles[neuron].currentText()
                 for neuron in range(4)
@@ -4141,9 +4187,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 },
             },
             "heater_sweep": {
-                "heater_nets": [spec["net"]],
+                "heater_nets": list(spec["nets"]),
                 "primary_heater_net": spec["net"],
-                "shared_sweep_voltage": False,
+                "shared_sweep_voltage": len(spec["nets"]) > 1,
                 "spacing": spec["spacing"],
                 "heater_voltages_before_sweep": spec["heater_voltages_before_sweep"],
                 "planned_voltages_v": spec["voltages"],
@@ -4177,6 +4223,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._mzi_cancel.clear()
         self._mzi_running = True
         self.mzi_program_btn.setEnabled(False)
+        self.mzi_quick_btn.setEnabled(False)
         self.mzi_point_btn.setEnabled(False)
         self.mzi_run_btn.setEnabled(False)
         self.mzi_cancel_btn.setEnabled(total > 0)
@@ -4251,6 +4298,21 @@ class ScopeWindow(QtWidgets.QMainWindow):
         except Exception as exc:  # noqa: BLE001
             return {"_err": f"{type(exc).__name__}: {exc}"}
 
+    def _on_mzi_quick_capture(self):
+        if not self.dac or self._mzi_running:
+            return
+        try:
+            spec = self._mzi_gui_spec()
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "Invalid optical test", str(exc))
+            return
+        spec["reps"] = 1
+        voltage = self.mzi_selected_voltage.value()
+        self._mzi_begin(
+            1, f"Testing one trigger at {voltage:.4f} V...")
+        self._bg(lambda: self.mzi_cal_result.emit(
+            self._run_mzi_point(spec, voltage)))
+
     def _on_mzi_capture_point(self):
         if not self.dac or self._mzi_running:
             return
@@ -4260,7 +4322,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Invalid optical test", str(exc))
             return
         voltage = self.mzi_selected_voltage.value()
-        self._mzi_begin(1, f"Capturing {spec['net']} at {voltage:.4f} V...")
+        self._mzi_begin(
+            1, f"Capturing {spec['sweep_label']} at {voltage:.4f} V...")
         self._bg(lambda: self.mzi_cal_result.emit(
             self._run_mzi_point(spec, voltage)))
 
@@ -4270,9 +4333,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self._mzi_controller.connect(
                 board_ip=self.args.board_ip, local_ip=self.args.local_ip)
             available = set(self._mzi_controller.available_nets())
-            if spec["net"] not in available:
-                return {"_err": f"heater is not wired in PICO-002 config: {spec['net']}"}
-            requested = {spec["net"]: float(voltage)}
+            missing = sorted(set(spec["nets"]) - available)
+            if missing:
+                return {"_err": f"heaters not wired in PICO-002 config: {missing}"}
+            requested = {net: float(voltage) for net in spec["nets"]}
             self._set_mzi_heater_voltages(requested)
             if spec["settle_s"]:
                 time.sleep(spec["settle_s"])
@@ -4313,7 +4377,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
             capture_dir = os.path.abspath(os.path.expanduser(self.args.capture_dir))
             os.makedirs(capture_dir, exist_ok=True)
             stamp = time.strftime("%Y%m%d_%H%M%S")
-            path = os.path.join(capture_dir, f"optical_point_{spec['net']}_{stamp}.npz")
+            point_name = (spec["net"] if len(spec["nets"]) == 1 else
+                          f"{len(spec['nets'])}_heaters")
+            path = os.path.join(capture_dir, f"optical_point_{point_name}_{stamp}.npz")
             payload = {
                 "averaged_waveform_v": average,
                 "peak_indices": peaks,
@@ -4331,6 +4397,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 "per_rep_height_v": per_rep,
                 "heater_voltage_v": voltage,
                 "heater_net": spec["net"],
+                "heater_nets": np.asarray(spec["nets"]),
                 "analysis_adc_channel": spec["analysis_adc"],
                 "neuron_profiles": np.asarray([
                     spec["profiles"][neuron] for neuron in range(4)]),
@@ -4374,7 +4441,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_curve_rev.setData([], [])
         self._mzi_begin(
             len(voltages),
-            f"Programming test, then sweeping red target {spec['net']}...")
+            f"Programming test, then sweeping {spec['sweep_label']}...")
         self._bg(lambda: self.mzi_cal_result.emit(self._run_mzi_calibration(spec)))
 
     def _on_mzi_cal_cancel(self):
@@ -4496,6 +4563,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_spike_plot.plot(
             np.arange(trace_mv.size), trace_mv,
             pen=pg.mkPen("#E8EDF2", width=1.1))
+        if len(amplitudes):
+            self.mzi_spike_plot.addItem(pg.InfiniteLine(
+                pos=float(np.mean(amplitudes)) * 1e3, angle=0, movable=False,
+                pen=pg.mkPen("#F6AE2D", width=1.4)))
         for peak, start, end, amplitude in zip(peaks, starts, ends, amplitudes):
             region = pg.LinearRegionItem(
                 values=(int(start), int(end)), movable=False,
@@ -4517,10 +4588,107 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 max(0, int(starts[0]) - margin),
                 min(trace_mv.size - 1, int(ends[-1]) + margin), padding=0)
 
+    def _clear_mzi_trace_grid(self):
+        while self.mzi_trace_grid.count():
+            item = self.mzi_trace_grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.mzi_sweep_trace_plots = []
+
+    def _show_mzi_sweep_measurements(self, result):
+        self._clear_mzi_trace_grid()
+        measurements = list(result.get("measurements", []))
+        independently_detected = list(
+            result.get("independent_measurements", []))
+        voltages = np.asarray(result.get("voltages", []), dtype=np.float64)
+        directions = np.asarray(result.get("directions", []), dtype=np.int8)
+        if not measurements:
+            self.mzi_results_summary.setText(
+                "No completed post-processed sweep points are available.")
+            return
+
+        for index, measurement in enumerate(measurements):
+            plot = pg.PlotWidget()
+            plot.setMinimumSize(360, 220)
+            plot.setBackground("#101418")
+            plot.showGrid(x=True, y=True, alpha=0.18)
+            plot.setLabel("left", "averaged output", units="mV")
+            plot.setLabel("bottom", "ADC sample", units="ns")
+            average_mv = np.asarray(
+                measurement.averaged_waveform, dtype=np.float64) * 1e3
+            display_x, display_y = peak_envelope(average_mv, max_points=1200)
+            plot.plot(
+                display_x, display_y, pen=pg.mkPen("#E8EDF2", width=1.0))
+            mean_mv = float(measurement.signed_height) * 1e3
+            plot.addItem(pg.InfiniteLine(
+                pos=mean_mv, angle=0, movable=False,
+                pen=pg.mkPen("#F6AE2D", width=1.4)))
+            detected = (independently_detected[index]
+                        if index < len(independently_detected) else None)
+            boundaries = detected if detected is not None else measurement
+            for start, end in zip(
+                    boundaries.start_indices, boundaries.end_indices):
+                plot.addItem(pg.InfiniteLine(
+                    pos=int(start), angle=90, movable=False,
+                    pen=pg.mkPen("#4FC3F7", width=1.0)))
+                plot.addItem(pg.InfiniteLine(
+                    pos=int(end), angle=90, movable=False,
+                    pen=pg.mkPen("#EF5350", width=1.0)))
+            voltage = float(voltages[index]) if index < voltages.size else float("nan")
+            direction = ("reverse" if index < directions.size and directions[index]
+                         else "forward")
+            boundary_source = "detected" if detected is not None else "reference fallback"
+            plot.setTitle(
+                f"#{index + 1}: {voltage:.4f} V {direction} | "
+                f"{mean_mv:.3f} mV | {boundaries.peak_indices.size} spikes "
+                f"({boundary_source})")
+            self.mzi_trace_grid.addWidget(plot, index // 2, index % 2)
+            self.mzi_sweep_trace_plots.append(plot)
+
+        spread_mv = float(result.get("repeatability_peak_to_peak_v", 0.0)) * 1e3
+        if result.get("constant_voltage_control"):
+            self.mzi_results_summary.setText(
+                f"Constant-voltage repeatability control: {len(measurements)} points, "
+                f"peak-to-peak amplitude variation {spread_mv:.3f} mV. "
+                "Blue/red vertical lines are detected spike boundaries; "
+                "the amber horizontal line is the calculated mean spike height.")
+        else:
+            self.mzi_results_summary.setText(
+                f"{len(measurements)} processed sweep points. Blue/red vertical lines "
+                "are detected spike boundaries; the amber horizontal line is the "
+                "calculated mean spike height.")
+
+    def _show_mzi_result_curve(self, result):
+        voltage = np.asarray(result.get("voltages", []), dtype=np.float64)
+        direction = np.asarray(result.get("directions", []), dtype=np.int8)
+        if result.get("constant_voltage_control"):
+            x = np.arange(voltage.size)
+            amplitude_mv = np.asarray(
+                result.get("absolute", []), dtype=np.float64) * 1e3
+            self.mzi_result_curve_plot.setLabel(
+                "left", "mean spike amplitude", units="mV")
+            held = float(voltage[0]) if voltage.size else float("nan")
+            self.mzi_result_curve_plot.setLabel(
+                "bottom", f"capture index (heater held at {held:.4f} V)")
+            self.mzi_result_curve_plot.enableAutoRange()
+            self.mzi_result_curve_fwd.setData(x, amplitude_mv)
+            self.mzi_result_curve_rev.setData([], [])
+        else:
+            weight = np.asarray(result.get("normalized", []), dtype=np.float64)
+            self.mzi_result_curve_plot.setLabel(
+                "left", "normalized optical weight")
+            self.mzi_result_curve_plot.setLabel("bottom", "heater", units="V")
+            self.mzi_result_curve_plot.setYRange(-0.05, 1.05)
+            self.mzi_result_curve_fwd.setData(
+                voltage[direction == 0], weight[direction == 0])
+            self.mzi_result_curve_rev.setData(
+                voltage[direction == 1], weight[direction == 1])
     def _on_mzi_cal_result(self, result):
         self._mzi_running = False
         enabled = bool(self.dac)
         self.mzi_program_btn.setEnabled(enabled)
+        self.mzi_quick_btn.setEnabled(enabled)
         self.mzi_point_btn.setEnabled(enabled)
         self.mzi_run_btn.setEnabled(enabled)
         self.mzi_cancel_btn.setEnabled(False)
@@ -4598,10 +4766,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 self.src_cbs[channel].setCurrentText(label)
                 self._applied_label[channel] = label
             self._refresh_xbar_preview()
-            current_samples, _, _ = gen_current_wave(
+            current_samples, current_cps, actual_frequency = gen_current_wave(
                 "Square", spec["current_ma"], spec["current_frequency_hz"],
                 square_duty=spec["current_duty_percent"])
-            self._set_current_preview(current_samples, programmed=True)
+            self._set_current_preview(
+                "Square", current_samples, current_cps, actual_frequency,
+                programmed=True)
 
         if kind == "configured":
             profile_text = ", ".join(
@@ -4629,8 +4799,26 @@ class ScopeWindow(QtWidgets.QMainWindow):
         voltage = np.asarray(result.get("voltages", []), dtype=float)
         direction = np.asarray(result.get("directions", []), dtype=np.int8)
         weight = np.asarray(result.get("normalized", []), dtype=float)
-        self.mzi_curve_fwd.setData(voltage[direction == 0], weight[direction == 0])
-        self.mzi_curve_rev.setData(voltage[direction == 1], weight[direction == 1])
+        if result.get("constant_voltage_control"):
+            amplitude_mv = np.asarray(
+                result.get("absolute", []), dtype=np.float64) * 1e3
+            self.mzi_plot.setLabel("left", "mean spike amplitude", units="mV")
+            self.mzi_plot.setLabel("bottom", "capture index")
+            self.mzi_plot.enableAutoRange()
+            self.mzi_curve_fwd.setData(np.arange(voltage.size), amplitude_mv)
+            self.mzi_curve_rev.setData([], [])
+        else:
+            self.mzi_plot.setLabel("left", "normalized optical weight")
+            self.mzi_plot.setLabel("bottom", "heater", units="V")
+            self.mzi_plot.setYRange(-0.05, 1.05)
+            self.mzi_curve_fwd.setData(
+                voltage[direction == 0], weight[direction == 0])
+            self.mzi_curve_rev.setData(
+                voltage[direction == 1], weight[direction == 1])
+        self._show_mzi_sweep_measurements(result)
+        self._show_mzi_result_curve(result)
+        self.workspace_tabs.setCurrentIndex(2)
+        self.mzi_results_tabs.setCurrentIndex(0)
         reference = result.get("reference_measurement")
         if reference is not None:
             self._show_mzi_spikes(
@@ -4639,10 +4827,17 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 reference.per_peak_height.mean(axis=0))
         state = "stopped" if result.get("cancelled") else "complete"
         if voltage.size and "min_height" in result:
-            detail = (f"min {result['min_height'] * 1e3:.3f} mV at "
-                      f"{result['min_voltage']:.4f} V; max "
-                      f"{result['max_height'] * 1e3:.3f} mV; "
-                      f"extinction {result['extinction_db']:.2f} dB")
+            if result.get("constant_voltage_control"):
+                detail = (
+                    f"constant {voltage[0]:.4f} V control; amplitude mean "
+                    f"{np.mean(result['absolute']) * 1e3:.3f} mV; "
+                    f"peak-to-peak variation "
+                    f"{result['repeatability_peak_to_peak_v'] * 1e3:.3f} mV")
+            else:
+                detail = (f"min {result['min_height'] * 1e3:.3f} mV at "
+                          f"{result['min_voltage']:.4f} V; max "
+                          f"{result['max_height'] * 1e3:.3f} mV; "
+                          f"extinction {result['extinction_db']:.2f} dB")
         else:
             detail = "no completed points"
 

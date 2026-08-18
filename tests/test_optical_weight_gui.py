@@ -128,6 +128,7 @@ class OpticalWeightGuiTests(unittest.TestCase):
 
     def test_optical_test_defaults(self):
         self.assertEqual(self.window.workspace_tabs.tabText(1), "Optical experiment")
+        self.assertEqual(self.window.workspace_tabs.tabText(2), "Optical results")
         self.assertNotIn(
             "Optical Weight",
             [self.window.tabs.tabText(i) for i in range(self.window.tabs.count())])
@@ -148,7 +149,6 @@ class OpticalWeightGuiTests(unittest.TestCase):
             ["regular"] * 4)
         self.assertEqual(len(self.window._mzi_heater_buttons), 54)
         self.assertEqual(self.window._selected_mzi_nets(), ("h_1_1",))
-        self.assertEqual(self.window._mzi_sweep_net, "h_1_1")
         self.assertIn("3px solid #EF5350",
                       self.window._mzi_heater_buttons["h_1_1"].styleSheet())
         self.assertIn("-- V", self.window._mzi_heater_buttons["h_1_2"].text())
@@ -160,6 +160,9 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertEqual(spec["xbar_sources"],
                          ["Spike 0", "Spike 1", "Spike 2", "Spike 3"])
         self.assertEqual(spec["adc_channels"], [0, 1, 2, 3])
+        self.assertEqual(spec["nets"], ("h_1_1",))
+        self.assertEqual(spec["sweep_label"], "h_1_1")
+
     def test_pico_and_heater_controls_do_not_require_uart(self):
         self.window._set_controls_enabled(False)
 
@@ -265,7 +268,7 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.window._mzi_resume_tap = False
         self.window._on_mzi_cal_result(result)
 
-        self.assertEqual(spec["nets"], ("h_1_1",))
+        self.assertEqual(spec["nets"], ("h_1_1", "h_1_2"))
         self.assertEqual(fake_mzi.voltages, [
             ("h_1_1", 0.375), ("h_1_2", 0.375)])
         self.assertEqual(self.window._mzi_heater_voltages["h_1_1"], 0.375)
@@ -423,14 +426,18 @@ class OpticalWeightGuiTests(unittest.TestCase):
             self.assertEqual(raw["raw_ch0"].shape, (16, 16384))
             self.assertEqual(raw["raw_ch3"].shape, (16, 16384))
         np.testing.assert_allclose(result["normalized"], [0.0, 0.5, 1.0])
+        self.window._mzi_resume_autosample = False
+        self.window._mzi_resume_tap = False
+        self.window._on_mzi_cal_result(result)
+        self.assertEqual(len(self.window.mzi_sweep_trace_plots), 3)
+        self.assertEqual(self.window.workspace_tabs.currentIndex(), 2)
 
-    def test_sweep_varies_only_red_target_not_manual_selection(self):
+    def test_checked_heaters_are_swept_together(self):
         fake_dac = FakeDac()
         fake_mzi = FakeMziController()
         self.window.dac = fake_dac
         self.window._mzi_controller = fake_mzi
-        self.window._mzi_selected_heaters = {"h_1_1", "h_1_2"}
-        self.window.mzi_sweep_combo.setCurrentText("h_1_2")
+        self.window._mzi_heater_buttons["h_1_2"].setChecked(True)
         self.window._multisample_once = self._capture_for(fake_mzi)
         spec = self.window._mzi_gui_spec()
         spec.update(
@@ -442,11 +449,38 @@ class OpticalWeightGuiTests(unittest.TestCase):
 
         self.assertNotIn("_err", result)
         manifest = json.loads((Path(result["path"]) / "experiment.json").read_text())
-        self.assertEqual(manifest["heater_sweep"]["heater_nets"], ["h_1_2"])
-        self.assertFalse(manifest["heater_sweep"]["shared_sweep_voltage"])
-        self.assertTrue(all(net == "h_1_2" for net, _voltage in fake_mzi.voltages))
+        self.assertEqual(
+            manifest["heater_sweep"]["heater_nets"], ["h_1_1", "h_1_2"])
+        self.assertTrue(manifest["heater_sweep"]["shared_sweep_voltage"])
+        self.assertEqual(spec["nets"], ("h_1_1", "h_1_2"))
+        self.assertEqual(fake_mzi.voltages[:4], [
+            ("h_1_1", 0.0), ("h_1_2", 0.0),
+            ("h_1_1", 0.5), ("h_1_2", 0.5),
+        ])
+        self.assertIn("3px solid #EF5350",
+                      self.window._mzi_heater_buttons["h_1_1"].styleSheet())
         self.assertIn("3px solid #EF5350",
                       self.window._mzi_heater_buttons["h_1_2"].styleSheet())
+
+    def test_row_header_selects_six_heaters_for_sweep(self):
+        self.window._mzi_heater_buttons["h_1_1"].setChecked(False)
+        row = [f"h_8_{column}" for column in range(1, 7)]
+
+        self.window._on_mzi_group_toggle(row)
+
+        self.assertEqual(self.window._selected_mzi_nets(), tuple(row))
+        self.assertEqual(self.window._mzi_gui_spec()["nets"], tuple(row))
+        for net in row:
+            self.assertIn(
+                "3px solid #EF5350",
+                self.window._mzi_heater_buttons[net].styleSheet())
+
+    def test_empty_heater_selection_cannot_start_sweep(self):
+        self.window._mzi_heater_buttons["h_1_1"].setChecked(False)
+
+        with self.assertRaisesRegex(ValueError, "at least one heater"):
+            self.window._mzi_gui_spec()
+
 
 if __name__ == "__main__":
     unittest.main()

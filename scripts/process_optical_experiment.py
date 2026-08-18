@@ -116,18 +116,41 @@ def _write_curve_plot(path: Path, voltages: np.ndarray, directions: np.ndarray,
     import matplotlib.pyplot as plt
 
     fig, axes = plt.subplots(2, 1, figsize=(8.5, 7), sharex=True)
-    styles = ((0, "forward", "#20A4F3"), (1, "reverse", "#F6AE2D"))
-    for code, label, color in styles:
-        selected = directions == code
-        if np.any(selected):
-            axes[0].plot(voltages[selected], normalized[selected], "o-",
-                         color=color, linewidth=1.5, markersize=4, label=label)
-            axes[1].plot(voltages[selected], absolute_v[selected] * 1e3, "o-",
-                         color=color, linewidth=1.5, markersize=4, label=label)
-    axes[0].set_ylabel("normalized optical weight")
-    axes[0].set_ylim(-0.05, 1.05)
-    axes[1].set_ylabel("mean spike amplitude (mV)")
-    axes[1].set_xlabel("heater voltage (V)")
+    constant_voltage = bool(
+        voltages.size and np.ptp(voltages) <= np.finfo(np.float64).eps)
+    if constant_voltage:
+        capture_index = np.arange(absolute_v.size)
+        amplitude_mv = absolute_v * 1e3
+        mean_mv = float(np.mean(amplitude_mv))
+        axes[0].plot(
+            capture_index, amplitude_mv, "o-", color="#20A4F3",
+            linewidth=1.5, markersize=4, label="measured amplitude")
+        axes[0].axhline(
+            mean_mv, color="#6B7785", linestyle="--", linewidth=1.2,
+            label=f"mean {mean_mv:.3f} mV")
+        axes[1].plot(
+            capture_index, amplitude_mv - mean_mv, "o-", color="#F6AE2D",
+            linewidth=1.5, markersize=4, label="deviation from mean")
+        axes[1].axhline(0.0, color="#6B7785", linewidth=1.0)
+        axes[0].set_ylabel("mean spike amplitude (mV)")
+        axes[1].set_ylabel("amplitude deviation (mV)")
+        axes[1].set_xlabel(
+            f"capture index (heater held at {float(voltages[0]):.4f} V)")
+    else:
+        styles = ((0, "forward", "#20A4F3"), (1, "reverse", "#F6AE2D"))
+        for code, label, color in styles:
+            selected = directions == code
+            if np.any(selected):
+                axes[0].plot(
+                    voltages[selected], normalized[selected], "o-",
+                    color=color, linewidth=1.5, markersize=4, label=label)
+                axes[1].plot(
+                    voltages[selected], absolute_v[selected] * 1e3, "o-",
+                    color=color, linewidth=1.5, markersize=4, label=label)
+        axes[0].set_ylabel("normalized optical weight")
+        axes[0].set_ylim(-0.05, 1.05)
+        axes[1].set_ylabel("mean spike amplitude (mV)")
+        axes[1].set_xlabel("heater voltage (V)")
     for axis in axes:
         axis.grid(alpha=0.25)
         axis.legend(loc="best")
@@ -170,6 +193,7 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
         minimum_seed_samples=int(detection["minimum_seed_samples"]),
     )
     measurements = []
+    independent_measurements = []
     for (heater_dir, raw), descriptor in zip(loaded, heater_captures):
         volts = raw.astype(np.float64) * VOLTS_PER_COUNT
         measurement = measure_spikes_at_indices(
@@ -186,6 +210,7 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
         except ValueError:
             independently_detected = None
         measurements.append(measurement)
+        independent_measurements.append(independently_detected)
         _write_heater_analysis(
             heater_dir, measurement, descriptor, independently_detected)
 
@@ -194,9 +219,14 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
     minimum = float(np.min(absolute))
     maximum = float(np.max(absolute))
     span = maximum - minimum
-    normalized = ((absolute - minimum) / span if span > np.finfo(float).eps
-                  else np.zeros_like(absolute))
-    voltages = np.asarray([capture["heater_voltage_v"] for capture in heater_captures])
+    voltages = np.asarray([
+        capture["heater_voltage_v"] for capture in heater_captures])
+    constant_voltage = bool(
+        voltages.size and np.ptp(voltages) <= np.finfo(np.float64).eps)
+    normalized = (
+        np.full_like(absolute, np.nan) if constant_voltage else
+        ((absolute - minimum) / span if span > np.finfo(float).eps
+         else np.zeros_like(absolute)))
     directions = np.asarray([
         1 if capture["direction"] == "reverse" else 0 for capture in heater_captures],
         dtype=np.int8)
@@ -234,6 +264,10 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
         "maximum_amplitude_v": maximum,
         "minimum_voltage_v": float(voltages[int(np.argmin(absolute))]),
         "extinction_db": extinction_db,
+        "constant_voltage_control": constant_voltage,
+        "normalization_is_transfer_curve": not constant_voltage,
+        "repeatability_standard_deviation_v": float(np.std(absolute)),
+        "repeatability_peak_to_peak_v": float(np.ptp(absolute)),
         "curve_csv": curve_path.name,
         "curve_plot": plot_path.name if make_plot else None,
     }
@@ -245,7 +279,13 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
         "min_height": minimum, "max_height": maximum,
         "min_voltage": summary["minimum_voltage_v"],
         "extinction_db": extinction_db,
+        "constant_voltage_control": constant_voltage,
+        "repeatability_std_v": summary["repeatability_standard_deviation_v"],
+        "repeatability_peak_to_peak_v": summary["repeatability_peak_to_peak_v"],
         "reference_measurement": reference,
+        "measurements": measurements,
+        "independent_measurements": independent_measurements,
+        "heater_captures": heater_captures,
         "reference_heater_capture_index": reference_index,
         "path": str(experiment_dir),
     }

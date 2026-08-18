@@ -222,7 +222,17 @@ def measure_spikes_at_indices(
         raise ValueError("boundary and polarity arrays must match peak_indices")
     if np.any(starts > peaks) or np.any(ends < peaks):
         raise ValueError("each fixed peak must lie inside its boundary")
-    per_peak = centered[:, peaks]
+    # Measure each event inside its reference boundary rather than at one exact
+    # sample. This preserves the hardware-aligned data while avoiding a large
+    # amplitude error when a narrow pulse peak moves by a sample inside the
+    # same detected event window.
+    per_peak = np.empty((centered.shape[0], peaks.size), dtype=np.float64)
+    for index, (start, end, polarity) in enumerate(zip(starts, ends, signs)):
+        window = centered[:, int(start):int(end) + 1]
+        if int(polarity) < 0:
+            per_peak[:, index] = np.min(window, axis=1)
+        else:
+            per_peak[:, index] = np.max(window, axis=1)
     per_rep = per_peak.mean(axis=1)
     signed = float(np.mean(per_rep))
     widths = ends - starts + 1

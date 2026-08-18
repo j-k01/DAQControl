@@ -92,6 +92,35 @@ class OpticalExperimentTests(unittest.TestCase):
                 self.assertTrue(
                     (point / "independently_detected_spikes.csv").exists())
 
+    def test_constant_voltage_run_is_reported_as_repeatability_control(self):
+        with tempfile.TemporaryDirectory() as directory:
+            control_metadata = metadata()
+            control_metadata["heater_sweep"]["planned_voltages_v"] = [0.0] * 4
+            experiment = create_experiment(
+                Path(directory), "zero volt control", control_metadata)
+            for index, amplitude in enumerate((2000, 2200, 1800, 2100)):
+                stacks = {
+                    channel: np.zeros((16, 2048), dtype=np.int16)
+                    for channel in range(4)
+                }
+                for peak in (500, 900, 1400):
+                    stacks[0][:, peak - 1:peak + 2] = [
+                        amplitude // 2, amplitude, amplitude // 2]
+                save_heater_capture(
+                    experiment, index=index, voltage_v=0.0, direction=0,
+                    stacks=stacks)
+            update_manifest(experiment, capture_status="complete")
+
+            result = process_experiment(experiment)
+
+            self.assertTrue(result["constant_voltage_control"])
+            self.assertTrue(np.all(np.isnan(result["normalized"])))
+            self.assertEqual(len(result["measurements"]), 4)
+            self.assertGreater(result["repeatability_peak_to_peak_v"], 0.0)
+            analysis = load_manifest(experiment)["analysis"]
+            self.assertTrue(analysis["constant_voltage_control"])
+            self.assertFalse(analysis["normalization_is_transfer_curve"])
+
 
 if __name__ == "__main__":
     unittest.main()
