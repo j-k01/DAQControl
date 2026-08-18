@@ -152,10 +152,10 @@ class PicoLoaderTests(unittest.TestCase):
         self.assertEqual(port, "COM9")
         self.assertTrue(reply.startswith("OK BCAP"))
 
-    def test_adc_no_data_timeout_reinitializes_receivers_and_retries(self):
+    def test_adc_timeout_retries_without_resetting_ready_receivers(self):
         class FakeSerial:
             commands = []
-            ready = False
+            ready = True
             captures = 0
 
             def __init__(self, *_args, **_kwargs):
@@ -212,7 +212,7 @@ class PicoLoaderTests(unittest.TestCase):
         self.assertEqual(port, "COM9")
         self.assertTrue(reply.startswith("OK BCAP"))
         self.assertEqual(FakeSerial.captures, 2)
-        self.assertEqual(FakeSerial.commands.count("TXRS"), 2)
+        self.assertEqual(FakeSerial.commands.count("TXRS"), 0)
 
 
 if __name__ == "__main__":

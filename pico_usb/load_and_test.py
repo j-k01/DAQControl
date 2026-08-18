@@ -427,14 +427,23 @@ def verify_daq_runtime(requested_port: str, ps_port: str) -> tuple[str, str]:
             port, "BCAP 64k", ("OK BCAP", "ERR BCAP"), timeout=180.0
         )
         if burst.startswith("ERR BCAP timeout (engine)"):
-            print(
-                "ADC capture engine received no data; reinitializing the ADC "
-                "receivers and retrying once..."
-            )
-            # A running engine with its entire beat count remaining means the
-            # DMA is accepting data but the ADC receivers supplied none. Reset
-            # the receiver path and retry this bounded acceptance capture once.
-            adc0_ready, adc1_ready, adc_status = recover_adc_receivers(port)
+            # The first capture after PS/PL initialization can be the one that
+            # releases stale DMA/FIFO state. Do not reset otherwise healthy
+            # converters here: that merely turns the retry into another first
+            # capture. Receiver recovery is justified only by the real RO4
+            # ready bits dropping.
+            adc0_ready, adc1_ready, adc_status = read_adc_frontend_ready(port)
+            if adc0_ready and adc1_ready:
+                print(
+                    "Initial ADC capture did not complete while both receivers "
+                    "remained ready; retrying once without resetting them..."
+                )
+            else:
+                print(
+                    "ADC capture timed out and a receiver is not ready "
+                    f"(RO4=0x{adc_status:08X}); reinitializing the ADC path..."
+                )
+                adc0_ready, adc1_ready, adc_status = recover_adc_receivers(port)
             if adc0_ready and adc1_ready:
                 burst = daq_command(
                     port, "BCAP 64k", ("OK BCAP", "ERR BCAP"), timeout=180.0
