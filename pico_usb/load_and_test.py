@@ -342,6 +342,49 @@ def read_gth_gate(port: object) -> set[str]:
     return set(line.split()[1:])
 
 
+def read_adc_frontend_ready(port: object) -> tuple[bool, bool, int]:
+    """Return the two ADC receiver-ready bits from the RO4 frontend summary."""
+    reply = daq_command(port, "ADCS", ("ADC frontend", "ERR"), 3.0)
+    match = re.search(r"\bRO4=(0x[0-9A-Fa-f]+|\d+)", reply)
+    if not match:
+        raise RuntimeError(
+            f"ADC frontend status was not readable: {reply or 'no reply'}"
+        )
+    value = int(match.group(1), 0)
+    return bool(value & (1 << 13)), bool(value & (1 << 14)), value
+
+
+def recover_adc_receivers(port: object) -> tuple[bool, bool, int]:
+    """Reinitialize both ADS54J60s and the shared GTH/LiteJESD path."""
+    rw3_reply = daq_command(port, "RDRW 3", ("REG3", "ERR"), 3.0)
+    if not rw3_reply.startswith("REG3"):
+        raise RuntimeError(
+            f"cannot preserve RW3 for ADC restart: {rw3_reply or 'no reply'}"
+        )
+    rw3 = int(rw3_reply.split("=", 1)[1].strip(), 0)
+    for value in (rw3 | 0x4, rw3 & ~0x4):
+        reply = daq_command(
+            port, f"WRTE 3 0x{value:08X}", ("OK", "ERR"), 3.0
+        )
+        if not reply.startswith("OK"):
+            raise RuntimeError(
+                f"ADS54J60 restart write failed: {reply or 'no reply'}"
+            )
+    time.sleep(1.0)
+    reply = daq_command(port, "TXRS", ("OK", "ERR"), 8.0)
+    if not reply.startswith("OK"):
+        raise RuntimeError(f"JESD TXRS recovery failed: {reply or 'no reply'}")
+
+    deadline = time.monotonic() + 10.0
+    ready = (False, False, 0)
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        ready = read_adc_frontend_ready(port)
+        if ready[0] and ready[1]:
+            return ready
+    return ready
+
+
 def verify_daq_runtime(requested_port: str, ps_port: str) -> tuple[str, str]:
     """Require a live MB, healthy JESD links, and a completed burst engine."""
     daq_port = resolve_daq_port(requested_port, ps_port)
@@ -358,21 +401,7 @@ def verify_daq_runtime(requested_port: str, ps_port: str) -> tuple[str, str]:
             tokens = read_gth_gate(port)
             missing = GTH_REQUIRED - tokens
         if missing:
-            rw3_reply = daq_command(port, "RDRW 3", ("REG3", "ERR"), 3.0)
-            if not rw3_reply.startswith("REG3"):
-                raise RuntimeError(
-                    f"cannot preserve RW3 for ADC restart: {rw3_reply or 'no reply'}"
-                )
-            rw3 = int(rw3_reply.split("=", 1)[1].strip(), 0)
-            for value in (rw3 | 0x4, rw3 & ~0x4):
-                reply = daq_command(
-                    port, f"WRTE 3 0x{value:08X}", ("OK", "ERR"), 3.0
-                )
-                if not reply.startswith("OK"):
-                    raise RuntimeError(
-                        f"ADS54J60 restart write failed: {reply or 'no reply'}"
-                    )
-            time.sleep(1.5)
+            recover_adc_receivers(port)
             tokens = read_gth_gate(port)
             missing = GTH_REQUIRED - tokens
         if missing:
@@ -380,9 +409,36 @@ def verify_daq_runtime(requested_port: str, ps_port: str) -> tuple[str, str]:
                 "DAQ JESD links are not ready after recovery; missing "
                 + ", ".join(sorted(missing))
             )
+        adc0_ready, adc1_ready, adc_status = read_adc_frontend_ready(port)
+        if not (adc0_ready and adc1_ready):
+            print(
+                "ADC receiver preflight is not ready "
+                f"(RO4=0x{adc_status:08X}); reinitializing both ADCs..."
+            )
+            adc0_ready, adc1_ready, adc_status = recover_adc_receivers(port)
+        if not (adc0_ready and adc1_ready):
+            raise RuntimeError(
+                "ADC receivers are not ready after reinitialization: "
+                f"RO4=0x{adc_status:08X} adc0={int(adc0_ready)} "
+                f"adc1={int(adc1_ready)}"
+            )
+
         burst = daq_command(
             port, "BCAP 64k", ("OK BCAP", "ERR BCAP"), timeout=180.0
         )
+        if burst.startswith("ERR BCAP timeout (engine)"):
+            print(
+                "ADC capture engine received no data; reinitializing the ADC "
+                "receivers and retrying once..."
+            )
+            # A running engine with its entire beat count remaining means the
+            # DMA is accepting data but the ADC receivers supplied none. Reset
+            # the receiver path and retry this bounded acceptance capture once.
+            adc0_ready, adc1_ready, adc_status = recover_adc_receivers(port)
+            if adc0_ready and adc1_ready:
+                burst = daq_command(
+                    port, "BCAP 64k", ("OK BCAP", "ERR BCAP"), timeout=180.0
+                )
         if not burst.startswith("OK BCAP"):
             raise RuntimeError(
                 f"DAQ burst-engine self-test failed: {burst or 'no UART reply'}"

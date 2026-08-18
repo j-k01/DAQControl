@@ -134,6 +134,8 @@ class PicoLoaderTests(unittest.TestCase):
                 elif command == "STAT":
                     flags = " ".join(sorted(loader.GTH_REQUIRED))
                     self.lines.append(f"gth_gate: {flags}\r\n".encode("ascii"))
+                elif command == "ADCS":
+                    self.lines.append(b"ADC frontend RO4=0xAD006000\r\n")
                 elif command == "BCAP 64k":
                     self.lines.append(
                         b"OK BCAP bytes_per_chip=65536 beats=4096\r\n")
@@ -149,6 +151,68 @@ class PicoLoaderTests(unittest.TestCase):
 
         self.assertEqual(port, "COM9")
         self.assertTrue(reply.startswith("OK BCAP"))
+
+    def test_adc_no_data_timeout_reinitializes_receivers_and_retries(self):
+        class FakeSerial:
+            commands = []
+            ready = False
+            captures = 0
+
+            def __init__(self, *_args, **_kwargs):
+                self.lines = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def reset_input_buffer(self):
+                self.lines.clear()
+
+            def write(self, data):
+                command = data.decode("ascii").strip()
+                type(self).commands.append(command)
+                if command == "RDRW 17":
+                    self.lines.append(b"REG17=0x1111\r\n")
+                elif command == "RDRW 3":
+                    self.lines.append(b"REG3=0x00000000\r\n")
+                elif command.startswith("WRTE 3"):
+                    self.lines.append(b"OK\r\n")
+                elif command == "TXRS":
+                    type(self).ready = True
+                    self.lines.append(b"OK\r\n")
+                elif command == "STAT":
+                    flags = " ".join(sorted(loader.GTH_REQUIRED))
+                    self.lines.append(f"gth_gate: {flags}\r\n".encode("ascii"))
+                elif command == "ADCS":
+                    value = 0xAD006000 if type(self).ready else 0xAD000000
+                    self.lines.append(
+                        f"ADC frontend RO4=0x{value:08X}\r\n".encode("ascii"))
+                elif command == "BCAP 64k":
+                    type(self).captures += 1
+                    if type(self).captures == 1:
+                        self.lines.append(
+                            b"ERR BCAP timeout (engine) "
+                            b"st0=0xBC542000 st1=0xBC542000\r\n")
+                    else:
+                        self.lines.append(
+                            b"OK BCAP bytes_per_chip=65536 beats=4096\r\n")
+
+            def flush(self):
+                pass
+
+            def readline(self):
+                return self.lines.pop(0) if self.lines else b""
+
+        with (patch.object(loader.serial, "Serial", FakeSerial),
+              patch.object(loader.time, "sleep", return_value=None)):
+            port, reply = loader.verify_daq_runtime("COM9", "COM11")
+
+        self.assertEqual(port, "COM9")
+        self.assertTrue(reply.startswith("OK BCAP"))
+        self.assertEqual(FakeSerial.captures, 2)
+        self.assertEqual(FakeSerial.commands.count("TXRS"), 2)
 
 
 if __name__ == "__main__":
