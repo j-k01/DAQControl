@@ -148,8 +148,10 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertEqual(self.window.mzi_peak_polarity.currentData(), "auto")
         self.assertTrue(self.window.mzi_outlier_filter.isChecked())
         self.assertEqual(self.window.mzi_outlier_sigma.value(), 2.5)
-        self.assertEqual(self.window.mzi_trace_y_min.value(), -30.0)
-        self.assertEqual(self.window.mzi_trace_y_max.value(), 30.0)
+        self.assertEqual(self.window.mzi_trace_y_min.value(), -25.0)
+        self.assertEqual(self.window.mzi_trace_y_max.value(), 25.0)
+        self.assertEqual(self.window.mzi_channel_tabs.count(), 4)
+        self.assertEqual(self.window.mzi_channel_tabs.currentIndex(), 0)
         self.assertEqual(
             [profile.currentText() for profile in self.window.mzi_profiles],
             ["regular"] * 4)
@@ -177,6 +179,38 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertEqual(spec["loopback_window_padding"], 8)
         self.assertEqual(spec["nets"], ("h_1_1",))
         self.assertEqual(spec["sweep_label"], "h_1_1")
+
+    def test_optical_tabs_share_measurement_scale_but_not_reference_scale(self):
+        self.window.mzi_trace_y_min.setValue(-12.5)
+        self.window.mzi_trace_y_max.setValue(17.5)
+        self.window._apply_mzi_trace_scale()
+
+        self.window.mzi_channel_tabs.setCurrentIndex(1)
+        self.assertEqual(self.window.mzi_trace_y_min.value(), -12.5)
+        self.assertEqual(self.window.mzi_trace_y_max.value(), 17.5)
+        self.window.mzi_channel_tabs.setCurrentIndex(3)
+        self.assertEqual(self.window.mzi_trace_y_min.value(), -1000.0)
+        self.assertEqual(self.window.mzi_trace_y_max.value(), 1000.0)
+
+        self.window.mzi_trace_y_min.setValue(-500.0)
+        self.window.mzi_trace_y_max.setValue(500.0)
+        self.window._apply_mzi_trace_scale()
+        self.window.mzi_channel_tabs.setCurrentIndex(2)
+        self.assertEqual(self.window.mzi_trace_y_min.value(), -12.5)
+        self.assertEqual(self.window.mzi_trace_y_max.value(), 17.5)
+
+    def test_offline_trace_downsampling_has_unique_x_and_keeps_events(self):
+        values = np.zeros(20000, dtype=np.float64)
+        events = np.asarray([1000, 10000, 19000], dtype=np.int32)
+        values[events] = [1.0, 2.0, 3.0]
+
+        x, y = dac_scope_qt.event_preserving_trace(
+            values, events, max_points=1000, event_radius=4)
+
+        self.assertEqual(np.unique(x).size, x.size)
+        for event, amplitude in zip(events, (1.0, 2.0, 3.0)):
+            location = int(np.flatnonzero(x == event)[0])
+            self.assertEqual(y[location], amplitude)
 
     def test_pico_and_heater_controls_do_not_require_uart(self):
         self.window._set_controls_enabled(False)
@@ -527,19 +561,25 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.window._mzi_resume_tap = False
         self.window._on_mzi_cal_result(result)
         self.assertEqual(len(self.window.mzi_sweep_trace_plots), 3)
-        self.assertEqual(self.window.mzi_result_channel.currentData(), -1)
+        self.assertEqual(self.window.mzi_channel_tabs.currentIndex(), 0)
         self.assertGreaterEqual(
-            len(self.window.mzi_sweep_trace_plots[0].listDataItems()), 4)
+            len(self.window.mzi_sweep_trace_plots[0].listDataItems()), 2)
         summary_text = self.window.mzi_results_summary.text()
         status_text = self.window.mzi_status.text()
+        self.assertIn("ADC0", summary_text)
         for channel in range(3):
-            self.assertIn(f"ADC{channel}", summary_text)
             self.assertIn(f"ADC{channel}", status_text)
         self.assertIn("latency", summary_text)
         self.assertIn("samples", summary_text)
-        self.window.mzi_result_channel.setCurrentIndex(2)
+        self.window.mzi_channel_tabs.setCurrentIndex(1)
         self.assertIn("ADC1", self.window.mzi_results_summary.text())
         self.assertIn("latency", self.window.mzi_results_summary.text())
+        self.assertEqual(self.window.mzi_trace_y_min.value(), -25.0)
+        self.assertEqual(self.window.mzi_trace_y_max.value(), 25.0)
+        self.window.mzi_channel_tabs.setCurrentIndex(3)
+        self.assertIn("ADC3", self.window.mzi_results_summary.text())
+        self.assertEqual(self.window.mzi_trace_y_min.value(), -1000.0)
+        self.assertEqual(self.window.mzi_trace_y_max.value(), 1000.0)
         self.assertEqual(self.window.workspace_tabs.currentIndex(), 2)
 
     def test_saved_experiment_imports_without_board_connection(self):

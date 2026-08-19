@@ -671,6 +671,35 @@ def peak_envelope(values, max_points=LIVEAVG_DISPLAY_MAX_POINTS):
     return x, envelope
 
 
+def event_preserving_trace(values, event_indices=(), max_points=4000,
+                           event_radius=32):
+    """Downsample an offline trace without drawing min/max vertical combs.
+
+    A uniform background sample is augmented with the full neighborhood of
+    every known event. Unlike peak_envelope, every returned X coordinate is
+    unique, so a narrow pulse remains recognizable in a small sweep plot.
+    """
+    y = np.asarray(values)
+    n = y.size
+    if n <= max(2, int(max_points)):
+        return np.arange(n), y
+
+    events = np.asarray(event_indices, dtype=np.int64).reshape(-1)
+    radius = max(0, int(event_radius))
+    important = []
+    for event in events:
+        if 0 <= event < n:
+            important.append(np.arange(
+                max(0, event - radius), min(n, event + radius + 1),
+                dtype=np.int64))
+    important = (np.unique(np.concatenate(important))
+                 if important else np.empty(0, dtype=np.int64))
+    remaining = max(2, int(max_points) - important.size)
+    background = np.linspace(0, n - 1, remaining, dtype=np.int64)
+    indices = np.unique(np.concatenate((background, important)))
+    return indices, y[indices]
+
+
 
 # --------------------------------------------------------------- DAC content
 def clamp_s16(v):
@@ -3882,6 +3911,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     def _build_mzi_results_panel(self, layout):
         layout.setContentsMargins(8, 8, 8, 8)
+        self._mzi_optical_trace_range = (-25.0, 25.0)
+        self._mzi_reference_trace_range = (-1000.0, 1000.0)
         dataset_row = QtWidgets.QHBoxLayout()
         self.mzi_import_btn = QtWidgets.QPushButton("Import experiment")
         self.mzi_import_btn.setIcon(
@@ -3907,19 +3938,19 @@ class ScopeWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.mzi_dataset_status)
 
         analysis_row = QtWidgets.QHBoxLayout()
-        analysis_row.addWidget(QtWidgets.QLabel("View"))
-        self.mzi_result_channel = QtWidgets.QComboBox()
-        self.mzi_result_channel.addItem("All ADC channels", -1)
+        analysis_row.addWidget(QtWidgets.QLabel("ADC lane"))
+        self.mzi_channel_tabs = QtWidgets.QTabBar()
         for channel in range(3):
-            self.mzi_result_channel.addItem(f"ADC{channel} optical", channel)
-        self.mzi_result_channel.addItem("ADC3 timing reference", 3)
-        self.mzi_result_channel.setToolTip(
-            "All overlays separately averaged ADC0-ADC2 optical traces and "
-            "the ADC3 electrical reference. Select one channel for detailed "
-            "peak markers and its individual transfer curve.")
-        self.mzi_result_channel.currentIndexChanged.connect(
-            self._apply_mzi_peak_analysis)
-        analysis_row.addWidget(self.mzi_result_channel)
+            self.mzi_channel_tabs.addTab(f"ADC{channel}")
+        self.mzi_channel_tabs.addTab("ADC3 Reference")
+        self.mzi_channel_tabs.setExpanding(False)
+        self.mzi_channel_tabs.setToolTip(
+            "ADC0-ADC2 are independent optical measurements with one shared "
+            "Y scale. ADC3 is the separate DAC3 electrical loopback used as "
+            "the cross-correlation reference.")
+        self.mzi_channel_tabs.currentChanged.connect(
+            self._on_mzi_channel_tab_changed)
+        analysis_row.addWidget(self.mzi_channel_tabs)
         analysis_row.addWidget(QtWidgets.QLabel("Peak polarity"))
         self.mzi_peak_polarity = QtWidgets.QComboBox()
         self.mzi_peak_polarity.addItem("Auto dominant", "auto")
@@ -3959,21 +3990,23 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_results_summary.setWordWrap(True)
         traces_layout.addWidget(self.mzi_results_summary)
         trace_scale_row = QtWidgets.QHBoxLayout()
-        trace_scale_row.addWidget(QtWidgets.QLabel("Trace Y range (mV)"))
+        self.mzi_trace_scale_label = QtWidgets.QLabel(
+            "Optical Y range shared by ADC0-ADC2")
+        trace_scale_row.addWidget(self.mzi_trace_scale_label)
         self.mzi_trace_y_min = QtWidgets.QDoubleSpinBox()
         self.mzi_trace_y_min.setRange(-10000.0, 9999.0)
         self.mzi_trace_y_min.setDecimals(3)
-        self.mzi_trace_y_min.setValue(-30.0)
+        self.mzi_trace_y_min.setValue(-25.0)
         self.mzi_trace_y_min.setSuffix(" mV")
         self.mzi_trace_y_min.setToolTip(
-            "Lower Y-axis limit shared by every averaged sweep trace.")
+            "Lower Y-axis limit shared by ADC0, ADC1, and ADC2.")
         self.mzi_trace_y_max = QtWidgets.QDoubleSpinBox()
         self.mzi_trace_y_max.setRange(-9999.0, 10000.0)
         self.mzi_trace_y_max.setDecimals(3)
-        self.mzi_trace_y_max.setValue(30.0)
+        self.mzi_trace_y_max.setValue(25.0)
         self.mzi_trace_y_max.setSuffix(" mV")
         self.mzi_trace_y_max.setToolTip(
-            "Upper Y-axis limit shared by every averaged sweep trace.")
+            "Upper Y-axis limit shared by ADC0, ADC1, and ADC2.")
         self.mzi_trace_scale_apply = QtWidgets.QPushButton("Apply")
         self.mzi_trace_scale_apply.setToolTip(
             "Apply this fixed Y range to every averaged sweep trace.")
@@ -5006,6 +5039,24 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 widget.deleteLater()
         self.mzi_sweep_trace_plots = []
 
+    def _selected_mzi_result_channel(self):
+        return int(self.mzi_channel_tabs.currentIndex())
+
+    def _on_mzi_channel_tab_changed(self, _index):
+        channel = self._selected_mzi_result_channel()
+        lower, upper = (self._mzi_reference_trace_range if channel == 3
+                        else self._mzi_optical_trace_range)
+        self.mzi_trace_y_min.blockSignals(True)
+        self.mzi_trace_y_max.blockSignals(True)
+        self.mzi_trace_y_min.setValue(lower)
+        self.mzi_trace_y_max.setValue(upper)
+        self.mzi_trace_y_min.blockSignals(False)
+        self.mzi_trace_y_max.blockSignals(False)
+        self.mzi_trace_scale_label.setText(
+            "ADC3 reference Y range" if channel == 3 else
+            "Optical Y range shared by ADC0-ADC2")
+        self._apply_mzi_peak_analysis()
+
     def _apply_mzi_trace_scale(self):
         lower = float(self.mzi_trace_y_min.value())
         upper = float(self.mzi_trace_y_max.value())
@@ -5013,6 +5064,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.mzi_results_summary.setText(
                 "Trace Y minimum must be lower than the maximum.")
             return
+        if self._selected_mzi_result_channel() == 3:
+            self._mzi_reference_trace_range = (lower, upper)
+        else:
+            self._mzi_optical_trace_range = (lower, upper)
         for plot in self.mzi_sweep_trace_plots:
             plot.setYRange(lower, upper, padding=0.0)
 
@@ -5075,7 +5130,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             f"|corr|={score_text}")
     def _mzi_peak_analyses(self, result, channel=None):
         if channel is None:
-            channel = int(self.mzi_result_channel.currentData())
+            channel = self._selected_mzi_result_channel()
         channel_result = self._mzi_channel_result(result, channel)
         if channel_result is None:
             channel_result = result
@@ -5106,7 +5161,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     def _show_mzi_sweep_measurements(self, result):
         self._clear_mzi_trace_grid()
-        selected_channel = int(self.mzi_result_channel.currentData())
+        selected_channel = self._selected_mzi_result_channel()
         channel_results = {
             channel: self._mzi_channel_result(result, channel)
             for channel in range(3)
@@ -5146,55 +5201,21 @@ class ScopeWindow(QtWidgets.QMainWindow):
             if index // columns == rows - 1:
                 plot.setLabel("bottom", "ADC sample", units="ns")
 
-            if selected_channel == -1:
-                details = []
-                for channel, channel_result in channel_results.items():
-                    measurement = channel_result["measurements"][index]
-                    average_mv = np.asarray(
-                        measurement.averaged_waveform, dtype=np.float64) * 1e3
-                    display_x, display_y = peak_envelope(
-                        average_mv, max_points=500)
-                    color = CH_COLORS[channel]
-                    plot.plot(
-                        display_x, display_y,
-                        pen=pg.mkPen(color, width=1.0))
-                    analysis = analyses_by_channel[channel][index]
-                    accepted = analysis.accepted
-                    if np.any(accepted):
-                        plot.plot(
-                            analysis.peak_indices[accepted],
-                            analysis.waveform_values_v[accepted] * 1e3,
-                            pen=None, symbol="x", symbolSize=5,
-                            symbolPen=pg.mkPen(color, width=1.2),
-                            symbolBrush=None)
-                    source = channel_result.get("source", "Spike 0")
-                    details.append(
-                        f"ADC{channel} {source}: "
-                        f"{analysis.filtered_mean_v * 1e3:.3f} mV; "
-                        f"{self._mzi_lane_timing_text(channel_result)}")
+            if selected_channel == 3:
                 if index < len(reference_averages):
                     reference_mv = np.asarray(
                         reference_averages[index], dtype=np.float64) * 1e3
-                    display_x, display_y = peak_envelope(
-                        reference_mv, max_points=500)
-                    plot.plot(
-                        display_x, display_y,
-                        pen=pg.mkPen("#E8EDF2", width=1.0,
-                                     style=QtCore.Qt.DashLine))
-                    details.append("ADC3: electrical timing reference")
-                plot.setToolTip("\n".join(details))
-            elif selected_channel == 3:
-                if index < len(reference_averages):
-                    reference_mv = np.asarray(
-                        reference_averages[index], dtype=np.float64) * 1e3
-                    display_x, display_y = peak_envelope(
-                        reference_mv, max_points=900)
+                    reference = result.get("reference_measurement")
+                    reference_peaks = (
+                        np.empty(0, dtype=np.int32) if reference is None else
+                        np.asarray(reference.peak_indices, dtype=np.int32))
+                    display_x, display_y = event_preserving_trace(
+                        reference_mv, reference_peaks)
                     plot.plot(
                         display_x, display_y,
                         pen=pg.mkPen("#E8EDF2", width=1.1))
-                    reference = result.get("reference_measurement")
                     if reference is not None:
-                        peaks = np.asarray(reference.peak_indices, dtype=np.int32)
+                        peaks = reference_peaks
                         valid = (peaks >= 0) & (peaks < reference_mv.size)
                         plot.plot(
                             peaks[valid], reference_mv[peaks[valid]],
@@ -5212,8 +5233,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     analysis = analyses_by_channel[selected_channel][index]
                     average_mv = np.asarray(
                         measurement.averaged_waveform, dtype=np.float64) * 1e3
-                    display_x, display_y = peak_envelope(
-                        average_mv, max_points=1000)
+                    display_x, display_y = event_preserving_trace(
+                        average_mv, analysis.peak_indices)
                     plot.plot(
                         display_x, display_y,
                         pen=pg.mkPen(CH_COLORS[selected_channel], width=1.1))
@@ -5250,7 +5271,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
             direction = (
                 "R" if index < directions.size and directions[index] else "F")
             view_label = (
-                "all ADCs" if selected_channel == -1 else
                 "ADC3 ref" if selected_channel == 3 else
                 f"ADC{selected_channel}")
             plot.setTitle(
@@ -5263,21 +5283,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 plot, index // columns, index % columns)
             self.mzi_sweep_trace_plots.append(plot)
 
-        if selected_channel == -1:
-            descriptions = []
-            for channel, channel_result in channel_results.items():
-                analyses = analyses_by_channel[channel]
-                values = np.asarray([
-                    analysis.filtered_mean_v for analysis in analyses])
-                descriptions.append(
-                    f"ADC{channel} {channel_result.get('source', 'unknown')}: "
-                    f"{self._mzi_lane_timing_text(channel_result)}, "
-                    f"span {float(np.ptp(values)) * 1e3:.3f} mV")
-            self.mzi_results_summary.setText(
-                "Channels are averaged independently without shifting; ADC3 "
-                "supplies the event schedule and measured optical latency. " +
-                "; ".join(descriptions) + ".")
-        elif selected_channel == 3:
+        if selected_channel == 3:
             self.mzi_results_summary.setText(
                 "ADC3 is the DAC3 loopback timing reference. It is not an "
                 "optical response and is never averaged with ADC0-ADC2.")
@@ -5302,7 +5308,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             legend.clear()
         voltage = np.asarray(result.get("voltages", []), dtype=np.float64)
         direction = np.asarray(result.get("directions", []), dtype=np.int8)
-        selected_channel = int(self.mzi_result_channel.currentData())
+        selected_channel = self._selected_mzi_result_channel()
         constant = bool(result.get("constant_voltage_control"))
         use_filter = bool(self.mzi_outlier_filter.isChecked())
         if selected_channel == 3:
@@ -5311,8 +5317,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             plot.setYRange(-0.05, 1.05, padding=0.0)
             return
 
-        channels = (range(3) if selected_channel == -1
-                    else (selected_channel,))
+        channels = (selected_channel,)
         visible_values = []
         for channel in channels:
             channel_result = self._mzi_channel_result(result, channel)
@@ -5335,7 +5340,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     x, values, pen=pg.mkPen(color, width=1.6),
                     symbol="o", symbolSize=4, symbolBrush=color,
                     name=f"ADC{channel} {source}")
-                if use_filter and selected_channel != -1:
+                if use_filter:
                     plot.plot(
                         x, raw * 1e3,
                         pen=pg.mkPen("#90A4AE", width=1.0,
@@ -5357,7 +5362,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                         pen=pg.mkPen(color, width=1.7, style=style),
                         symbol="o", symbolSize=4, symbolBrush=color,
                         name=f"ADC{channel} {source} {suffix}")
-                if use_filter and selected_channel != -1:
+                if use_filter:
                     plot.plot(
                         voltage[forward], raw_weight[forward],
                         pen=pg.mkPen("#90A4AE", width=1.0,
