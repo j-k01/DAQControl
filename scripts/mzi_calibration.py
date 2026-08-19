@@ -342,6 +342,73 @@ def estimate_correlation_lag(
         lag_samples=int(lags[selected]), score=float(scores[selected]))
 
 
+def dominant_spike_polarity(
+    measurement: TriggeredSpikeMeasurement,
+) -> int:
+    """Return the polarity carrying the most detected event energy."""
+
+    polarities = np.asarray(measurement.polarities, dtype=np.int8)
+    if polarities.size == 0:
+        raise ValueError("reference contains no detected spikes")
+    amplitudes = np.asarray(
+        measurement.per_peak_height, dtype=np.float64).mean(axis=0)
+    if amplitudes.size != polarities.size:
+        amplitudes = np.asarray(
+            measurement.averaged_waveform[measurement.peak_indices],
+            dtype=np.float64)
+    positive = float(np.sum(np.abs(amplitudes[polarities > 0])))
+    negative = float(np.sum(np.abs(amplitudes[polarities < 0])))
+    return -1 if negative > positive else 1
+
+
+def polarity_aware_lag_limit(
+    max_lag: int,
+    peak_indices: np.ndarray,
+) -> int:
+    """Avoid ambiguous matches to the neighboring event in a pulse train."""
+
+    limit = max(0, int(max_lag))
+    peaks = np.asarray(peak_indices, dtype=np.int64)
+    if peaks.size > 1:
+        spacing = np.diff(np.sort(peaks))
+        spacing = spacing[spacing > 0]
+        if spacing.size:
+            limit = min(limit, max(1, (int(np.min(spacing)) - 1) // 2))
+    return limit
+
+
+def estimate_main_lobe_lag(
+    observed: np.ndarray,
+    template: np.ndarray,
+    max_lag: int,
+    *,
+    observed_polarity: int,
+    template_polarity: int,
+    template_peak_indices: np.ndarray | None = None,
+) -> CorrelationLag:
+    """Correlate only the expected spike lobe, excluding AC recovery lobes.
+
+    Each channel is normalized inside estimate_correlation_lag, so a 500 mV
+    electrical loopback can be compared directly with a 10 mV optical
+    response. The half-wave features prevent a larger opposite-polarity
+    AC-coupling recovery transient from becoming the selected match.
+    """
+
+    signal = np.asarray(observed, dtype=np.float64)
+    reference = np.asarray(template, dtype=np.float64)
+    signal = signal - np.median(signal)
+    reference = reference - np.median(reference)
+    signal_feature = np.maximum(
+        signal * (-1 if int(observed_polarity) < 0 else 1), 0.0)
+    reference_feature = np.maximum(
+        reference * (-1 if int(template_polarity) < 0 else 1), 0.0)
+    limit = int(max_lag)
+    if template_peak_indices is not None:
+        limit = polarity_aware_lag_limit(limit, template_peak_indices)
+    return estimate_correlation_lag(
+        signal_feature, reference_feature, limit, allow_inversion=False)
+
+
 def _shift_without_wrap(trace: np.ndarray, lag_samples: int) -> np.ndarray:
     """Remove a measured delay without wrapping capture-edge samples."""
 
@@ -458,16 +525,18 @@ def optical_schedule_from_loopback(
     waveform = np.asarray(optical_average, dtype=np.float64)
     lag = int(optical_latency_samples)
     padding = max(0, int(padding_samples))
-    starts = reference.start_indices.astype(np.int64) + lag - padding
-    ends = reference.end_indices.astype(np.int64) + lag + padding
-    nominal_peaks = reference.peak_indices.astype(np.int64) + lag
+    reference_polarity = dominant_spike_polarity(reference)
+    selected = reference.polarities == reference_polarity
+    starts = reference.start_indices[selected].astype(np.int64) + lag - padding
+    ends = reference.end_indices[selected].astype(np.int64) + lag + padding
+    nominal_peaks = reference.peak_indices[selected].astype(np.int64) + lag
     valid = ((ends >= 0) & (starts < waveform.size) &
              (nominal_peaks >= 0) & (nominal_peaks < waveform.size))
     starts = np.clip(starts[valid], 0, waveform.size - 1).astype(np.int32)
     ends = np.clip(ends[valid], 0, waveform.size - 1).astype(np.int32)
     peaks = nominal_peaks[valid].astype(np.int32)
     direction = -1 if int(response_polarity) < 0 else 1
-    signs = reference.polarities[valid].astype(np.int8) * direction
+    signs = reference.polarities[selected][valid].astype(np.int8) * direction
     return peaks, starts, ends, signs
 
 
@@ -484,6 +553,7 @@ def measure_spikes_with_loopback(
     threshold_sigma: float = 5.0,
     boundary_sigma: float = 2.0,
     minimum_seed_samples: int = 2,
+    response_polarity: int = 1,
 ) -> LoopbackReferencedMeasurement:
     """Measure one channel from trigger-aligned optical and ADC3 captures.
 
@@ -505,13 +575,19 @@ def measure_spikes_with_loopback(
     optical_baselines = np.median(optical_reps[:, :baseline_end], axis=1)
     optical_average = (
         optical_reps - optical_baselines[:, None]).mean(axis=0)
-    latency = estimate_correlation_lag(
+    reference_polarity = dominant_spike_polarity(reference)
+    selected_reference_peaks = reference.peak_indices[
+        reference.polarities == reference_polarity]
+    relative_polarity = -1 if int(response_polarity) < 0 else 1
+    latency = estimate_main_lobe_lag(
         optical_average, reference.averaged_waveform, max_optical_lag,
-        allow_inversion=True)
+        observed_polarity=reference_polarity * relative_polarity,
+        template_polarity=reference_polarity,
+        template_peak_indices=selected_reference_peaks)
     peaks, starts, ends, signs = optical_schedule_from_loopback(
         reference, optical_average, latency.lag_samples,
         padding_samples=window_padding_samples,
-        response_polarity=(-1 if latency.score < 0 else 1))
+        response_polarity=relative_polarity)
     if peaks.size == 0:
         raise ValueError("loopback spike schedule does not overlap optical capture")
     optical = measure_spikes_in_windows(

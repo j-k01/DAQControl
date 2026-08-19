@@ -12,7 +12,8 @@ import numpy as np
 
 from mzi_calibration import (
     analyze_optical_peaks,
-    estimate_correlation_lag,
+    dominant_spike_polarity,
+    estimate_main_lobe_lag,
     measure_spikes_at_indices,
     measure_spikes_in_windows,
     measure_triggered_spikes,
@@ -410,13 +411,21 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
         reference_first_peak_latency_samples = int(
             reference.peak_indices[0] - step_sample)
 
-        xbar_sources = manifest.get("xbar", {}).get("sources_by_dac", {})
+        xbar = manifest.get("xbar", {})
+        xbar_sources = xbar.get("sources_by_dac", {})
+        invert_by_dac = xbar.get("invert_by_dac", {})
+        reference_polarity = dominant_spike_polarity(reference)
+        selected_reference_peaks = reference.peak_indices[
+            reference.polarities == reference_polarity]
         channel_work = {}
         all_valid_lags = []
         for channel in optical_adcs:
             averages = []
             candidates = []
             repetitions_by_point = stacks_by_adc[channel]
+            relative_polarity = (
+                -1 if bool(invert_by_dac.get(f"DAC{channel}", False)) !=
+                bool(invert_by_dac.get(f"DAC{reference_adc}", False)) else 1)
             for repetitions, reference_average in zip(
                     repetitions_by_point, reference_averages):
                 baseline = np.median(
@@ -424,9 +433,11 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
                 average = (repetitions - baseline[:, None]).mean(axis=0)
                 averages.append(average)
                 try:
-                    candidate = estimate_correlation_lag(
+                    candidate = estimate_main_lobe_lag(
                         average, reference_average, max_optical_lag,
-                        allow_inversion=True)
+                        observed_polarity=reference_polarity * relative_polarity,
+                        template_polarity=reference_polarity,
+                        template_peak_indices=selected_reference_peaks)
                 except ValueError:
                     candidate = None
                 candidates.append(candidate)
@@ -436,7 +447,7 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
             valid = [
                 candidate for candidate in candidates
                 if (stimulus_enabled and candidate is not None and
-                    abs(float(candidate.score)) >= 0.10)
+                    float(candidate.score) >= 0.10)
             ]
             valid_lags = [int(candidate.lag_samples) for candidate in valid]
             all_valid_lags.extend(valid_lags)
@@ -448,6 +459,7 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
                 "repetitions": repetitions_by_point,
                 "source": source,
                 "stimulus_enabled": stimulus_enabled,
+                "relative_polarity": relative_polarity,
             }
 
         fallback_lag = (
@@ -462,11 +474,10 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
             valid_scores = [float(candidate.score) for candidate in valid]
             correlation_score = (
                 float(np.median(valid_scores)) if valid_scores else 0.0)
-            response_polarity = -1 if correlation_score < 0 else 1
             nominal, starts, ends, signs = optical_schedule_from_loopback(
                 reference, work["averages"][0], latency,
                 padding_samples=window_padding,
-                response_polarity=response_polarity)
+                response_polarity=work["relative_polarity"])
             measurements = []
             independent = [None] * len(heater_captures)
             for point_index, (

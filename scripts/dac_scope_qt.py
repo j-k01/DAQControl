@@ -97,7 +97,8 @@ from mzi_calibration import (
     PydaqMziController,
     analyze_optical_peaks,
     calibration_voltage_sequence,
-    estimate_correlation_lag,
+    dominant_spike_polarity,
+    estimate_main_lobe_lag,
     measure_spikes_at_indices,
     measure_spikes_in_windows,
     measure_spikes_with_loopback,
@@ -897,6 +898,40 @@ class DacControl:
         except (IndexError, KeyError, ValueError) as exc:
             raise RuntimeError(f"malformed XBar readback: {reply}") from exc
         return labels, value & 0xFFFF
+
+    def set_dac_invert(self, ch, enabled):
+        """Set one destination polarity bit and verify live reg29 readback."""
+        channel = int(ch)
+        requested = bool(enabled)
+        reply = self.cmd(
+            f"DINV {channel} {1 if requested else 0}",
+            ok=("OK DINV", "ERR"))
+        if not reply or reply.startswith("ERR"):
+            return reply or "ERR no UART response to DINV"
+        rb = self.cmd("RDRW 29", ok=("REG29", "ERR"))
+        if not rb.startswith("REG29"):
+            return f"ERR DAC inversion readback failed ({rb or 'no UART response'})"
+        try:
+            value = int(rb.split("=", 1)[1].strip(), 0) & 0xF
+        except (IndexError, ValueError):
+            return f"ERR malformed DAC inversion readback ({rb})"
+        actual = bool((value >> channel) & 1)
+        if actual != requested:
+            return (f"ERR DAC{channel} inversion readback: requested "
+                    f"{int(requested)}, read {int(actual)} "
+                    f"(reg29=0x{value:X})")
+        return f"{reply}; reg29=0x{value:X}"
+
+    def get_dac_invert(self):
+        """Read the four live post-crossbar destination polarity bits."""
+        rb = self.cmd("RDRW 29", ok=("REG29", "ERR"))
+        if not rb.startswith("REG29"):
+            raise RuntimeError(rb or "no UART response to RDRW 29")
+        try:
+            value = int(rb.split("=", 1)[1].strip(), 0) & 0xF
+        except (IndexError, ValueError) as exc:
+            raise RuntimeError(f"malformed DAC inversion readback: {rb}") from exc
+        return [bool((value >> channel) & 1) for channel in range(4)], value
 
     def set_neuron(self, ch, profile):
         return self.cmd(f"NEUR {ch} {profile}", ok=("OK", "NEUR", "ERR"))
@@ -3693,6 +3728,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         sf.addRow("Reference path", route_summary)
         source_row = QtWidgets.QHBoxLayout()
         self.mzi_dac_sources = []
+        self.mzi_dac_invert = []
         for channel in range(3):
             source_row.addWidget(QtWidgets.QLabel(f"DAC{channel}"))
             source = QtWidgets.QComboBox()
@@ -3703,11 +3739,22 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 "is staged until Program setup is pressed.")
             self.mzi_dac_sources.append(source)
             source_row.addWidget(source)
+            invert = QtWidgets.QCheckBox("Invert")
+            invert.setToolTip(
+                f"Invert DAC{channel} after the crossbar. This remains "
+                "independent when another DAC uses the same source.")
+            self.mzi_dac_invert.append(invert)
+            source_row.addWidget(invert)
         reference_label = QtWidgets.QLabel("DAC3: Spike 0 reference")
         reference_label.setStyleSheet("color:#4FC3F7;")
         reference_label.setToolTip(
             "DAC3 is fixed to Spike 0 because ADC3 is the timing reference.")
         source_row.addWidget(reference_label)
+        reference_invert = QtWidgets.QCheckBox("Invert")
+        reference_invert.setToolTip(
+            "Invert the DAC3 electrical timing reference after the crossbar.")
+        self.mzi_dac_invert.append(reference_invert)
+        source_row.addWidget(reference_invert)
         source_row.addStretch(1)
         sf.addRow("DAC crossbar", source_row)
         self.mzi_program_btn = QtWidgets.QPushButton("Program setup")
@@ -4354,6 +4401,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 *(source.currentText() for source in self.mzi_dac_sources),
                 "Spike 0",
             ],
+            "dac_invert": [
+                invert.isChecked() for invert in self.mzi_dac_invert
+            ],
             "adc_channels": [0, 1, 2, 3],
             "optical_adc_channels": [0, 1, 2],
             "analysis_adc": 0,
@@ -4409,6 +4459,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     for channel, source in enumerate(spec["xbar_sources"])
                 },
                 "register17_readback": spec.get("xbar_register17"),
+                "invert_by_dac": {
+                    f"DAC{channel}": bool(inverted)
+                    for channel, inverted in enumerate(spec["dac_invert"])
+                },
+                "register29_readback": spec.get("dac_invert_register29"),
                 "optical_test_route": (
                     "DAC0..DAC2 use normal independent crossbar selections; DAC3 always "
                     "Spike 0 looped to ADC3; ADC0..ADC2 analyzed separately"),
@@ -4504,6 +4559,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             replies.append(self.dac.set_spike_cal(neuron, 0x4000, 0))
             replies.append(
                 self.dac.set_source(neuron, spec["xbar_sources"][neuron]))
+            replies.append(
+                self.dac.set_dac_invert(neuron, spec["dac_invert"][neuron]))
         self.mzi_setup_progress.emit(
             "DAC routes programmed; DAC3 is the fixed Spike 0 reference. "
             "Programming 15 mA, 5 kHz square...")
@@ -4622,6 +4679,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 reference_reps[:, :baseline_end], axis=1)
             reference_average = (
                 reference_reps - reference_baseline[:, None]).mean(axis=0)
+            reference_polarity = dominant_spike_polarity(reference)
+            selected_reference_peaks = reference.peak_indices[
+                reference.polarities == reference_polarity]
             channel_work = {}
             valid_lags = []
             for channel in spec["optical_adc_channels"]:
@@ -4631,10 +4691,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     repetitions[:, :baseline_end], axis=1)
                 channel_average = (
                     repetitions - baseline[:, None]).mean(axis=0)
+                relative_polarity = (
+                    -1 if bool(spec["dac_invert"][channel]) !=
+                    bool(spec["dac_invert"][spec["reference_adc"]]) else 1)
                 try:
-                    candidate = estimate_correlation_lag(
+                    candidate = estimate_main_lobe_lag(
                         channel_average, reference_average,
-                        spec["optical_max_lag"], allow_inversion=True)
+                        spec["optical_max_lag"],
+                        observed_polarity=reference_polarity * relative_polarity,
+                        template_polarity=reference_polarity,
+                        template_peak_indices=selected_reference_peaks)
                     candidate_lag = int(candidate.lag_samples)
                     candidate_score = float(candidate.score)
                 except ValueError:
@@ -4642,7 +4708,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     candidate_score = 0.0
                 stimulus_enabled = spec["xbar_sources"][channel] != "Off"
                 correlation_valid = (
-                    stimulus_enabled and abs(candidate_score) >= 0.10)
+                    stimulus_enabled and candidate_score >= 0.10)
                 if correlation_valid:
                     valid_lags.append(candidate_lag)
                 channel_work[channel] = {
@@ -4651,6 +4717,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     "candidate_lag": candidate_lag,
                     "candidate_score": candidate_score,
                     "stimulus_enabled": stimulus_enabled,
+                    "relative_polarity": relative_polarity,
                     "correlation_valid": correlation_valid,
                 }
             fallback_lag = (
@@ -4664,8 +4731,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     optical_schedule_from_loopback(
                         reference, work["average"], latency,
                         padding_samples=spec["loopback_window_padding"],
-                        response_polarity=(
-                            -1 if work["candidate_score"] < 0 else 1)))
+                        response_polarity=work["relative_polarity"]))
                 channel_measurement = measure_spikes_in_windows(
                     work["repetitions"], step_sample, nominal,
                     start_indices=channel_starts,
@@ -4817,6 +4883,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     live_sources, xbar_value = self.dac.get_sources()
                     spec["xbar_sources"] = list(live_sources)
                     spec["xbar_register17"] = f"0x{xbar_value:04X}"
+                except Exception:
+                    pass
+            if hasattr(self.dac, "get_dac_invert"):
+                try:
+                    live_invert, invert_value = self.dac.get_dac_invert()
+                    spec["dac_invert"] = list(live_invert)
+                    spec["dac_invert_register29"] = f"0x{invert_value:X}"
                 except Exception:
                     pass
             self._mzi_controller.connect(

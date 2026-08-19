@@ -36,18 +36,31 @@ def run_simulation(seed: int = 83) -> dict:
     for event in event_samples:
         known_pattern[event - 3:event + 4] += pulse
 
+    def recovery_train(amplitude: float) -> np.ndarray:
+        recovery = np.zeros(length, dtype=np.float64)
+        tail = amplitude * np.exp(-np.arange(32) / 9.0)
+        for event in event_samples:
+            start = event + 15
+            recovery[start:start + tail.size] += tail
+        return recovery
+
+    # The electrical reference is 500 mV while the optical response is only
+    # 15 mV. Both also carry an opposite-polarity AC-coupling recovery lobe;
+    # the optical recovery is intentionally larger than its true spike.
+    reference_pattern = known_pattern * 2.5 + recovery_train(0.220)
+    optical_gain = 0.075
+    optical_pattern = known_pattern * optical_gain + recovery_train(0.030)
+
     # BCPT captures are hardware-triggered, so every repetition has the same
     # sample origin. Independent noise is averaged; no synthetic timing jitter
     # is introduced or corrected in software.
     loopback = np.stack([
-        _delay(known_pattern, reference_latency) +
+        _delay(reference_pattern, reference_latency) +
         rng.normal(0.0, 0.0010, length)
         for _repetition in range(repetitions)
     ])
-    optical_gain = 0.075
     optical = np.stack([
-        _delay(known_pattern * optical_gain,
-               reference_latency + optical_latency) +
+        _delay(optical_pattern, reference_latency + optical_latency) +
         rng.normal(0.0, 0.0015, length)
         for _repetition in range(repetitions)
     ])
@@ -76,6 +89,8 @@ def run_simulation(seed: int = 83) -> dict:
         "software_repetition_alignment_applied": False,
         "loopback_correlation_min": None,
         "optical_correlation": float(result.optical_correlation_score),
+        "reference_spike_amplitude_v": 0.500,
+        "optical_ac_recovery_peak_v": 0.030,
         "expected_spike_amplitude_v": expected_amplitude,
         "measured_spike_amplitude_v": float(measured_amplitude),
         "spike_amplitude_error_v": float(

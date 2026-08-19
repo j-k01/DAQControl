@@ -16,6 +16,7 @@ from mzi_calibration import (
     align_stacks_to_loopback,
     analyze_optical_peaks,
     calibration_voltage_sequence,
+    estimate_main_lobe_lag,
     measure_periodic_pulses,
     measure_spikes_at_indices,
     measure_spikes_in_windows,
@@ -295,6 +296,45 @@ class MziCalibrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "loopback correlation is too weak"):
             align_stacks_to_loopback(
                 {0: noise.copy(), 3: noise}, 3, max_lag=32)
+
+    def test_main_lobe_correlation_rejects_larger_ac_recovery(self):
+        length = 4096
+        events = np.asarray([400, 1000, 1700, 2500, 3300])
+        reference = np.zeros(length)
+        observed = np.zeros(length)
+        latency = 37
+        for event in events:
+            reference[event] = -0.500
+            reference[event + 18:event + 42] += (
+                0.220 * np.exp(-np.arange(24) / 8.0))
+            observed[event + latency] = -0.015
+            observed[event + latency + 18:event + latency + 42] += (
+                0.030 * np.exp(-np.arange(24) / 8.0))
+
+        result = estimate_main_lobe_lag(
+            observed, reference, 300,
+            observed_polarity=-1, template_polarity=-1,
+            template_peak_indices=events)
+
+        self.assertEqual(result.lag_samples, latency)
+        self.assertGreater(result.score, 0.9)
+
+    def test_main_lobe_correlation_accepts_explicit_channel_inversion(self):
+        length = 2048
+        events = np.asarray([300, 800, 1300, 1800])
+        reference = np.zeros(length)
+        observed = np.zeros(length)
+        for event in events:
+            reference[event] = -0.500
+            observed[event + 29] = 0.012
+            observed[event + 47] = -0.025
+
+        result = estimate_main_lobe_lag(
+            observed, reference, 200,
+            observed_polarity=1, template_polarity=-1,
+            template_peak_indices=events)
+
+        self.assertEqual(result.lag_samples, 29)
 
     def test_loopback_simulation_recovers_reference_and_optical_latency(self):
         report = run_simulation(seed=83)

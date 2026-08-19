@@ -110,7 +110,8 @@ module top #(
     // one cycle on a CPU read. Add new control/status regs by slicing regf_value
     // / driving regf_in[idx] -- all contiguous at byte offset idx*4.
     localparam integer REGF_NUM = 48;   // 0-17 ctrl/status, 18 spike nbeats, 19 DDS step, 20 current DAC gain,
-                                        // 21-24 per-neuron spike cal {offset_s16, gain_q2_14}
+                                        // 21-24 per-neuron spike cal, 25-28 pulse lengths,
+                                        // 29 per-DAC post-crossbar inversion mask
     wire [REGF_NUM*32-1:0] regf_value;
     wire [REGF_NUM*32-1:0] regf_in;
     wire [REGF_NUM-1:0]    regf_we;
@@ -646,6 +647,7 @@ module top #(
     wire [3:0]  izh_spike_flags_neuron;
     wire [3:0]  izh_spike_flags_tx;
     wire [15:0]  dac_src_sel_tx;     // 4 bits/DAC crossbar select (reg17[15:0]) in GT domain
+    wire [3:0]   dac_invert_tx;      // one post-crossbar inversion bit per DAC (reg29[3:0])
     wire [15:0]  cur_dac_gain_q8_8_tx; // reg20[15:0], Q8.8 current-source DAC gain
     wire [255:0] mon_words_tx;       // 4 x 64-bit current-monitor DAC words in GT domain
     wire [63:0]  cur_source_word_tx; // pure injected-current DAC word in GT domain
@@ -1261,6 +1263,17 @@ module top #(
         .dest     (dac_src_sel_tx)
     );
 
+    // Destination polarity is applied after source selection, so two DACs may
+    // route the same source while independently choosing opposite polarity.
+    cdc_vector_sync #(
+        .WIDTH (4)
+    ) u_dac_invert_sync (
+        .dest_clk (gth_tx_usrclk2),
+        .dest_rst (litejesd_reset),
+        .src      (regf_value[29*32 +: 4]),
+        .dest     (dac_invert_tx)
+    );
+
     // Per-neuron pulse lengths. Regs 25..28 hold one beat count per neuron;
     // zero preserves compatibility with the legacy global count in reg18.
     cdc_vector_sync #(
@@ -1536,6 +1549,7 @@ module top #(
         .triangle_step    (16'd256),
         .sine_phase_inc   (dac_dds_phase_inc_tx),
         .dac_src_sel      (dac_src_sel_tx),
+        .dac_invert       (dac_invert_tx),
         .mon_words        (mon_words_tx),
         .current_word     (cur_source_word_tx),
         .tag_source_enable(dac_tag_source_enable_tx),

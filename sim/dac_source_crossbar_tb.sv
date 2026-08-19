@@ -11,6 +11,7 @@
 module dac_source_crossbar_tb;
     reg  [16*64-1:0] sources;
     reg  [15:0]      sel;
+    reg  [3:0]       invert;
     wire [63:0]      d0, d1, d2, d3;
     reg  [15:0]      idx;
     integer          errors;
@@ -19,6 +20,7 @@ module dac_source_crossbar_tb;
     dac_source_crossbar dut (
         .sources   (sources),
         .sel       (sel),
+        .invert    (invert),
         .dac0_word (d0),
         .dac1_word (d1),
         .dac2_word (d2),
@@ -34,6 +36,7 @@ module dac_source_crossbar_tb;
 
     initial begin
         errors = 0;
+        invert = 4'b0000;
         // Off entry 0 is zero; the rest carry a unique pattern. In top.v source
         // 15 is the pure injected-current source.
         for (idx = 0; idx < 16; idx = idx + 1) begin
@@ -75,6 +78,15 @@ module dac_source_crossbar_tb;
         sel = 16'hF00F; #1;
         check(d0, ref_word[15], 50); check(d1, 64'd0, 51);
         check(d2, 64'd0, 52); check(d3, ref_word[15], 53);
+
+        // 6) destination inversion is independent even for one shared source.
+        sources[1*64 +: 64] = {16'h8000, 16'hFFFF, 16'h0001, 16'h7FFF};
+        sel = 16'h1111;
+        invert = 4'b0101; #1;
+        check(d0, {16'h7FFF, 16'h0001, 16'hFFFF, 16'h8001}, 60);
+        check(d1, sources[1*64 +: 64], 61);
+        check(d2, {16'h7FFF, 16'h0001, 16'hFFFF, 16'h8001}, 62);
+        check(d3, sources[1*64 +: 64], 63);
 
         if (errors == 0)
             $display("TB_RESULT: PASS dac_source_crossbar (all checks)");

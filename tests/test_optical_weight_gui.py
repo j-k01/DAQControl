@@ -28,6 +28,7 @@ class FakeDac:
         self.calls = []
         self.current_status = None
         self.force_current_status = None
+        self.dac_invert = [False] * 4
 
     def set_neuron_timing(self, dt_hex, period=1):
         self.calls.append(("timing", dt_hex, period))
@@ -48,6 +49,18 @@ class FakeDac:
     def set_source(self, channel, source):
         self.calls.append(("source", channel, source))
         return "OK NSRC"
+
+    def set_dac_invert(self, channel, enabled):
+        channel = int(channel)
+        self.dac_invert[channel] = bool(enabled)
+        self.calls.append(("invert", channel, bool(enabled)))
+        return "OK DINV"
+
+    def get_dac_invert(self):
+        value = sum(
+            (1 << channel) for channel, enabled in enumerate(self.dac_invert)
+            if enabled)
+        return list(self.dac_invert), value
 
     def program_current_step(self, cps, zero, high, current, hold_last=True):
         self.calls.append(("current_step", cps, zero, high, current, hold_last))
@@ -166,6 +179,8 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertAlmostEqual(spec["current_actual_frequency_hz"], 5000.0)
         self.assertEqual(spec["current_duty_percent"], 50.0)
         self.assertEqual(spec["xbar_sources"], ["Spike 0"] * 4)
+        self.assertEqual(spec["dac_invert"], [False] * 4)
+        self.assertEqual(len(self.window.mzi_dac_invert), 4)
         self.assertEqual(
             [source.currentText() for source in self.window.mzi_dac_sources],
             ["Spike 0"] * 3)
@@ -301,6 +316,8 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.window.mzi_dac_sources[0].setCurrentText("Spike 2")
         self.window.mzi_dac_sources[1].setCurrentText("Off")
         self.window.mzi_dac_sources[2].setCurrentText("BRAM 1")
+        for channel in (0, 2, 3):
+            self.window.mzi_dac_invert[channel].setChecked(True)
         spec = self.window._mzi_gui_spec()
 
         self.assertEqual(
@@ -311,6 +328,10 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertIn(("source", 1, "Off"), fake.calls)
         self.assertIn(("source", 2, "BRAM 1"), fake.calls)
         self.assertIn(("source", 3, "Spike 0"), fake.calls)
+        self.assertEqual(
+            [call for call in fake.calls if call[0] == "invert"],
+            [("invert", 0, True), ("invert", 1, False),
+             ("invert", 2, True), ("invert", 3, True)])
         spec.update(
             spacing="voltage", voltages=np.asarray([0.0, 1.0]),
             directions=np.asarray([0, 0], dtype=np.int8))
@@ -319,6 +340,9 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertEqual(metadata["xbar"]["sources_by_dac"]["DAC0"], "Spike 2")
         self.assertEqual(metadata["xbar"]["sources_by_dac"]["DAC1"], "Off")
         self.assertEqual(metadata["xbar"]["sources_by_dac"]["DAC2"], "BRAM 1")
+        self.assertEqual(
+            metadata["xbar"]["invert_by_dac"],
+            {"DAC0": True, "DAC1": False, "DAC2": True, "DAC3": True})
         self.assertEqual(metadata["acquisition"]["reference_adc_channel"], 3)
     def test_optical_editor_windows_stage_profiles_and_pulse(self):
         self.window._open_mzi_neuron_window()

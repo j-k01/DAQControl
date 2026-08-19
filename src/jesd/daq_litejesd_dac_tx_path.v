@@ -21,6 +21,7 @@ module daq_litejesd_dac_tx_path #(
     input  wire [15:0]   triangle_step,
     input  wire [23:0]   sine_phase_inc,
     input  wire [15:0]   dac_src_sel,        // 4-bit crossbar source select per DAC
+    input  wire [3:0]    dac_invert,         // post-crossbar polarity, bit n -> DACn
     input  wire [255:0]  mon_words,          // 4 x 64-bit per-neuron current monitor (GT domain)
     input  wire [63:0]   current_word,       // pure injected current source (GT domain)
     input  wire          tag_source_enable,
@@ -268,6 +269,7 @@ module daq_litejesd_dac_tx_path #(
     dac_source_crossbar u_dac_source_crossbar (
         .sources   (xbar_src),
         .sel       (dac_src_sel),
+        .invert    (dac_invert),
         .dac0_word (selected_src_converter0),
         .dac1_word (selected_src_converter1),
         .dac2_word (selected_src_converter2),
