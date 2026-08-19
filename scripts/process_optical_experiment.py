@@ -15,6 +15,7 @@ from mzi_calibration import (
     dominant_spike_polarity,
     estimate_main_lobe_lag,
     estimate_main_lobe_lag_auto_polarity,
+    measure_reference_spikes,
     measure_spikes_at_indices,
     measure_spikes_in_windows,
     measure_triggered_spikes,
@@ -353,6 +354,9 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
     step_sample = int(detection.get(
         "response_start_sample",
         stimulus.get("current_source", {}).get("step_sample", 64)))
+    reference_peak_distance = max(
+        1, int(stimulus.get("spike_pulse", {}).get(
+            "length_dac_points", 40)))
     voltages = np.asarray([
         capture["heater_voltage_v"] for capture in heater_captures])
     directions = np.asarray([
@@ -401,11 +405,10 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
         # no repetition is shifted in software.
         reference_reps = np.concatenate(
             stacks_by_adc[reference_adc], axis=0)
-        reference = measure_triggered_spikes(
+        reference = measure_reference_spikes(
             reference_reps, step_sample,
             threshold_sigma=float(detection["threshold_sigma"]),
-            boundary_sigma=float(detection["boundary_sigma"]),
-            minimum_seed_samples=int(detection["minimum_seed_samples"]),
+            minimum_peak_distance_samples=reference_peak_distance,
         )
         reference_first_peak_latency_samples = int(
             reference.peak_indices[0] - step_sample)

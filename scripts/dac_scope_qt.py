@@ -101,6 +101,7 @@ from mzi_calibration import (
     estimate_main_lobe_lag,
     estimate_main_lobe_lag_auto_polarity,
     measure_spikes_at_indices,
+    measure_reference_spikes,
     measure_spikes_in_windows,
     measure_spikes_with_loopback,
     measure_triggered_spikes,
@@ -4681,11 +4682,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
             # identify the event schedule and optical path latency.
             reference_reps = np.asarray(
                 volts_by_adc[spec["reference_adc"]], dtype=np.float64)
-            reference = measure_triggered_spikes(
+            reference = measure_reference_spikes(
                 reference_reps, step_sample,
                 threshold_sigma=spec["detect_sigma"],
-                boundary_sigma=spec["boundary_sigma"],
-                minimum_seed_samples=spec["minimum_seed_samples"])
+                minimum_peak_distance_samples=max(1, spec["pulse_len"]))
             baseline_end = max(4, step_sample - 10)
             reference_baseline = np.median(
                 reference_reps[:, :baseline_end], axis=1)
@@ -5603,13 +5603,27 @@ class ScopeWindow(QtWidgets.QMainWindow):
                                          style=QtCore.Qt.DotLine),
                             name=f"unfiltered {suffix}")
 
+        shared_values = []
+        for channel in range(3):
+            channel_result = self._mzi_channel_result(result, channel)
+            if (channel_result is None or
+                    not channel_result.get("optical_correlation_valid", False)):
+                continue
+            analyses = self._mzi_peak_analyses(result, channel)
+            if not analyses:
+                continue
+            selected = np.asarray([
+                analysis.filtered_mean_v if use_filter else analysis.raw_mean_v
+                for analysis in analyses], dtype=np.float64) * 1e3
+            shared_values.append(selected)
+
         if constant:
             held = float(voltage[0]) if voltage.size else float("nan")
             plot.setLabel("left", "mean peak amplitude", units="mV")
             plot.setLabel(
                 "bottom", f"capture index (heater held at {held:.4f} V)")
-            if visible_values:
-                combined = np.concatenate(visible_values)
+            if shared_values or visible_values:
+                combined = np.concatenate(shared_values or visible_values)
                 lower = float(np.min(combined))
                 upper = float(np.max(combined))
                 padding = max(0.05 * (upper - lower), 0.01)
@@ -5618,8 +5632,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             plot.setLabel(
                 "left", "mean detected spike peak", units="mV")
             plot.setLabel("bottom", "heater", units="V")
-            if visible_values:
-                combined = np.concatenate(visible_values)
+            if shared_values or visible_values:
+                combined = np.concatenate(shared_values or visible_values)
                 lower = float(np.min(combined))
                 upper = float(np.max(combined))
                 padding = max(0.05 * (upper - lower), 0.01)

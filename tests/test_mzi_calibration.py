@@ -19,9 +19,11 @@ from mzi_calibration import (
     estimate_main_lobe_lag,
     estimate_main_lobe_lag_auto_polarity,
     measure_periodic_pulses,
+    measure_reference_spikes,
     measure_spikes_at_indices,
     measure_spikes_in_windows,
     measure_triggered_spikes,
+    optical_schedule_from_loopback,
     parse_heater_voltages,
     probe_fpga_pico_bridge,
     PydaqMziController,
@@ -253,6 +255,54 @@ class MziCalibrationTests(unittest.TestCase):
         self.assertAlmostEqual(
             float(result.per_peak_height.mean(axis=0)[0]), 0.010,
             places=12)
+    def test_chattering_reference_yields_every_known_optical_peak(self):
+        rng = np.random.default_rng(83)
+        repetitions, length, step = 16, 4096, 200
+        reference_peaks = np.asarray([
+            500, 560, 620, 680,
+            1300, 1360, 1420, 1480,
+            2300, 2360, 2420, 2480,
+        ])
+        reference_reps = rng.normal(
+            0.0, 0.0004, (repetitions, length))
+        reference_reps[:, step:] += 0.025
+        pulse = np.asarray([0.10, 0.25, 0.40, 0.40, 0.25, 0.10])
+        for peak in reference_peaks:
+            reference_reps[:, peak - 2:peak + 4] += pulse
+
+        reference = measure_reference_spikes(
+            reference_reps, step, threshold_sigma=5.0,
+            minimum_peak_distance_samples=40)
+
+        self.assertEqual(reference.peak_indices.size, reference_peaks.size)
+        self.assertLessEqual(
+            int(np.max(np.abs(reference.peak_indices - reference_peaks))), 1)
+
+        latency = 37
+        optical_amplitudes = np.linspace(0.006, 0.017, reference_peaks.size)
+        optical_reps = rng.normal(
+            0.0, 0.0002, (repetitions, length))
+        for peak, amplitude in zip(reference_peaks, optical_amplitudes):
+            optical_reps[:, peak + latency] += amplitude
+        optical_average = optical_reps.mean(axis=0)
+        nominal, starts, ends, signs = optical_schedule_from_loopback(
+            reference, optical_average, latency,
+            padding_samples=5, response_polarity=1)
+
+        np.testing.assert_array_equal(
+            nominal, reference.peak_indices + latency)
+        np.testing.assert_array_equal(starts, nominal - 5)
+        np.testing.assert_array_equal(ends, nominal + 5)
+        measured = measure_spikes_in_windows(
+            optical_reps, step, nominal,
+            start_indices=starts, end_indices=ends, polarities=signs)
+
+        np.testing.assert_array_equal(
+            measured.peak_indices, reference_peaks + latency)
+        self.assertAlmostEqual(
+            measured.signed_height,
+            float(np.mean(optical_amplitudes)),
+            delta=0.0002)
     def test_triggered_spike_measurement_preserves_negative_sign(self):
         reps = np.zeros((8, 1024), dtype=np.float64)
         reps[:, 299:302] = [-0.075, -0.15, -0.075]

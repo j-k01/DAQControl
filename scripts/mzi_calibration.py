@@ -563,9 +563,9 @@ def optical_schedule_from_loopback(
     padding = max(0, int(padding_samples))
     reference_polarity = dominant_spike_polarity(reference)
     selected = reference.polarities == reference_polarity
-    starts = reference.start_indices[selected].astype(np.int64) + lag - padding
-    ends = reference.end_indices[selected].astype(np.int64) + lag + padding
     nominal_peaks = reference.peak_indices[selected].astype(np.int64) + lag
+    starts = nominal_peaks - padding
+    ends = nominal_peaks + padding
     valid = ((ends >= 0) & (starts < waveform.size) &
              (nominal_peaks >= 0) & (nominal_peaks < waveform.size))
     starts = np.clip(starts[valid], 0, waveform.size - 1).astype(np.int32)
@@ -590,6 +590,7 @@ def measure_spikes_with_loopback(
     boundary_sigma: float = 2.0,
     minimum_seed_samples: int = 2,
     response_polarity: int = 1,
+    reference_peak_distance_samples: int = 40,
 ) -> LoopbackReferencedMeasurement:
     """Measure one channel from trigger-aligned optical and ADC3 captures.
 
@@ -603,10 +604,10 @@ def measure_spikes_with_loopback(
     optical_reps = np.asarray(optical_repetitions, dtype=np.float64)
     if reference_reps.shape != optical_reps.shape:
         raise ValueError("optical and loopback repetitions must have equal shape")
-    reference = measure_triggered_spikes(
+    del boundary_sigma, minimum_seed_samples
+    reference = measure_reference_spikes(
         reference_reps, step_sample, threshold_sigma=threshold_sigma,
-        boundary_sigma=boundary_sigma,
-        minimum_seed_samples=minimum_seed_samples)
+        minimum_peak_distance_samples=reference_peak_distance_samples)
     baseline_end = max(4, int(step_sample) - 10)
     optical_baselines = np.median(optical_reps[:, :baseline_end], axis=1)
     optical_average = (
@@ -704,6 +705,109 @@ def measure_triggered_spikes(
         detection_threshold_v=detection.threshold,
         boundary_thresholds_v=measured.boundary_thresholds_v,
         noise_sigma_v=detection.noise_sigma,
+    )
+
+def measure_reference_spikes(
+    repetitions: np.ndarray,
+    step_sample: int,
+    *,
+    threshold_sigma: float = 5.0,
+    minimum_peak_distance_samples: int = 40,
+) -> TriggeredSpikeMeasurement:
+    """Find every pulse on the clean ADC3 electrical reference.
+
+    Unlike the general detector, this does not segment broad threshold
+    regions. Chattering pulses can share one recovery envelope, so local
+    maxima are found first and amplitude-ranked non-maximum suppression keeps
+    one timestamp per programmed pulse.
+    """
+
+    reps = np.asarray(repetitions, dtype=np.float64)
+    if reps.ndim != 2 or reps.shape[0] < 1 or reps.shape[1] < 16:
+        raise ValueError("repetitions must have shape [N, samples]")
+    step = int(step_sample)
+    if step < 8 or step >= reps.shape[1] - 4:
+        raise ValueError("step_sample must leave baseline and response regions")
+    minimum_distance = max(1, int(minimum_peak_distance_samples))
+
+    baseline_end = max(4, step - 10)
+    baseline_levels = np.median(reps[:, :baseline_end], axis=1)
+    centered = reps - baseline_levels[:, None]
+    averaged = centered.mean(axis=0)
+    baseline_average = averaged[:baseline_end]
+    baseline_median = float(np.median(baseline_average))
+    noise = 1.4826 * float(
+        np.median(np.abs(baseline_average - baseline_median)))
+
+    response = averaged[step:]
+    positive_excursion = float(np.max(response))
+    negative_excursion = abs(float(np.min(response)))
+    polarity = 1 if positive_excursion >= negative_excursion else -1
+    feature = polarity * averaged
+    response_peak = float(np.max(feature[step:]))
+    threshold = max(
+        float(threshold_sigma) * noise,
+        0.20 * response_peak,
+        np.finfo(np.float64).eps,
+    )
+
+    middle = np.arange(max(step, 1), averaged.size - 1, dtype=np.int32)
+    is_local_maximum = (
+        (feature[middle] >= feature[middle - 1]) &
+        (feature[middle] > feature[middle + 1]) &
+        (feature[middle] >= threshold)
+    )
+    candidates = middle[is_local_maximum]
+    if candidates.size == 0:
+        raise ValueError(
+            "no ADC3 reference pulses exceeded the clean-lane threshold")
+
+    accepted = []
+    for candidate in candidates[
+            np.argsort(feature[candidates], kind="stable")[::-1]]:
+        if all(abs(int(candidate) - selected) >= minimum_distance
+               for selected in accepted):
+            accepted.append(int(candidate))
+    peaks = np.asarray(sorted(accepted), dtype=np.int32)
+    if peaks.size == 0:
+        raise ValueError("no distinct ADC3 reference pulses were found")
+
+    radius = max(1, minimum_distance // 2)
+    starts = np.maximum(step, peaks - radius)
+    ends = np.minimum(averaged.size - 1, peaks + radius)
+    if peaks.size > 1:
+        midpoints = (peaks[:-1].astype(np.int64) +
+                     peaks[1:].astype(np.int64)) // 2
+        ends[:-1] = np.minimum(ends[:-1], midpoints.astype(np.int32))
+        starts[1:] = np.maximum(starts[1:],
+                               (midpoints + 1).astype(np.int32))
+
+    per_peak = centered[:, peaks]
+    per_rep = per_peak.mean(axis=1)
+    signed = float(np.mean(per_peak))
+    signs = np.full(peaks.size, polarity, dtype=np.int8)
+    widths = ends - starts + 1
+    areas = np.asarray([
+        np.sum(polarity * averaged[start:end + 1])
+        for start, end in zip(starts, ends)
+    ], dtype=np.float64)
+    return TriggeredSpikeMeasurement(
+        signed_height=signed,
+        absolute_height=float(np.mean(np.abs(averaged[peaks]))),
+        per_rep_height=per_rep,
+        per_peak_height=per_peak,
+        peak_indices=peaks,
+        baseline_levels=baseline_levels,
+        averaged_waveform=averaged,
+        start_indices=starts.astype(np.int32),
+        end_indices=ends.astype(np.int32),
+        polarities=signs,
+        widths_samples=widths.astype(np.int32),
+        fwhm_samples=np.zeros(peaks.size, dtype=np.int32),
+        areas_v_samples=areas,
+        detection_threshold_v=threshold,
+        boundary_thresholds_v=np.full(peaks.size, threshold),
+        noise_sigma_v=noise,
     )
 
 def measure_spikes_at_indices(
