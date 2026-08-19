@@ -47,6 +47,30 @@ class TriggeredSpikeMeasurement:
 
 
 @dataclass(frozen=True)
+class CorrelationLag:
+    lag_samples: int
+    score: float
+
+
+@dataclass(frozen=True)
+class LoopbackAlignment:
+    reference_channel: int
+    template: np.ndarray
+    lag_samples: np.ndarray
+    correlation_scores: np.ndarray
+    aligned_stacks: dict[int, np.ndarray]
+
+
+@dataclass(frozen=True)
+class LoopbackReferencedMeasurement:
+    reference: TriggeredSpikeMeasurement
+    optical: TriggeredSpikeMeasurement
+    alignment: LoopbackAlignment
+    optical_latency_samples: int
+    optical_correlation_score: float
+
+
+@dataclass(frozen=True)
 class OpticalPeakAnalysis:
     peak_indices: np.ndarray
     waveform_values_v: np.ndarray
@@ -112,7 +136,14 @@ def analyze_optical_peaks(
         in_bounds = (peaks >= 0) & (peaks < waveform.size)
         values = np.zeros(peaks.size, dtype=np.float64)
         values[in_bounds] = waveform[peaks[in_bounds]]
-        finite = in_bounds & np.isfinite(values) & (values != 0.0)
+        finite = in_bounds & np.isfinite(values)
+        nonzero = finite & (values != 0.0)
+        if requested == "auto" and np.any(finite) and not np.any(nonzero):
+            selected = (
+                peaks[finite], values[finite], np.abs(values[finite]),
+                "positive", f"{source_name} (zero control)")
+            break
+        finite = nonzero
 
         chosen = requested
         if chosen == "auto":
@@ -265,6 +296,243 @@ def parse_heater_voltages(text: str) -> np.ndarray:
     return values
 
 
+def estimate_correlation_lag(
+    observed: np.ndarray,
+    template: np.ndarray,
+    max_lag: int,
+    *,
+    allow_inversion: bool = False,
+) -> CorrelationLag:
+    """Return the delay of observed relative to template.
+
+    Positive lag means that the observed signal arrives later. Correlation is
+    linear (zero padded), so samples never wrap across capture boundaries.
+    """
+
+    signal = np.asarray(observed, dtype=np.float64)
+    reference = np.asarray(template, dtype=np.float64)
+    if signal.ndim != 1 or reference.ndim != 1:
+        raise ValueError("observed and template must be one-dimensional")
+    if signal.size != reference.size or signal.size < 16:
+        raise ValueError("observed and template must have the same length >= 16")
+    limit = int(max_lag)
+    if limit < 0:
+        raise ValueError("max_lag must be non-negative")
+    limit = min(limit, signal.size - 2)
+    signal = signal - np.median(signal)
+    reference = reference - np.median(reference)
+    signal_norm = float(np.linalg.norm(signal))
+    reference_norm = float(np.linalg.norm(reference))
+    if signal_norm <= np.finfo(np.float64).eps:
+        raise ValueError("observed signal has no correlation energy")
+    if reference_norm <= np.finfo(np.float64).eps:
+        raise ValueError("template has no correlation energy")
+
+    linear_length = signal.size + reference.size - 1
+    fft_length = 1 << (linear_length - 1).bit_length()
+    correlation = np.fft.irfft(
+        np.fft.rfft(signal, fft_length) *
+        np.conj(np.fft.rfft(reference, fft_length)),
+        fft_length)
+    lags = np.arange(-limit, limit + 1, dtype=np.int32)
+    indices = np.where(lags >= 0, lags, fft_length + lags)
+    scores = correlation[indices] / (signal_norm * reference_norm)
+    selected = int(np.argmax(np.abs(scores) if allow_inversion else scores))
+    return CorrelationLag(
+        lag_samples=int(lags[selected]), score=float(scores[selected]))
+
+
+def _shift_without_wrap(trace: np.ndarray, lag_samples: int) -> np.ndarray:
+    """Remove a measured delay without wrapping capture-edge samples."""
+
+    values = np.asarray(trace)
+    lag = int(lag_samples)
+    if values.ndim != 1:
+        raise ValueError("trace must be one-dimensional")
+    if abs(lag) >= values.size:
+        raise ValueError("lag must be shorter than the trace")
+    output = np.empty_like(values)
+    guard = max(1, min(values.size, 64))
+    fill = np.median(values[:guard])
+    if lag > 0:
+        output[:-lag] = values[lag:]
+        output[-lag:] = fill
+    elif lag < 0:
+        advance = -lag
+        output[advance:] = values[:-advance]
+        output[:advance] = fill
+    else:
+        output[:] = values
+    return output
+
+
+def align_stacks_to_loopback(
+    stacks: dict[int, np.ndarray],
+    reference_channel: int,
+    *,
+    template: np.ndarray | None = None,
+    max_lag: int = 256,
+    minimum_median_score: float = 0.50,
+) -> LoopbackAlignment:
+    """Align every ADC stack using only the simultaneous loopback channel."""
+
+    channels = {
+        int(channel): np.asarray(values)
+        for channel, values in stacks.items()
+    }
+    reference_channel = int(reference_channel)
+    if reference_channel not in channels:
+        raise ValueError(f"reference ADC{reference_channel} is missing")
+    reference_reps = channels[reference_channel]
+    if reference_reps.ndim != 2 or reference_reps.shape[0] < 1:
+        raise ValueError("loopback reference must have shape [N, samples]")
+    if any(values.shape != reference_reps.shape for values in channels.values()):
+        raise ValueError("all ADC stacks must have the same shape")
+
+    if template is None:
+        # The clean loopback's first repetition cannot be blurred away by a
+        # large initial jitter spread. A second pass refines this seed from the
+        # aligned mean of every repetition.
+        working_template = reference_reps[0].astype(np.float64)
+    else:
+        working_template = np.asarray(template, dtype=np.float64)
+        if working_template.shape != (reference_reps.shape[1],):
+            raise ValueError("loopback template length does not match captures")
+
+    def estimate(reference_template):
+        results = [
+            estimate_correlation_lag(rep, reference_template, max_lag)
+            for rep in reference_reps
+        ]
+        return (
+            np.asarray([item.lag_samples for item in results], dtype=np.int32),
+            np.asarray([item.score for item in results], dtype=np.float64),
+        )
+
+    lags, scores = estimate(working_template)
+    if template is None:
+        rough = np.stack([
+            _shift_without_wrap(rep, lag)
+            for rep, lag in zip(reference_reps, lags)
+        ]).astype(np.float64)
+        working_template = np.mean(rough, axis=0)
+        lags, scores = estimate(working_template)
+
+    median_score = float(np.median(np.abs(scores)))
+    if median_score < float(minimum_median_score):
+        raise ValueError(
+            "ADC3 loopback correlation is too weak "
+            f"(median |corr|={median_score:.3f}); check the DAC3-to-ADC3 cable "
+            "and confirm Spike 0 is visible on ADC3")
+
+    aligned = {
+        channel: np.stack([
+            _shift_without_wrap(rep, lag)
+            for rep, lag in zip(values, lags)
+        ])
+        for channel, values in channels.items()
+    }
+    return LoopbackAlignment(
+        reference_channel=reference_channel,
+        template=working_template.copy(),
+        lag_samples=lags,
+        correlation_scores=scores,
+        aligned_stacks=aligned,
+    )
+
+
+def optical_schedule_from_loopback(
+    reference: TriggeredSpikeMeasurement,
+    optical_average: np.ndarray,
+    optical_latency_samples: int,
+    *,
+    padding_samples: int = 8,
+    response_polarity: int = 1,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Translate the ADC3 event schedule to fixed optical windows.
+
+    The optical waveform is used only to clip windows to the capture length.
+    It is deliberately not searched for events or local extrema here.
+    """
+
+    waveform = np.asarray(optical_average, dtype=np.float64)
+    lag = int(optical_latency_samples)
+    padding = max(0, int(padding_samples))
+    starts = reference.start_indices.astype(np.int64) + lag - padding
+    ends = reference.end_indices.astype(np.int64) + lag + padding
+    nominal_peaks = reference.peak_indices.astype(np.int64) + lag
+    valid = ((ends >= 0) & (starts < waveform.size) &
+             (nominal_peaks >= 0) & (nominal_peaks < waveform.size))
+    starts = np.clip(starts[valid], 0, waveform.size - 1).astype(np.int32)
+    ends = np.clip(ends[valid], 0, waveform.size - 1).astype(np.int32)
+    peaks = nominal_peaks[valid].astype(np.int32)
+    direction = -1 if int(response_polarity) < 0 else 1
+    signs = reference.polarities[valid].astype(np.int8) * direction
+    return peaks, starts, ends, signs
+
+
+def measure_spikes_with_loopback(
+    optical_repetitions: np.ndarray,
+    loopback_repetitions: np.ndarray,
+    step_sample: int,
+    *,
+    reference_channel: int = 3,
+    template: np.ndarray | None = None,
+    max_repetition_lag: int = 256,
+    max_optical_lag: int = 1024,
+    window_padding_samples: int = 8,
+    threshold_sigma: float = 5.0,
+    boundary_sigma: float = 2.0,
+    minimum_seed_samples: int = 2,
+) -> LoopbackReferencedMeasurement:
+    """Measure one channel from trigger-aligned optical and ADC3 captures.
+
+    Hardware triggering defines the repetition alignment. Software therefore
+    averages each stack at its original sample indices and uses correlation
+    only between the two averages to measure optical path latency.
+    """
+
+    del template, max_repetition_lag
+    reference_reps = np.asarray(loopback_repetitions, dtype=np.float64)
+    optical_reps = np.asarray(optical_repetitions, dtype=np.float64)
+    if reference_reps.shape != optical_reps.shape:
+        raise ValueError("optical and loopback repetitions must have equal shape")
+    reference = measure_triggered_spikes(
+        reference_reps, step_sample, threshold_sigma=threshold_sigma,
+        boundary_sigma=boundary_sigma,
+        minimum_seed_samples=minimum_seed_samples)
+    baseline_end = max(4, int(step_sample) - 10)
+    optical_baselines = np.median(optical_reps[:, :baseline_end], axis=1)
+    optical_average = (
+        optical_reps - optical_baselines[:, None]).mean(axis=0)
+    latency = estimate_correlation_lag(
+        optical_average, reference.averaged_waveform, max_optical_lag,
+        allow_inversion=True)
+    peaks, starts, ends, signs = optical_schedule_from_loopback(
+        reference, optical_average, latency.lag_samples,
+        padding_samples=window_padding_samples,
+        response_polarity=(-1 if latency.score < 0 else 1))
+    if peaks.size == 0:
+        raise ValueError("loopback spike schedule does not overlap optical capture")
+    optical = measure_spikes_in_windows(
+        optical_reps, step_sample, peaks, start_indices=starts,
+        end_indices=ends, polarities=signs)
+    alignment = LoopbackAlignment(
+        reference_channel=int(reference_channel),
+        template=reference.averaged_waveform.copy(),
+        lag_samples=np.zeros(reference_reps.shape[0], dtype=np.int32),
+        correlation_scores=np.full(reference_reps.shape[0], np.nan),
+        aligned_stacks={
+            0: optical_reps.copy(),
+            int(reference_channel): reference_reps.copy(),
+        },
+    )
+    return LoopbackReferencedMeasurement(
+        reference=reference, optical=optical, alignment=alignment,
+        optical_latency_samples=latency.lag_samples,
+        optical_correlation_score=latency.score,
+    )
+
 def measure_triggered_spikes(
     repetitions: np.ndarray,
     step_sample: int,
@@ -391,6 +659,85 @@ def measure_spikes_at_indices(
         per_rep_height=per_rep,
         per_peak_height=per_peak,
         peak_indices=peaks.copy(),
+        baseline_levels=baseline_levels,
+        averaged_waveform=averaged,
+        start_indices=starts.copy(),
+        end_indices=ends.copy(),
+        polarities=signs.copy(),
+        widths_samples=widths,
+        fwhm_samples=np.zeros(peaks.size, dtype=np.int32),
+        areas_v_samples=areas,
+        detection_threshold_v=float("nan"),
+        boundary_thresholds_v=np.full(peaks.size, np.nan),
+        noise_sigma_v=noise,
+    )
+
+def measure_spikes_in_windows(
+    repetitions: np.ndarray,
+    step_sample: int,
+    peak_indices: np.ndarray,
+    *,
+    start_indices: np.ndarray,
+    end_indices: np.ndarray,
+    polarities: np.ndarray,
+) -> TriggeredSpikeMeasurement:
+    """Take one expected-polarity extremum per known event after averaging.
+
+    Repetitions are never shifted. The arithmetic average is formed first,
+    then ADC3-derived event windows are searched only for their positive or
+    negative extremum. This avoids both independent optical spike detection
+    and the noise-maximum bias caused by maximizing every raw repetition.
+    """
+
+    reps = np.asarray(repetitions, dtype=np.float64)
+    if reps.ndim != 2 or reps.shape[0] < 1 or reps.shape[1] < 16:
+        raise ValueError("repetitions must have shape [N, samples]")
+    step = int(step_sample)
+    if step < 8 or step >= reps.shape[1] - 4:
+        raise ValueError("step_sample must leave baseline and response regions")
+    nominal = np.asarray(peak_indices, dtype=np.int32)
+    starts = np.asarray(start_indices, dtype=np.int32)
+    ends = np.asarray(end_indices, dtype=np.int32)
+    signs = np.asarray(polarities, dtype=np.int8)
+    if nominal.ndim != 1 or nominal.size < 1:
+        raise ValueError("peak_indices must contain at least one sample")
+    if (starts.shape != nominal.shape or ends.shape != nominal.shape or
+            signs.shape != nominal.shape):
+        raise ValueError("boundary and polarity arrays must match peak_indices")
+    if (np.any(starts < step) or np.any(ends >= reps.shape[1]) or
+            np.any(starts > ends)):
+        raise ValueError("event windows must lie in the response region")
+    if np.any(signs == 0):
+        raise ValueError("event polarities must be non-zero")
+
+    baseline_end = max(4, step - 10)
+    baseline_levels = np.median(reps[:, :baseline_end], axis=1)
+    centered = reps - baseline_levels[:, None]
+    averaged = centered.mean(axis=0)
+    peaks = np.empty(nominal.size, dtype=np.int32)
+    for index, (start, end, sign) in enumerate(zip(starts, ends, signs)):
+        window = averaged[int(start):int(end) + 1]
+        local = int(np.argmin(window) if int(sign) < 0 else np.argmax(window))
+        peaks[index] = int(start) + local
+
+    # Sample every raw repetition at the peak selected from the average. Its
+    # column mean is exactly the corresponding averaged-trace peak.
+    per_peak = centered[:, peaks]
+    per_rep = per_peak.mean(axis=1)
+    signed = float(np.mean(averaged[peaks]))
+    widths = ends - starts + 1
+    areas = np.asarray([
+        np.sum(int(signs[index]) * averaged[starts[index]:ends[index] + 1])
+        for index in range(peaks.size)], dtype=np.float64)
+    baseline_average = averaged[:baseline_end]
+    median = float(np.median(baseline_average))
+    noise = 1.4826 * float(np.median(np.abs(baseline_average - median)))
+    return TriggeredSpikeMeasurement(
+        signed_height=signed,
+        absolute_height=float(np.mean(np.abs(averaged[peaks]))),
+        per_rep_height=per_rep,
+        per_peak_height=per_peak,
+        peak_indices=peaks,
         baseline_levels=baseline_levels,
         averaged_waveform=averaged,
         start_indices=starts.copy(),

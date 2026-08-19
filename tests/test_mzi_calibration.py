@@ -13,15 +13,18 @@ if str(SCRIPTS) not in sys.path:
 
 from mzi_calibration import (
     TriggeredSpikeMeasurement,
+    align_stacks_to_loopback,
     analyze_optical_peaks,
     calibration_voltage_sequence,
     measure_periodic_pulses,
     measure_spikes_at_indices,
+    measure_spikes_in_windows,
     measure_triggered_spikes,
     parse_heater_voltages,
     probe_fpga_pico_bridge,
     PydaqMziController,
 )
+from simulate_loopback_reference import run_simulation
 
 
 class FakePicoSerial:
@@ -228,6 +231,26 @@ class MziCalibrationTests(unittest.TestCase):
         self.assertAlmostEqual(result.signed_height, 0.2)
         np.testing.assert_allclose(result.per_peak_height, 0.2)
 
+    def test_known_window_maximum_is_taken_after_averaging(self):
+        repetitions, length, step = 32, 1024, 200
+        reps = np.zeros((repetitions, length), dtype=np.float64)
+        reps[:, 500] = 0.010
+        # Every raw repetition has a larger transient at a different sample.
+        # After averaging none can exceed the repeatable 10 mV event.
+        for repetition in range(repetitions):
+            reps[repetition, 540 + repetition] = 0.032
+
+        result = measure_spikes_in_windows(
+            reps, step, np.asarray([500]),
+            start_indices=np.asarray([470]),
+            end_indices=np.asarray([590]),
+            polarities=np.asarray([1]))
+
+        self.assertEqual(int(result.peak_indices[0]), 500)
+        self.assertAlmostEqual(result.absolute_height, 0.010, places=12)
+        self.assertAlmostEqual(
+            float(result.per_peak_height.mean(axis=0)[0]), 0.010,
+            places=12)
     def test_triggered_spike_measurement_preserves_negative_sign(self):
         reps = np.zeros((8, 1024), dtype=np.float64)
         reps[:, 299:302] = [-0.075, -0.15, -0.075]
@@ -265,6 +288,24 @@ class MziCalibrationTests(unittest.TestCase):
         self.assertEqual(np.count_nonzero(analysis.accepted), 4)
         self.assertAlmostEqual(analysis.raw_mean_v, 0.28)
         self.assertAlmostEqual(analysis.filtered_mean_v, 0.2)
+    def test_noise_only_loopback_is_rejected(self):
+        rng = np.random.default_rng(19)
+        noise = rng.normal(0.0, 1.0, (16, 4096))
+
+        with self.assertRaisesRegex(ValueError, "loopback correlation is too weak"):
+            align_stacks_to_loopback(
+                {0: noise.copy(), 3: noise}, 3, max_lag=32)
+
+    def test_loopback_simulation_recovers_reference_and_optical_latency(self):
+        report = run_simulation(seed=83)
+
+        self.assertEqual(report["maximum_reference_lag_error_samples"], 0)
+        self.assertEqual(report["recovered_optical_latency_samples"], 47)
+        self.assertEqual(report["recovered_spike_count"], 8)
+        self.assertLess(abs(report["spike_amplitude_error_v"]), 0.001)
+        self.assertFalse(report["software_repetition_alignment_applied"])
+        self.assertEqual(report["maximum_reference_lag_error_samples"], 0)
+
     def test_rejects_invalid_shape(self):
         with self.assertRaises(ValueError):
             measure_periodic_pulses(np.zeros(8), 4, 1)

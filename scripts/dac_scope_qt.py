@@ -97,8 +97,12 @@ from mzi_calibration import (
     PydaqMziController,
     analyze_optical_peaks,
     calibration_voltage_sequence,
+    estimate_correlation_lag,
     measure_spikes_at_indices,
+    measure_spikes_in_windows,
+    measure_spikes_with_loopback,
     measure_triggered_spikes,
+    optical_schedule_from_loopback,
     parse_heater_voltages,
 )
 from optical_experiment import (
@@ -1446,7 +1450,8 @@ class OpticalNeuronProfilesWindow(QtWidgets.QWidget):
         self.program_btn = QtWidgets.QPushButton("Program optical setup")
         self.program_btn.setToolTip(
             "Program these profiles with zero static current, the pulse-editor "
-            "waveform, the square current source, and Spike n to DACn routes.")
+            "waveform, the square current source, the selected DAC0-DAC2 "
+            "routes, and the fixed DAC3 reference route.")
         self.program_btn.clicked.connect(
             self.scope._on_mzi_program_test)
         layout.addRow("", self.program_btn)
@@ -3651,15 +3656,36 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
 
         route_summary = QtWidgets.QLabel(
-            "Routes: Spike 0 -> DAC0, Spike 1 -> DAC1, Spike 2 -> DAC2, Spike 3 -> DAC3. "
-            "Every trigger-aligned capture saves ADC0, ADC1, ADC2, and ADC3.")
+            "DAC0-DAC2 are independent optical stimulus paths. DAC3 always "
+            "carries Spike 0 and is physically looped to ADC3 as the clean "
+            "timing reference. Every ADC is captured and averaged separately.")
         route_summary.setWordWrap(True)
-        route_summary.setStyleSheet("color:#9fb3c8; font-size:11px;")
-        sf.addRow("I/O", route_summary)
+        route_summary.setStyleSheet("color:#81C784; font-size:11px;")
+        sf.addRow("Reference path", route_summary)
+        source_row = QtWidgets.QHBoxLayout()
+        self.mzi_dac_sources = []
+        for channel in range(3):
+            source_row.addWidget(QtWidgets.QLabel(f"DAC{channel}"))
+            source = QtWidgets.QComboBox()
+            source.addItems(SOURCE_LABELS)
+            source.setCurrentText("Spike 0")
+            source.setToolTip(
+                f"Normal 16:4 crossbar source for DAC{channel}. The selection "
+                "is staged until Program setup is pressed.")
+            self.mzi_dac_sources.append(source)
+            source_row.addWidget(source)
+        reference_label = QtWidgets.QLabel("DAC3: Spike 0 reference")
+        reference_label.setStyleSheet("color:#4FC3F7;")
+        reference_label.setToolTip(
+            "DAC3 is fixed to Spike 0 because ADC3 is the timing reference.")
+        source_row.addWidget(reference_label)
+        source_row.addStretch(1)
+        sf.addRow("DAC crossbar", source_row)
         self.mzi_program_btn = QtWidgets.QPushButton("Program setup")
         self.mzi_program_btn.setToolTip(
             "Program the 5 kHz square current, all four zero-bias neurons, all pulse shapers, "
-            "and Spike n -> DACn routes. Heater voltages are not changed.")
+            "and the selected DAC0-DAC2 crossbar routes. DAC3 stays on "
+            "Spike 0 as the reference. Heater voltages are not changed.")
         self.mzi_program_btn.clicked.connect(self._on_mzi_program_test)
         sf.addRow("", self.mzi_program_btn)
         setup_column.addWidget(stimulus)
@@ -3761,9 +3787,25 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_min_seed.setValue(2)
         self.mzi_min_seed.setToolTip(
             "Consecutive above-threshold samples required to reject isolated noise excursions.")
+
+        self.mzi_optical_max_lag = QtWidgets.QSpinBox()
+        self.mzi_optical_max_lag.setRange(1, 8192)
+        self.mzi_optical_max_lag.setValue(1024)
+        self.mzi_optical_max_lag.setSuffix(" samples")
+        self.mzi_optical_max_lag.setToolTip(
+            "Maximum fixed optical-path latency searched relative to ADC3.")
+        self.mzi_loopback_padding = QtWidgets.QSpinBox()
+        self.mzi_loopback_padding.setRange(0, 256)
+        self.mzi_loopback_padding.setValue(8)
+        self.mzi_loopback_padding.setSuffix(" samples")
+        self.mzi_loopback_padding.setToolTip(
+            "Extra samples included on each side of every ADC3-derived spike "
+            "window when measuring the optical channel.")
         detection_form.addRow("Detection threshold", self.mzi_detect_sigma)
         detection_form.addRow("Boundary threshold", self.mzi_boundary_sigma)
         detection_form.addRow("Minimum seed samples", self.mzi_min_seed)
+        detection_form.addRow("Optical latency search", self.mzi_optical_max_lag)
+        detection_form.addRow("Optical window padding", self.mzi_loopback_padding)
         self.mzi_detection_panel.setVisible(False)
         advanced_btn.toggled.connect(self.mzi_detection_panel.setVisible)
         setup_column.addWidget(self.mzi_detection_panel)
@@ -3865,6 +3907,19 @@ class ScopeWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.mzi_dataset_status)
 
         analysis_row = QtWidgets.QHBoxLayout()
+        analysis_row.addWidget(QtWidgets.QLabel("View"))
+        self.mzi_result_channel = QtWidgets.QComboBox()
+        self.mzi_result_channel.addItem("All ADC channels", -1)
+        for channel in range(3):
+            self.mzi_result_channel.addItem(f"ADC{channel} optical", channel)
+        self.mzi_result_channel.addItem("ADC3 timing reference", 3)
+        self.mzi_result_channel.setToolTip(
+            "All overlays separately averaged ADC0-ADC2 optical traces and "
+            "the ADC3 electrical reference. Select one channel for detailed "
+            "peak markers and its individual transfer curve.")
+        self.mzi_result_channel.currentIndexChanged.connect(
+            self._apply_mzi_peak_analysis)
+        analysis_row.addWidget(self.mzi_result_channel)
         analysis_row.addWidget(QtWidgets.QLabel("Peak polarity"))
         self.mzi_peak_polarity = QtWidgets.QComboBox()
         self.mzi_peak_polarity.addItem("Auto dominant", "auto")
@@ -4262,9 +4317,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "settle_s": self.mzi_settle.value() / 1000.0,
             "restore_v": self.mzi_restore.value(),
             "heater_voltages_before_sweep": dict(self._mzi_heater_voltages),
-            "xbar_sources": [f"Spike {channel}" for channel in range(4)],
+            "xbar_sources": [
+                *(source.currentText() for source in self.mzi_dac_sources),
+                "Spike 0",
+            ],
             "adc_channels": [0, 1, 2, 3],
+            "optical_adc_channels": [0, 1, 2],
             "analysis_adc": 0,
+            "reference_adc": 3,
+            "optical_max_lag": self.mzi_optical_max_lag.value(),
+            "loopback_window_padding": self.mzi_loopback_padding.value(),
         }
 
     def _mzi_experiment_metadata(self, spec):
@@ -4297,8 +4359,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 "repetitions_per_heater_capture": spec["reps"],
                 "adc_channels": list(spec["adc_channels"]),
                 "adc_channel": spec["analysis_adc"],
+                "optical_adc_channels": list(spec["optical_adc_channels"]),
+                "reference_adc_channel": spec["reference_adc"],
+                "reference_dac_channel": 3,
                 "all_adc_channels_saved": True,
                 "software_time_alignment": False,
+                "software_time_alignment_source": "none; BCPT hardware trigger",
+                "loopback_max_repetition_lag_samples": 0,
+                "loopback_max_optical_lag_samples": spec["optical_max_lag"],
+                "loopback_window_padding_samples":
+                    spec["loopback_window_padding"],
             },
             "xbar": {
                 "sources_by_dac": {
@@ -4306,7 +4376,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     for channel, source in enumerate(spec["xbar_sources"])
                 },
                 "register17_readback": spec.get("xbar_register17"),
-                "optical_test_route": "Spike n -> DACn; ADC0..ADC3 captured",
+                "optical_test_route": (
+                    "DAC0..DAC2 use normal independent crossbar selections; DAC3 always "
+                    "Spike 0 looped to ADC3; ADC0..ADC2 analyzed separately"),
             },
             "stimulus": {
                 "neurons": neurons,
@@ -4346,7 +4418,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 "minimum_seed_samples": spec["minimum_seed_samples"],
                 "response_start_sample": spec["response_start_sample"],
                 "response_start_reason": "64-sample capture guard; no stimulus onset assumed",
-                "template": None,
+                "template": "simultaneous DAC3-to-ADC3 Spike 0 loopback",
+                "reference_adc_channel": spec["reference_adc"],
+                "optical_adc_channel": spec["analysis_adc"],
+                "optical_adc_channels": list(spec["optical_adc_channels"]),
+                "channels_averaged_independently": True,
+                "max_repetition_lag_samples": 0,
+                "max_optical_lag_samples": spec["optical_max_lag"],
+                "window_padding_samples": spec["loopback_window_padding"],
                 "fft_filter": None,
             },
             "software": {
@@ -4390,9 +4469,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
             replies.append(self.dac.set_neuron_param(neuron, "iconst", 0))
             replies.append(self.dac.program_pulse(pulse, target=neuron))
             replies.append(self.dac.set_spike_cal(neuron, 0x4000, 0))
-            replies.append(self.dac.set_source(neuron, f"Spike {neuron}"))
+            replies.append(
+                self.dac.set_source(neuron, spec["xbar_sources"][neuron]))
         self.mzi_setup_progress.emit(
-            "Programming 15 mA, 5 kHz square current source...")
+            "DAC routes programmed; DAC3 is the fixed Spike 0 reference. "
+            "Programming 15 mA, 5 kHz square...")
         current_samples, current_cps, actual_frequency = gen_current_wave(
             "Square", spec["current_ma"], spec["current_frequency_hz"],
             square_duty=spec["current_duty_percent"])
@@ -4488,33 +4569,106 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 channel: np.asarray(capture["stack"][channel], dtype=np.int16)
                 for channel in spec["adc_channels"]
             }
-            raw = raw_stacks[spec["analysis_adc"]]
             step_sample = spec["response_start_sample"]
-            volts = raw.astype(np.float64) * VOLTS_PER_COUNT
+            volts_by_adc = {
+                channel: stack.astype(np.float64) * VOLTS_PER_COUNT
+                for channel, stack in raw_stacks.items()
+            }
+            # BCPT repetitions are already hardware-trigger aligned. Average
+            # each ADC at its original sample indices; ADC3 is used only to
+            # identify the event schedule and optical path latency.
+            reference_reps = np.asarray(
+                volts_by_adc[spec["reference_adc"]], dtype=np.float64)
+            reference = measure_triggered_spikes(
+                reference_reps, step_sample,
+                threshold_sigma=spec["detect_sigma"],
+                boundary_sigma=spec["boundary_sigma"],
+                minimum_seed_samples=spec["minimum_seed_samples"])
+            baseline_end = max(4, step_sample - 10)
+            reference_baseline = np.median(
+                reference_reps[:, :baseline_end], axis=1)
+            reference_average = (
+                reference_reps - reference_baseline[:, None]).mean(axis=0)
+            channel_work = {}
+            valid_lags = []
+            for channel in spec["optical_adc_channels"]:
+                repetitions = np.asarray(
+                    volts_by_adc[channel], dtype=np.float64)
+                baseline = np.median(
+                    repetitions[:, :baseline_end], axis=1)
+                channel_average = (
+                    repetitions - baseline[:, None]).mean(axis=0)
+                try:
+                    candidate = estimate_correlation_lag(
+                        channel_average, reference_average,
+                        spec["optical_max_lag"], allow_inversion=True)
+                    candidate_lag = int(candidate.lag_samples)
+                    candidate_score = float(candidate.score)
+                except ValueError:
+                    candidate_lag = 0
+                    candidate_score = 0.0
+                stimulus_enabled = spec["xbar_sources"][channel] != "Off"
+                correlation_valid = (
+                    stimulus_enabled and abs(candidate_score) >= 0.10)
+                if correlation_valid:
+                    valid_lags.append(candidate_lag)
+                channel_work[channel] = {
+                    "repetitions": repetitions,
+                    "average": channel_average,
+                    "candidate_lag": candidate_lag,
+                    "candidate_score": candidate_score,
+                    "stimulus_enabled": stimulus_enabled,
+                    "correlation_valid": correlation_valid,
+                }
+            fallback_lag = (
+                int(round(float(np.median(valid_lags)))) if valid_lags else 0)
+            point_channels = {}
+            for channel in spec["optical_adc_channels"]:
+                work = channel_work[channel]
+                latency = (work["candidate_lag"]
+                           if work["correlation_valid"] else fallback_lag)
+                nominal, channel_starts, channel_ends, signs = (
+                    optical_schedule_from_loopback(
+                        reference, work["average"], latency,
+                        padding_samples=spec["loopback_window_padding"],
+                        response_polarity=(
+                            -1 if work["candidate_score"] < 0 else 1)))
+                channel_measurement = measure_spikes_in_windows(
+                    work["repetitions"], step_sample, nominal,
+                    start_indices=channel_starts,
+                    end_indices=channel_ends, polarities=signs)
+                point_channels[channel] = {
+                    "measurement": channel_measurement,
+                    "average": channel_measurement.averaged_waveform,
+                    "peaks": channel_measurement.peak_indices,
+                    "starts": channel_measurement.start_indices,
+                    "ends": channel_measurement.end_indices,
+                    "amplitudes": channel_measurement.per_peak_height.mean(axis=0),
+                    "height": channel_measurement.absolute_height,
+                    "source": spec["xbar_sources"][channel],
+                    "stimulus_enabled": work["stimulus_enabled"],
+                    "optical_latency_samples": latency,
+                    "optical_correlation_score": work["candidate_score"],
+                    "optical_correlation_valid": work["correlation_valid"],
+                    "loopback_lags": np.zeros(
+                        reference_reps.shape[0], dtype=np.int32),
+                    "loopback_scores": np.full(
+                        reference_reps.shape[0], np.nan),
+                }
+            primary = point_channels[spec["analysis_adc"]]
+            measurement = primary["measurement"]
+            average = primary["average"]
+            peaks = primary["peaks"]
+            starts = primary["starts"]
+            ends = primary["ends"]
+            amplitudes = primary["amplitudes"]
+            per_rep = measurement.per_rep_height
+            height = primary["height"]
             detection_error = ""
-            try:
-                measurement = measure_triggered_spikes(
-                    volts, step_sample,
-                    threshold_sigma=spec["detect_sigma"],
-                    boundary_sigma=spec["boundary_sigma"],
-                    minimum_seed_samples=spec["minimum_seed_samples"])
-                average = measurement.averaged_waveform
-                peaks = measurement.peak_indices
-                starts = measurement.start_indices
-                ends = measurement.end_indices
-                amplitudes = measurement.per_peak_height.mean(axis=0)
-                per_rep = measurement.per_rep_height
-                height = measurement.absolute_height
-            except ValueError as exc:
-                baseline = np.median(volts[:, :4], axis=1)
-                average = (volts - baseline[:, None]).mean(axis=0)
-                peaks = np.empty(0, dtype=np.int32)
-                starts = np.empty(0, dtype=np.int32)
-                ends = np.empty(0, dtype=np.int32)
-                amplitudes = np.empty(0, dtype=np.float64)
-                per_rep = np.empty(0, dtype=np.float64)
-                height = float(np.max(np.abs(average)))
-                detection_error = str(exc)
+            reference_latency = int(
+                reference.peak_indices[0] - step_sample)
+            optical_latency = primary["optical_latency_samples"]
+            correlation_score = primary["optical_correlation_score"]
             capture_dir = os.path.abspath(os.path.expanduser(self.args.capture_dir))
             os.makedirs(capture_dir, exist_ok=True)
             stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -4540,6 +4694,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 "heater_net": spec["net"],
                 "heater_nets": np.asarray(spec["nets"]),
                 "analysis_adc_channel": spec["analysis_adc"],
+                "reference_adc_channel": spec["reference_adc"],
+                "loopback_lag_samples": np.zeros(
+                    reference_reps.shape[0], dtype=np.int32),
+                "loopback_correlation_scores": np.full(
+                    reference_reps.shape[0], np.nan),
+                "reference_first_peak_latency_samples": reference_latency,
+                "optical_latency_from_loopback_samples": optical_latency,
+                "optical_loopback_correlation_score": correlation_score,
                 "neuron_profiles": np.asarray([
                     spec["profiles"][neuron] for neuron in range(4)]),
                 "external_current_ma": spec["current_ma"],
@@ -4548,6 +4710,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
             }
             for channel, stack in raw_stacks.items():
                 payload[f"raw_ch{channel}"] = stack
+            for channel, channel_result in point_channels.items():
+                payload[f"averaged_waveform_ch{channel}_v"] = (
+                    channel_result["average"])
+                payload[f"peak_indices_ch{channel}"] = channel_result["peaks"]
+                payload[f"spike_amplitudes_ch{channel}_v"] = (
+                    channel_result["amplitudes"])
+                payload[f"optical_latency_ch{channel}_samples"] = (
+                    channel_result["optical_latency_samples"])
+                payload[f"optical_correlation_ch{channel}"] = (
+                    channel_result["optical_correlation_score"])
             np.savez_compressed(path, **payload)
             return {
                 "kind": "point", "spec": spec, "voltage": voltage,
@@ -4555,6 +4727,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 "path": path, "average": average, "peaks": peaks,
                 "starts": starts, "ends": ends, "amplitudes": amplitudes,
                 "detection_error": detection_error,
+                "reference_latency_samples": reference_latency,
+                "optical_latency_samples": optical_latency,
+                "optical_correlation_score": correlation_score,
+                "loopback_lags": np.zeros(
+                    reference_reps.shape[0], dtype=np.int32),
+                "loopback_scores": primary["loopback_scores"],
+                "channel_results": point_channels,
             }
         except Exception as exc:  # noqa: BLE001
             import traceback
@@ -4872,9 +5051,36 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._show_mzi_result_curve(result)
         self.mzi_results_tabs.setCurrentIndex(active_tab)
 
-    def _mzi_peak_analyses(self, result):
-        measurements = list(result.get("measurements", []))
-        detected = list(result.get("independent_measurements", []))
+    @staticmethod
+    def _mzi_channel_result(result, channel):
+        channel_results = result.get("channel_results", {})
+        selected = channel_results.get(channel)
+        if selected is None:
+            selected = channel_results.get(str(channel))
+        if selected is not None:
+            return selected
+        if int(channel) == int(result.get("primary_optical_adc", 0)):
+            return result
+        return None
+
+    @staticmethod
+    def _mzi_lane_timing_text(channel_result):
+        latency = int(channel_result.get("optical_latency_samples", 0))
+        score = channel_result.get("optical_correlation_score")
+        score_text = (
+            "n/a" if score is None or not np.isfinite(float(score))
+            else f"{abs(float(score)):.3f}")
+        return (
+            f"latency {latency:+d} samples ({latency:+d} ns @ 1 GS/s), "
+            f"|corr|={score_text}")
+    def _mzi_peak_analyses(self, result, channel=None):
+        if channel is None:
+            channel = int(self.mzi_result_channel.currentData())
+        channel_result = self._mzi_channel_result(result, channel)
+        if channel_result is None:
+            channel_result = result
+        measurements = list(channel_result.get("measurements", []))
+        detected = list(channel_result.get("independent_measurements", []))
         polarity = str(self.mzi_peak_polarity.currentData())
         sigma_limit = float(self.mzi_outlier_sigma.value())
         filter_enabled = bool(self.mzi_outlier_filter.isChecked())
@@ -4900,78 +5106,156 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     def _show_mzi_sweep_measurements(self, result):
         self._clear_mzi_trace_grid()
-        measurements = list(result.get("measurements", []))
-        analyses = self._mzi_peak_analyses(result)
+        selected_channel = int(self.mzi_result_channel.currentData())
+        channel_results = {
+            channel: self._mzi_channel_result(result, channel)
+            for channel in range(3)
+        }
+        channel_results = {
+            channel: value for channel, value in channel_results.items()
+            if value is not None
+        }
+        primary = self._mzi_channel_result(
+            result, int(result.get("primary_optical_adc", 0))) or result
+        point_count = len(primary.get("measurements", []))
         voltages = np.asarray(result.get("voltages", []), dtype=np.float64)
         directions = np.asarray(result.get("directions", []), dtype=np.int8)
-        if not measurements:
+        reference_averages = list(result.get("reference_averages", []))
+        if not point_count:
             self.mzi_results_summary.setText(
                 "No completed post-processed sweep points are available.")
             return
 
         columns = 4
-        rows = (len(measurements) + columns - 1) // columns
+        rows = (point_count + columns - 1) // columns
         for column in range(columns):
             self.mzi_trace_grid.setColumnStretch(column, 1)
+        analyses_by_channel = {
+            channel: self._mzi_peak_analyses(result, channel)
+            for channel in channel_results
+        }
 
-        for index, (measurement, analysis) in enumerate(
-                zip(measurements, analyses)):
+        for index in range(point_count):
             plot = pg.PlotWidget()
-            plot.setMinimumSize(250, 145)
-            plot.setMaximumHeight(185)
+            plot.setMinimumSize(240, 135)
+            plot.setMaximumHeight(180)
             plot.setBackground("#101418")
             plot.showGrid(x=True, y=True, alpha=0.18)
             if index % columns == 0:
                 plot.setLabel("left", "output", units="mV")
             if index // columns == rows - 1:
                 plot.setLabel("bottom", "ADC sample", units="ns")
-            average_mv = np.asarray(
-                measurement.averaged_waveform, dtype=np.float64) * 1e3
-            display_x, display_y = peak_envelope(average_mv, max_points=1200)
-            plot.plot(
-                display_x, display_y, pen=pg.mkPen("#E8EDF2", width=1.0))
 
-            accepted = analysis.accepted
-            rejected = ~accepted
-            peak_y_mv = analysis.waveform_values_v * 1e3
-            accepted_count = int(np.count_nonzero(accepted))
-            total_count = int(analysis.peak_indices.size)
-            sign = -1.0 if analysis.polarity == "negative" else 1.0
-            if accepted_count:
-                filtered_line_mv = sign * analysis.filtered_mean_v * 1e3
-                plot.addItem(pg.InfiniteLine(
-                    pos=filtered_line_mv, angle=0, movable=False,
-                    pen=pg.mkPen("#F6AE2D", width=1.5)))
-                plot.plot(
-                    analysis.peak_indices[accepted], peak_y_mv[accepted],
-                    pen=None, symbol="x", symbolSize=7,
-                    symbolPen=pg.mkPen("#F6AE2D", width=1.5),
-                    symbolBrush=None)
-            if np.any(rejected):
-                raw_line_mv = sign * analysis.raw_mean_v * 1e3
-                plot.addItem(pg.InfiniteLine(
-                    pos=raw_line_mv, angle=0, movable=False,
-                    pen=pg.mkPen(
-                        "#90A4AE", width=1.0, style=QtCore.Qt.DashLine)))
-                plot.plot(
-                    analysis.peak_indices[rejected], peak_y_mv[rejected],
-                    pen=None, symbol="x", symbolSize=7,
-                    symbolPen=pg.mkPen("#EF5350", width=1.5),
-                    symbolBrush=None)
+            if selected_channel == -1:
+                details = []
+                for channel, channel_result in channel_results.items():
+                    measurement = channel_result["measurements"][index]
+                    average_mv = np.asarray(
+                        measurement.averaged_waveform, dtype=np.float64) * 1e3
+                    display_x, display_y = peak_envelope(
+                        average_mv, max_points=500)
+                    color = CH_COLORS[channel]
+                    plot.plot(
+                        display_x, display_y,
+                        pen=pg.mkPen(color, width=1.0))
+                    analysis = analyses_by_channel[channel][index]
+                    accepted = analysis.accepted
+                    if np.any(accepted):
+                        plot.plot(
+                            analysis.peak_indices[accepted],
+                            analysis.waveform_values_v[accepted] * 1e3,
+                            pen=None, symbol="x", symbolSize=5,
+                            symbolPen=pg.mkPen(color, width=1.2),
+                            symbolBrush=None)
+                    source = channel_result.get("source", "Spike 0")
+                    details.append(
+                        f"ADC{channel} {source}: "
+                        f"{analysis.filtered_mean_v * 1e3:.3f} mV; "
+                        f"{self._mzi_lane_timing_text(channel_result)}")
+                if index < len(reference_averages):
+                    reference_mv = np.asarray(
+                        reference_averages[index], dtype=np.float64) * 1e3
+                    display_x, display_y = peak_envelope(
+                        reference_mv, max_points=500)
+                    plot.plot(
+                        display_x, display_y,
+                        pen=pg.mkPen("#E8EDF2", width=1.0,
+                                     style=QtCore.Qt.DashLine))
+                    details.append("ADC3: electrical timing reference")
+                plot.setToolTip("\n".join(details))
+            elif selected_channel == 3:
+                if index < len(reference_averages):
+                    reference_mv = np.asarray(
+                        reference_averages[index], dtype=np.float64) * 1e3
+                    display_x, display_y = peak_envelope(
+                        reference_mv, max_points=900)
+                    plot.plot(
+                        display_x, display_y,
+                        pen=pg.mkPen("#E8EDF2", width=1.1))
+                    reference = result.get("reference_measurement")
+                    if reference is not None:
+                        peaks = np.asarray(reference.peak_indices, dtype=np.int32)
+                        valid = (peaks >= 0) & (peaks < reference_mv.size)
+                        plot.plot(
+                            peaks[valid], reference_mv[peaks[valid]],
+                            pen=None, symbol="x", symbolSize=6,
+                            symbolPen=pg.mkPen("#F6AE2D", width=1.4),
+                            symbolBrush=None)
+                plot.setToolTip(
+                    "ADC3 is averaged independently and supplies the clean "
+                    "event schedule used to measure each optical lane's latency. "
+                    "No captured trace is shifted.")
+            else:
+                channel_result = channel_results.get(selected_channel)
+                if channel_result is not None:
+                    measurement = channel_result["measurements"][index]
+                    analysis = analyses_by_channel[selected_channel][index]
+                    average_mv = np.asarray(
+                        measurement.averaged_waveform, dtype=np.float64) * 1e3
+                    display_x, display_y = peak_envelope(
+                        average_mv, max_points=1000)
+                    plot.plot(
+                        display_x, display_y,
+                        pen=pg.mkPen(CH_COLORS[selected_channel], width=1.1))
+                    accepted = analysis.accepted
+                    rejected = ~accepted
+                    if np.any(accepted):
+                        plot.addItem(pg.InfiniteLine(
+                            pos=analysis.filtered_mean_v * 1e3, angle=0,
+                            movable=False,
+                            pen=pg.mkPen("#F6AE2D", width=1.5)))
+                        plot.plot(
+                            analysis.peak_indices[accepted],
+                            analysis.waveform_values_v[accepted] * 1e3,
+                            pen=None, symbol="x", symbolSize=7,
+                            symbolPen=pg.mkPen("#F6AE2D", width=1.5),
+                            symbolBrush=None)
+                    if np.any(rejected):
+                        plot.plot(
+                            analysis.peak_indices[rejected],
+                            analysis.waveform_values_v[rejected] * 1e3,
+                            pen=None, symbol="x", symbolSize=7,
+                            symbolPen=pg.mkPen("#EF5350", width=1.5),
+                            symbolBrush=None)
+                    plot.setToolTip(
+                        f"ADC{selected_channel}; DAC source "
+                        f"{channel_result.get('source', 'unknown')}; "
+                        f"{self._mzi_lane_timing_text(channel_result)}; "
+                        f"{analysis.source}; accepted "
+                        f"{int(np.count_nonzero(accepted))}/"
+                        f"{analysis.peak_indices.size} peaks.")
 
             voltage = (float(voltages[index])
                        if index < voltages.size else float("nan"))
-            direction = ("R" if index < directions.size and directions[index]
-                         else "F")
+            direction = (
+                "R" if index < directions.size and directions[index] else "F")
+            view_label = (
+                "all ADCs" if selected_channel == -1 else
+                "ADC3 ref" if selected_channel == 3 else
+                f"ADC{selected_channel}")
             plot.setTitle(
-                f"#{index + 1} | {voltage:.4f} V {direction} | "
-                f"{analysis.filtered_mean_v * 1e3:.3f} mV | "
-                f"{accepted_count}/{total_count} {analysis.polarity}",
+                f"#{index + 1} | {voltage:.4f} V {direction} | {view_label}",
                 size="8pt")
-            plot.setToolTip(
-                f"{analysis.source}; raw mean "
-                f"{analysis.raw_mean_v * 1e3:.3f} mV; accepted "
-                f"{accepted_count} of {total_count} peaks.")
             plot.setYRange(
                 float(self.mzi_trace_y_min.value()),
                 float(self.mzi_trace_y_max.value()), padding=0.0)
@@ -4979,90 +5263,122 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 plot, index // columns, index % columns)
             self.mzi_sweep_trace_plots.append(plot)
 
-        filtered = np.asarray([
-            analysis.filtered_mean_v for analysis in analyses])
-        spread_mv = float(np.ptp(filtered)) * 1e3 if filtered.size else 0.0
-        filter_text = (
-            f"{self.mzi_outlier_sigma.value():.1f} sigma filtering"
-            if self.mzi_outlier_filter.isChecked() else "filtering disabled")
-        prefix = (
-            "Constant-voltage repeatability control"
-            if result.get("constant_voltage_control")
-            else "Optical sweep")
-        self.mzi_results_summary.setText(
-            f"{prefix}: {len(measurements)} points, {filter_text}, "
-            f"peak-to-peak filtered variation {spread_mv:.3f} mV. "
-            "Gold x marks accepted peaks; red x marks rejected outliers. "
-            "The gold line is the filtered mean and the dashed gray line is "
-            "the unfiltered mean.")
+        if selected_channel == -1:
+            descriptions = []
+            for channel, channel_result in channel_results.items():
+                analyses = analyses_by_channel[channel]
+                values = np.asarray([
+                    analysis.filtered_mean_v for analysis in analyses])
+                descriptions.append(
+                    f"ADC{channel} {channel_result.get('source', 'unknown')}: "
+                    f"{self._mzi_lane_timing_text(channel_result)}, "
+                    f"span {float(np.ptp(values)) * 1e3:.3f} mV")
+            self.mzi_results_summary.setText(
+                "Channels are averaged independently without shifting; ADC3 "
+                "supplies the event schedule and measured optical latency. " +
+                "; ".join(descriptions) + ".")
+        elif selected_channel == 3:
+            self.mzi_results_summary.setText(
+                "ADC3 is the DAC3 loopback timing reference. It is not an "
+                "optical response and is never averaged with ADC0-ADC2.")
+        else:
+            channel_result = channel_results.get(selected_channel, {})
+            analyses = analyses_by_channel.get(selected_channel, [])
+            values = np.asarray([
+                analysis.filtered_mean_v for analysis in analyses])
+            self.mzi_results_summary.setText(
+                f"ADC{selected_channel} from "
+                f"{channel_result.get('source', 'unknown')}: "
+                f"{self._mzi_lane_timing_text(channel_result)}; "
+                f"{len(analyses)} points, filtered span "
+                f"{float(np.ptp(values)) * 1e3 if values.size else 0.0:.3f} mV. "
+                "Gold x marks accepted peaks; red x marks rejected outliers.")
 
     def _show_mzi_result_curve(self, result):
+        plot = self.mzi_result_curve_plot
+        plot.clear()
+        legend = plot.plotItem.legend
+        if legend is not None:
+            legend.clear()
         voltage = np.asarray(result.get("voltages", []), dtype=np.float64)
         direction = np.asarray(result.get("directions", []), dtype=np.int8)
-        analyses = self._mzi_peak_analyses(result)
-        if not analyses:
-            for curve in (
-                    self.mzi_result_curve_raw_fwd,
-                    self.mzi_result_curve_raw_rev,
-                    self.mzi_result_curve_fwd,
-                    self.mzi_result_curve_rev):
-                curve.setData([], [])
-            return
-        raw = np.asarray([analysis.raw_mean_v for analysis in analyses])
-        filtered = np.asarray([
-            analysis.filtered_mean_v for analysis in analyses])
-        use_filter = bool(self.mzi_outlier_filter.isChecked())
+        selected_channel = int(self.mzi_result_channel.currentData())
         constant = bool(result.get("constant_voltage_control"))
+        use_filter = bool(self.mzi_outlier_filter.isChecked())
+        if selected_channel == 3:
+            plot.setLabel("left", "ADC3 timing reference")
+            plot.setLabel("bottom", "heater", units="V")
+            plot.setYRange(-0.05, 1.05, padding=0.0)
+            return
+
+        channels = (range(3) if selected_channel == -1
+                    else (selected_channel,))
+        visible_values = []
+        for channel in channels:
+            channel_result = self._mzi_channel_result(result, channel)
+            if channel_result is None:
+                continue
+            analyses = self._mzi_peak_analyses(result, channel)
+            if not analyses:
+                continue
+            raw = np.asarray([
+                analysis.raw_mean_v for analysis in analyses])
+            filtered = np.asarray([
+                analysis.filtered_mean_v for analysis in analyses])
+            source = channel_result.get("source", "unknown")
+            color = CH_COLORS[channel]
+            if constant:
+                x = np.arange(filtered.size)
+                values = filtered * 1e3
+                visible_values.append(values)
+                plot.plot(
+                    x, values, pen=pg.mkPen(color, width=1.6),
+                    symbol="o", symbolSize=4, symbolBrush=color,
+                    name=f"ADC{channel} {source}")
+                if use_filter and selected_channel != -1:
+                    plot.plot(
+                        x, raw * 1e3,
+                        pen=pg.mkPen("#90A4AE", width=1.0,
+                                     style=QtCore.Qt.DashLine),
+                        symbol="o", symbolSize=3,
+                        symbolBrush="#90A4AE", name="unfiltered")
+            else:
+                filtered_weight = self._normalize_mzi_values(filtered, False)
+                raw_weight = self._normalize_mzi_values(raw, False)
+                forward = direction == 0
+                reverse = direction == 1
+                for selected, suffix, style in (
+                        (forward, "forward", QtCore.Qt.SolidLine),
+                        (reverse, "reverse", QtCore.Qt.DashLine)):
+                    if not np.any(selected):
+                        continue
+                    plot.plot(
+                        voltage[selected], filtered_weight[selected],
+                        pen=pg.mkPen(color, width=1.7, style=style),
+                        symbol="o", symbolSize=4, symbolBrush=color,
+                        name=f"ADC{channel} {source} {suffix}")
+                if use_filter and selected_channel != -1:
+                    plot.plot(
+                        voltage[forward], raw_weight[forward],
+                        pen=pg.mkPen("#90A4AE", width=1.0,
+                                     style=QtCore.Qt.DotLine),
+                        name="unfiltered")
 
         if constant:
-            x = np.arange(voltage.size)
-            self.mzi_result_curve_plot.setLabel(
-                "left", "mean peak amplitude", units="mV")
             held = float(voltage[0]) if voltage.size else float("nan")
-            self.mzi_result_curve_plot.setLabel(
+            plot.setLabel("left", "mean peak amplitude", units="mV")
+            plot.setLabel(
                 "bottom", f"capture index (heater held at {held:.4f} V)")
-            raw_mv = raw * 1e3
-            filtered_mv = filtered * 1e3
-            if use_filter:
-                self.mzi_result_curve_raw_fwd.setData(x, raw_mv)
-                self.mzi_result_curve_fwd.setData(x, filtered_mv)
-            else:
-                self.mzi_result_curve_raw_fwd.setData([], [])
-                self.mzi_result_curve_fwd.setData(x, raw_mv)
-            self.mzi_result_curve_raw_rev.setData([], [])
-            self.mzi_result_curve_rev.setData([], [])
-            visible = np.concatenate(
-                (raw_mv, filtered_mv) if use_filter else (raw_mv,))
-            lower = float(np.min(visible))
-            upper = float(np.max(visible))
-            padding = max(0.05 * (upper - lower), 0.01)
-            self.mzi_result_curve_plot.setYRange(
-                lower - padding, upper + padding, padding=0.0)
+            if visible_values:
+                combined = np.concatenate(visible_values)
+                lower = float(np.min(combined))
+                upper = float(np.max(combined))
+                padding = max(0.05 * (upper - lower), 0.01)
+                plot.setYRange(lower - padding, upper + padding, padding=0.0)
         else:
-            raw_weight = self._normalize_mzi_values(raw, False)
-            filtered_weight = self._normalize_mzi_values(filtered, False)
-            self.mzi_result_curve_plot.setLabel(
-                "left", "normalized optical weight")
-            self.mzi_result_curve_plot.setLabel("bottom", "heater", units="V")
-            self.mzi_result_curve_plot.setYRange(-0.05, 1.05, padding=0.0)
-            forward = direction == 0
-            reverse = direction == 1
-            if use_filter:
-                self.mzi_result_curve_raw_fwd.setData(
-                    voltage[forward], raw_weight[forward])
-                self.mzi_result_curve_raw_rev.setData(
-                    voltage[reverse], raw_weight[reverse])
-                self.mzi_result_curve_fwd.setData(
-                    voltage[forward], filtered_weight[forward])
-                self.mzi_result_curve_rev.setData(
-                    voltage[reverse], filtered_weight[reverse])
-            else:
-                self.mzi_result_curve_raw_fwd.setData([], [])
-                self.mzi_result_curve_raw_rev.setData([], [])
-                self.mzi_result_curve_fwd.setData(
-                    voltage[forward], raw_weight[forward])
-                self.mzi_result_curve_rev.setData(
-                    voltage[reverse], raw_weight[reverse])
+            plot.setLabel("left", "normalized optical weight")
+            plot.setLabel("bottom", "heater", units="V")
+            plot.setYRange(-0.05, 1.05, padding=0.0)
     def _on_mzi_cal_result(self, result):
         self._mzi_running = False
         enabled = bool(self.dac)
@@ -5141,7 +5457,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
         if spec and kind in ("configured", "point", "sweep"):
             for channel in range(4):
-                label = f"Spike {channel}"
+                label = spec["xbar_sources"][channel]
                 self.src_cbs[channel].setCurrentText(label)
                 self._applied_label[channel] = label
             self._refresh_xbar_preview()
@@ -5162,7 +5478,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 "every i/iconst=0 mA; "
                 f"{spec['current_ma']:.1f} mA, "
                 f"{spec['current_actual_frequency_hz'] / 1000.0:.3f} kHz square; "
-                "Spike n -> DACn.")
+                "DAC0-DAC2 routes applied independently; DAC3/ADC3 is the "
+                "loopback reference.")
             return
         if kind == "point":
             self.mzi_progress.setValue(1)
@@ -5170,10 +5487,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self._show_mzi_spikes(
                 result["average"], result["peaks"], result["starts"],
                 result["ends"], result["amplitudes"])
+            lane_timing = "; ".join(
+                f"ADC{channel} {self._mzi_lane_timing_text(channel_result)}"
+                for channel, channel_result in
+                sorted(result.get("channel_results", {}).items()))
             self.mzi_status.setText(
-                f"Captured {spec['reps']} aligned samples at {result['voltage']:.4f} V: "
-                f"{len(result['peaks'])} spikes, mean {result['height'] * 1e3:.3f} mV. "
-                f"Saved to {result['path']}")
+                f"Captured {spec['reps']} hardware-triggered samples at "
+                f"{result['voltage']:.4f} V: {len(result['peaks'])} spikes, "
+                f"mean {result['height'] * 1e3:.3f} mV; ADC3 first peak "
+                f"{result['reference_latency_samples']} samples after guard; "
+                f"{lane_timing}. Saved to {result['path']}")
             return
         voltage = np.asarray(result.get("voltages", []), dtype=float)
         direction = np.asarray(result.get("directions", []), dtype=np.int8)
@@ -5218,8 +5541,21 @@ class ScopeWindow(QtWidgets.QMainWindow):
         else:
             detail = "no completed points"
 
+        timing = ""
+        if result.get("loopback_reference_adc") is not None:
+            lane_timing = []
+            for channel, channel_result in sorted(
+                    result.get("channel_results", {}).items()):
+                lane_timing.append(
+                    f"ADC{channel} "
+                    f"{self._mzi_lane_timing_text(channel_result)}")
+            timing = (
+                f"; ADC3 reference peak "
+                f"{result.get('reference_first_peak_latency_samples')} samples "
+                f"after guard; lane latency: " + ", ".join(lane_timing))
         self.mzi_status.setText(
-            f"Sweep {state}: {detail}. Saved to {result.get('path', '(not saved)')}")
+            f"Sweep {state}: {detail}{timing}. "
+            f"Saved to {result.get('path', '(not saved)')}")
 
     # ---- multisample trigger-synced burst over Ethernet (BCPT + BRDO) ----
     def _on_multisample(self):

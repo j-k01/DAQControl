@@ -163,9 +163,18 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertEqual(spec["current_ma"], 15.0)
         self.assertAlmostEqual(spec["current_actual_frequency_hz"], 5000.0)
         self.assertEqual(spec["current_duty_percent"], 50.0)
-        self.assertEqual(spec["xbar_sources"],
-                         ["Spike 0", "Spike 1", "Spike 2", "Spike 3"])
+        self.assertEqual(spec["xbar_sources"], ["Spike 0"] * 4)
+        self.assertEqual(
+            [source.currentText() for source in self.window.mzi_dac_sources],
+            ["Spike 0"] * 3)
+        self.assertEqual(
+            [source.count() for source in self.window.mzi_dac_sources],
+            [len(dac_scope_qt.SOURCE_LABELS)] * 3)
         self.assertEqual(spec["adc_channels"], [0, 1, 2, 3])
+        self.assertEqual(spec["analysis_adc"], 0)
+        self.assertEqual(spec["reference_adc"], 3)
+        self.assertEqual(spec["optical_max_lag"], 1024)
+        self.assertEqual(spec["loopback_window_padding"], 8)
         self.assertEqual(spec["nets"], ("h_1_1",))
         self.assertEqual(spec["sweep_label"], "h_1_1")
 
@@ -237,7 +246,7 @@ class OpticalWeightGuiTests(unittest.TestCase):
             }
             self.assertIn(("i", 0), neuron_params)
             self.assertIn(("iconst", 0), neuron_params)
-            self.assertIn(("source", neuron, f"Spike {neuron}"), fake.calls)
+            self.assertIn(("source", neuron, "Spike 0"), fake.calls)
             pulse = next(call for call in fake.calls
                          if call[0] == "pulse" and call[1] == neuron)
             self.assertEqual(len(pulse[2]), 40)
@@ -252,6 +261,31 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertTrue(spec["current_player_readback"]["running"])
         self.assertEqual(spec["current_player_readback"]["count"], 1000)
 
+    def test_optical_routes_use_full_independent_crossbar_selectors(self):
+        fake = FakeDac()
+        self.window.dac = fake
+        self.window.mzi_dac_sources[0].setCurrentText("Spike 2")
+        self.window.mzi_dac_sources[1].setCurrentText("Off")
+        self.window.mzi_dac_sources[2].setCurrentText("BRAM 1")
+        spec = self.window._mzi_gui_spec()
+
+        self.assertEqual(
+            spec["xbar_sources"], ["Spike 2", "Off", "BRAM 1", "Spike 0"])
+        self.window._program_mzi_test(spec)
+
+        self.assertIn(("source", 0, "Spike 2"), fake.calls)
+        self.assertIn(("source", 1, "Off"), fake.calls)
+        self.assertIn(("source", 2, "BRAM 1"), fake.calls)
+        self.assertIn(("source", 3, "Spike 0"), fake.calls)
+        spec.update(
+            spacing="voltage", voltages=np.asarray([0.0, 1.0]),
+            directions=np.asarray([0, 0], dtype=np.int8))
+        metadata = self.window._mzi_experiment_metadata(spec)
+        self.assertEqual(metadata["acquisition"]["optical_adc_channels"], [0, 1, 2])
+        self.assertEqual(metadata["xbar"]["sources_by_dac"]["DAC0"], "Spike 2")
+        self.assertEqual(metadata["xbar"]["sources_by_dac"]["DAC1"], "Off")
+        self.assertEqual(metadata["xbar"]["sources_by_dac"]["DAC2"], "BRAM 1")
+        self.assertEqual(metadata["acquisition"]["reference_adc_channel"], 3)
     def test_optical_editor_windows_stage_profiles_and_pulse(self):
         self.window._open_mzi_neuron_window()
         self.assertTrue(self.window._mzi_neuron_win.isVisible())
@@ -395,9 +429,17 @@ class OpticalWeightGuiTests(unittest.TestCase):
                 channel: np.zeros((repetitions, 16384), dtype=np.int16)
                 for channel in range(4)
             }
+            channel_amplitudes = {
+                0: amplitude,
+                1: int(2000 + 1000 * voltage),
+                2: int(5000 - 1500 * voltage),
+            }
             for peak in (6000, 9000, 12000):
-                stack[0][:, peak - 1:peak + 2] = [
-                    amplitude // 2, amplitude, amplitude // 2]
+                for channel, channel_amplitude in channel_amplitudes.items():
+                    stack[channel][:, peak - 1:peak + 2] = [
+                        channel_amplitude // 2, channel_amplitude,
+                        channel_amplitude // 2]
+                stack[3][:, peak - 1:peak + 2] = [4000, 8000, 4000]
             return {
                 "stack": stack, "offs": np.zeros(repetitions, dtype=np.int32),
                 "meta": {"cov": 1.0, "reps": repetitions},
@@ -431,9 +473,12 @@ class OpticalWeightGuiTests(unittest.TestCase):
             np.testing.assert_array_equal(
                 saved["peak_indices"], [6000, 9000, 12000])
             np.testing.assert_array_equal(
-                saved["spike_start_indices"], [5999, 8999, 11999])
+                saved["spike_start_indices"], [5991, 8991, 11991])
             np.testing.assert_array_equal(
-                saved["spike_end_indices"], [6001, 9001, 12001])
+                saved["spike_end_indices"], [6009, 9009, 12009])
+            self.assertEqual(int(saved["reference_adc_channel"]), 3)
+            self.assertEqual(
+                int(saved["optical_latency_from_loopback_samples"]), 0)
 
     def test_named_sweep_writes_raw_heater_directories_and_curve(self):
         fake_dac = FakeDac()
@@ -464,10 +509,37 @@ class OpticalWeightGuiTests(unittest.TestCase):
             self.assertEqual(raw["raw_ch0"].shape, (16, 16384))
             self.assertEqual(raw["raw_ch3"].shape, (16, 16384))
         np.testing.assert_allclose(result["normalized"], [0.0, 0.5, 1.0])
+        self.assertEqual(set(result["channel_results"]), {0, 1, 2})
+        self.assertTrue(result["channel_results"][0]["stimulus_enabled"])
+        self.assertFalse(np.array_equal(
+            result["channel_results"][0]["filtered_peak_means_v"],
+            result["channel_results"][1]["filtered_peak_means_v"]))
+        self.assertFalse(np.array_equal(
+            result["channel_results"][1]["filtered_peak_means_v"],
+            result["channel_results"][2]["filtered_peak_means_v"]))
+        self.assertTrue((heaters[0] / "processed_ch1.npz").exists())
+        self.assertTrue((heaters[0] / "processed_ch2.npz").exists())
+        self.assertTrue((experiment / "optical_curve_ch0.csv").exists())
+        self.assertTrue((experiment / "optical_curve_ch1.csv").exists())
+        self.assertTrue((experiment / "optical_curve_ch2.csv").exists())
+        self.assertEqual(manifest["acquisition"]["optical_adc_channels"], [0, 1, 2])
         self.window._mzi_resume_autosample = False
         self.window._mzi_resume_tap = False
         self.window._on_mzi_cal_result(result)
         self.assertEqual(len(self.window.mzi_sweep_trace_plots), 3)
+        self.assertEqual(self.window.mzi_result_channel.currentData(), -1)
+        self.assertGreaterEqual(
+            len(self.window.mzi_sweep_trace_plots[0].listDataItems()), 4)
+        summary_text = self.window.mzi_results_summary.text()
+        status_text = self.window.mzi_status.text()
+        for channel in range(3):
+            self.assertIn(f"ADC{channel}", summary_text)
+            self.assertIn(f"ADC{channel}", status_text)
+        self.assertIn("latency", summary_text)
+        self.assertIn("samples", summary_text)
+        self.window.mzi_result_channel.setCurrentIndex(2)
+        self.assertIn("ADC1", self.window.mzi_results_summary.text())
+        self.assertIn("latency", self.window.mzi_results_summary.text())
         self.assertEqual(self.window.workspace_tabs.currentIndex(), 2)
 
     def test_saved_experiment_imports_without_board_connection(self):

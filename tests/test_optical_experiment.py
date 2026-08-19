@@ -92,6 +92,65 @@ class OpticalExperimentTests(unittest.TestCase):
                 self.assertTrue(
                     (point / "independently_detected_spikes.csv").exists())
 
+    def test_adc3_loopback_sets_latency_without_shifting_captures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            loopback_metadata = metadata()
+            loopback_metadata["acquisition"].update({
+                "reference_adc_channel": 3,
+                "reference_dac_channel": 3,
+                "loopback_max_repetition_lag_samples": 32,
+                "loopback_max_optical_lag_samples": 64,
+                "loopback_window_padding_samples": 4,
+            })
+            loopback_metadata["xbar"]["sources_by_dac"] = {
+                f"DAC{channel}": "Spike 0" for channel in range(4)
+            }
+            experiment = create_experiment(
+                Path(directory), "ADC3 loopback", loopback_metadata)
+            reference_centers = (517, 917, 1417)
+            optical_delay = 12
+            for index, (voltage, amplitude) in enumerate(
+                    zip((0.0, 0.5, 1.0), (1000, 5000, 3000))):
+                stacks = {
+                    channel: np.zeros((16, 2048), dtype=np.int16)
+                    for channel in range(4)
+                }
+                for repetition in range(16):
+                    for center in reference_centers:
+                        optical = center + optical_delay
+                        stacks[3][repetition, center - 2:center + 3] = [
+                            2000, 6000, 9000, 6000, 2000]
+                        stacks[0][repetition, optical - 2:optical + 3] = [
+                            amplitude // 4, amplitude // 2, amplitude,
+                            amplitude // 2, amplitude // 4]
+                save_heater_capture(
+                    experiment, index=index, voltage_v=voltage, direction=0,
+                    stacks=stacks)
+            update_manifest(experiment, capture_status="complete")
+
+            result = process_experiment(experiment)
+
+            self.assertEqual(result["loopback_reference_adc"], 3)
+            self.assertLessEqual(abs(result["optical_latency_samples"] - 12), 1)
+            self.assertEqual(result["loopback_alignments"], [])
+            np.testing.assert_allclose(
+                result["normalized"], [0.0, 1.0, 0.5], atol=0.02)
+            summary = load_manifest(experiment)["analysis"]
+            self.assertFalse(summary["loopback_alignment_applied"])
+            self.assertTrue(
+                summary["trigger_aligned_repetitions_averaged_without_shifting"])
+            self.assertEqual(summary["loopback_reference_adc"], 3)
+            self.assertIn("triggered-average cross-correlation",
+                          summary["timing_source"])
+            first_point = experiment / load_manifest(
+                experiment)["heater_captures"][0]["directory"]
+            with np.load(first_point / "processed.npz") as processed:
+                self.assertEqual(
+                    processed["loopback_reference_template_v"].shape,
+                    (2048,))
+                self.assertEqual(
+                    processed["loopback_lag_samples"].shape, (0,))
+
     def test_constant_voltage_run_is_reported_as_repeatability_control(self):
         with tempfile.TemporaryDirectory() as directory:
             control_metadata = metadata()

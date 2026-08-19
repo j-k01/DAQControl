@@ -11,7 +11,12 @@ from pathlib import Path
 import numpy as np
 
 from mzi_calibration import (
-    analyze_optical_peaks, measure_spikes_at_indices, measure_triggered_spikes,
+    analyze_optical_peaks,
+    estimate_correlation_lag,
+    measure_spikes_at_indices,
+    measure_spikes_in_windows,
+    measure_triggered_spikes,
+    optical_schedule_from_loopback,
 )
 from optical_experiment import load_manifest, update_manifest, utc_now, write_json
 
@@ -26,15 +31,45 @@ def _load_heater_capture(experiment_dir: Path, descriptor: dict, adc_channel: in
     return heater_dir, raw
 
 
-def _write_heater_analysis(heater_dir: Path, measurement, descriptor: dict,
-                          detected=None) -> None:
+def _load_heater_channels(
+    experiment_dir: Path,
+    descriptor: dict,
+    channels: tuple[int, ...],
+):
+    heater_dir = experiment_dir / descriptor["directory"]
+    with np.load(heater_dir / "raw_captures.npz", allow_pickle=False) as data:
+        raw = {
+            channel: np.asarray(data[f"raw_ch{channel}"], dtype=np.int16)
+            for channel in channels
+        }
+    return heater_dir, raw
+
+
+def _write_heater_analysis(
+    heater_dir: Path,
+    measurement,
+    descriptor: dict,
+    detected=None,
+    *,
+    loopback_alignment=None,
+    loopback_reference_average=None,
+    reference_adc: int | None = None,
+    optical_latency_samples: int | None = None,
+    optical_correlation_score: float | None = None,
+    adc_channel: int | None = None,
+    primary_channel: bool = True,
+) -> None:
     amplitudes = measurement.per_peak_height.mean(axis=0)
     detected_count = 0 if detected is None else int(detected.peak_indices.size)
     optical = analyze_optical_peaks(
         measurement, detected, polarity="auto",
         sigma_limit=2.5, filter_enabled=True)
+    suffix = "" if primary_channel else f"_ch{int(adc_channel)}"
+    processed_name = f"processed{suffix}.npz"
+    measurements_name = f"spike_measurements{suffix}.csv"
+    independent_name = f"independently_detected_spikes{suffix}.csv"
     np.savez_compressed(
-        heater_dir / "processed.npz",
+        heater_dir / processed_name,
         artifact_kind="derived_optical_heater_capture_analysis",
         synthetic=np.bool_(False),
         averaged_waveform_v=measurement.averaged_waveform,
@@ -66,8 +101,26 @@ def _write_heater_analysis(heater_dir: Path, measurement, descriptor: dict,
         optical_raw_mean_peak_amplitude_v=np.float64(optical.raw_mean_v),
         optical_filtered_mean_peak_amplitude_v=np.float64(
             optical.filtered_mean_v),
+        loopback_reference_adc=np.int16(
+            -1 if reference_adc is None else reference_adc),
+        loopback_reference_template_v=(
+            np.asarray(loopback_reference_average, dtype=np.float64)
+            if loopback_reference_average is not None else
+            (np.empty(0, dtype=np.float64) if loopback_alignment is None else
+             loopback_alignment.template)),
+        loopback_lag_samples=(
+            np.empty(0, dtype=np.int32) if loopback_alignment is None else
+            loopback_alignment.lag_samples),
+        loopback_correlation_scores=(
+            np.empty(0, dtype=np.float64) if loopback_alignment is None else
+            loopback_alignment.correlation_scores),
+        optical_latency_from_loopback_samples=np.int32(
+            0 if optical_latency_samples is None else optical_latency_samples),
+        optical_loopback_correlation_score=np.float64(
+            np.nan if optical_correlation_score is None else
+            optical_correlation_score),
     )
-    with (heater_dir / "spike_measurements.csv").open("w", newline="") as handle:
+    with (heater_dir / measurements_name).open("w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow([
             "spike", "start_sample", "peak_sample", "end_sample", "polarity",
@@ -86,7 +139,7 @@ def _write_heater_analysis(heater_dir: Path, measurement, descriptor: dict,
                 measurement.areas_v_samples[spike] * 1e3,
                 float(np.mean(reps_mv)), float(np.std(reps_mv)),
             ])
-    with (heater_dir / "independently_detected_spikes.csv").open(
+    with (heater_dir / independent_name).open(
             "w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow([
@@ -108,23 +161,38 @@ def _write_heater_analysis(heater_dir: Path, measurement, descriptor: dict,
                 ])
     heater_meta_path = heater_dir / "heater.json"
     heater_meta = json.loads(heater_meta_path.read_text(encoding="utf-8"))
-    heater_meta["analysis"] = {
+    analysis_payload = {
         "processed_utc": utc_now(),
-        "processed_file": "processed.npz",
-        "measurements_file": "spike_measurements.csv",
+        "processed_file": processed_name,
+        "adc_channel": adc_channel,
+        "measurements_file": measurements_name,
         "spike_count": int(measurement.peak_indices.size),
         "signed_mean_amplitude_v": float(measurement.signed_height),
         "absolute_mean_amplitude_v": float(measurement.absolute_height),
         "reference_boundaries": True,
         "independently_detected_spike_count": detected_count,
-        "independent_detection_file": "independently_detected_spikes.csv",
+        "independent_detection_file": independent_name,
         "optical_peak_polarity": optical.polarity,
         "optical_total_peak_count": int(optical.peak_indices.size),
         "optical_accepted_peak_count": int(np.count_nonzero(optical.accepted)),
         "optical_raw_mean_peak_amplitude_v": optical.raw_mean_v,
         "optical_filtered_mean_peak_amplitude_v": optical.filtered_mean_v,
         "optical_outlier_sigma": 2.5,
+        "loopback_reference_adc": reference_adc,
+        "loopback_lag_samples": (
+            [] if loopback_alignment is None else
+            loopback_alignment.lag_samples.tolist()),
+        "loopback_correlation_scores": (
+            [] if loopback_alignment is None else
+            loopback_alignment.correlation_scores.tolist()),
+        "optical_latency_from_loopback_samples": optical_latency_samples,
+        "optical_loopback_correlation_score": optical_correlation_score,
     }
+    if adc_channel is not None:
+        heater_meta.setdefault("analysis_by_adc", {})[
+            f"ADC{int(adc_channel)}"] = analysis_payload
+    if primary_channel:
+        heater_meta["analysis"] = analysis_payload
     write_json(heater_meta_path, heater_meta)
 
 
@@ -199,61 +267,12 @@ def _write_curve_plot(
     fig.savefig(path, dpi=170)
     plt.close(fig)
 
-def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
-    experiment_dir = Path(experiment_dir).expanduser().resolve()
-    manifest = load_manifest(experiment_dir)
-    heater_captures = sorted(manifest.get("heater_captures", []),
-                             key=lambda item: item["index"])
-    if not heater_captures:
-        raise ValueError("experiment has no completed heater captures")
-    acquisition = manifest["acquisition"]
-    stimulus = manifest["stimulus"]
-    detection = manifest["detection"]
-    adc = int(acquisition["adc_channel"])
-    # Periodic stimuli have no single programmed onset. Ignore only a short
-    # capture guard, then detect spikes from the averaged output itself.
-    step_sample = int(detection.get(
-        "response_start_sample",
-        stimulus.get("current_source", {}).get("step_sample", 64)))
-
-    loaded = [_load_heater_capture(experiment_dir, descriptor, adc)
-              for descriptor in heater_captures]
-    metrics = []
-    for _heater_dir, raw in loaded:
-        volts = raw.astype(np.float64) * VOLTS_PER_COUNT
-        baseline = np.median(volts[:, :max(4, step_sample - 10)], axis=1)
-        average = (volts - baseline[:, None]).mean(axis=0)
-        metrics.append(float(np.max(np.abs(average[step_sample:]))))
-    reference_index = int(np.argmax(metrics))
-    reference_raw = loaded[reference_index][1].astype(np.float64) * VOLTS_PER_COUNT
-    reference = measure_triggered_spikes(
-        reference_raw, step_sample,
-        threshold_sigma=float(detection["threshold_sigma"]),
-        boundary_sigma=float(detection["boundary_sigma"]),
-        minimum_seed_samples=int(detection["minimum_seed_samples"]),
-    )
-    measurements = []
-    independent_measurements = []
-    for (heater_dir, raw), descriptor in zip(loaded, heater_captures):
-        volts = raw.astype(np.float64) * VOLTS_PER_COUNT
-        measurement = measure_spikes_at_indices(
-            volts, step_sample,
-            reference.peak_indices, start_indices=reference.start_indices,
-            end_indices=reference.end_indices, polarities=reference.polarities)
-        try:
-            independently_detected = measure_triggered_spikes(
-                volts, step_sample,
-                threshold_sigma=float(detection["threshold_sigma"]),
-                boundary_sigma=float(detection["boundary_sigma"]),
-                minimum_seed_samples=int(detection["minimum_seed_samples"]),
-            )
-        except ValueError:
-            independently_detected = None
-        measurements.append(measurement)
-        independent_measurements.append(independently_detected)
-        _write_heater_analysis(
-            heater_dir, measurement, descriptor, independently_detected)
-
+def _analyze_channel_measurements(
+    measurements,
+    independent_measurements,
+    *,
+    constant_voltage: bool,
+):
     peak_analyses = [
         analyze_optical_peaks(
             measurement, detected, polarity="auto",
@@ -261,117 +280,403 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
         for measurement, detected in zip(measurements, independent_measurements)
     ]
     if any(analysis.peak_indices.size == 0 for analysis in peak_analyses):
-        raise ValueError(
-            "one or more heater captures contain no detectable spike peaks")
-    raw_peak_means = np.asarray([
-        analysis.raw_mean_v for analysis in peak_analyses])
-    filtered_peak_means = np.asarray([
+        raise ValueError("one or more heater captures contain no spike windows")
+    raw = np.asarray([analysis.raw_mean_v for analysis in peak_analyses])
+    filtered = np.asarray([
         analysis.filtered_mean_v for analysis in peak_analyses])
-    # Historical result names are retained for GUI/import compatibility.
-    signed = filtered_peak_means.copy()
-    absolute = filtered_peak_means.copy()
-    minimum = float(np.min(absolute))
-    maximum = float(np.max(absolute))
-    span = maximum - minimum
-    voltages = np.asarray([
-        capture["heater_voltage_v"] for capture in heater_captures])
-    constant_voltage = bool(
-        voltages.size and np.ptp(voltages) <= np.finfo(np.float64).eps)
-    normalized = (
-        np.full_like(absolute, np.nan) if constant_voltage else
-        ((absolute - minimum) / span if span > np.finfo(float).eps
-         else np.zeros_like(absolute)))
-    raw_minimum = float(np.min(raw_peak_means))
-    raw_span = float(np.max(raw_peak_means) - raw_minimum)
-    raw_normalized = (
-        np.full_like(raw_peak_means, np.nan) if constant_voltage else
-        ((raw_peak_means - raw_minimum) / raw_span
-         if raw_span > np.finfo(float).eps
-         else np.zeros_like(raw_peak_means)))
-    directions = np.asarray([
-        1 if capture["direction"] == "reverse" else 0 for capture in heater_captures],
-        dtype=np.int8)
 
-    curve_path = experiment_dir / "optical_curve.csv"
-    with curve_path.open("w", newline="") as handle:
+    def normalize(values):
+        if constant_voltage:
+            return np.full_like(values, np.nan)
+        minimum = float(np.min(values))
+        span = float(np.max(values) - minimum)
+        return ((values - minimum) / span
+                if span > np.finfo(float).eps else np.zeros_like(values))
+
+    return {
+        "measurements": measurements,
+        "independent_measurements": independent_measurements,
+        "peak_analyses": peak_analyses,
+        "raw_peak_means_v": raw,
+        "filtered_peak_means_v": filtered,
+        "raw_normalized": normalize(raw),
+        "normalized": normalize(filtered),
+        "min_height": float(np.min(filtered)),
+        "max_height": float(np.max(filtered)),
+    }
+
+
+def _write_channel_curve_csv(
+    path: Path,
+    heater_captures: list[dict],
+    voltages: np.ndarray,
+    channel_result: dict,
+) -> None:
+    raw = channel_result["raw_peak_means_v"]
+    filtered = channel_result["filtered_peak_means_v"]
+    analyses = channel_result["peak_analyses"]
+    with path.open("w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow([
             "index", "heater_voltage_v", "direction",
-            "signed_amplitude_mv", "absolute_amplitude_mv",
-            "normalized_weight",
             "raw_mean_peak_amplitude_mv", "filtered_mean_peak_amplitude_mv",
             "raw_normalized_weight", "filtered_normalized_weight",
             "selected_polarity", "accepted_peaks", "total_peaks",
             "heater_directory",
         ])
         for index, capture in enumerate(heater_captures):
-            analysis = peak_analyses[index]
+            analysis = analyses[index]
             writer.writerow([
                 capture["index"], voltages[index], capture["direction"],
-                filtered_peak_means[index] * 1e3,
-                filtered_peak_means[index] * 1e3, normalized[index],
-                raw_peak_means[index] * 1e3,
-                filtered_peak_means[index] * 1e3,
-                raw_normalized[index], normalized[index],
-                analysis.polarity, int(np.count_nonzero(analysis.accepted)),
+                raw[index] * 1e3, filtered[index] * 1e3,
+                channel_result["raw_normalized"][index],
+                channel_result["normalized"][index], analysis.polarity,
+                int(np.count_nonzero(analysis.accepted)),
                 int(analysis.peak_indices.size), capture["directory"],
             ])
-    plot_path = experiment_dir / "optical_curve.png"
+
+
+def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
+    experiment_dir = Path(experiment_dir).expanduser().resolve()
+    manifest = load_manifest(experiment_dir)
+    heater_captures = sorted(
+        manifest.get("heater_captures", []), key=lambda item: item["index"])
+    if not heater_captures:
+        raise ValueError("experiment has no completed heater captures")
+
+    acquisition = manifest["acquisition"]
+    stimulus = manifest["stimulus"]
+    detection = manifest["detection"]
+    primary_adc = int(acquisition.get("adc_channel", 0))
+    optical_adcs = tuple(int(channel) for channel in acquisition.get(
+        "optical_adc_channels", [primary_adc]))
+    step_sample = int(detection.get(
+        "response_start_sample",
+        stimulus.get("current_source", {}).get("step_sample", 64)))
+    voltages = np.asarray([
+        capture["heater_voltage_v"] for capture in heater_captures])
+    directions = np.asarray([
+        1 if capture["direction"] == "reverse" else 0
+        for capture in heater_captures], dtype=np.int8)
+    constant_voltage = bool(
+        voltages.size and np.ptp(voltages) <= np.finfo(np.float64).eps)
+
+    reference_value = acquisition.get("reference_adc_channel")
+    reference_adc = None if reference_value is None else int(reference_value)
+    loopback_enabled = reference_adc is not None
+    alignments = []
+    reference = None
+    reference_averages = []
+    reference_first_peak_latency_samples = None
+    channel_results = {}
+
+    if loopback_enabled:
+        optical_adcs = tuple(
+            channel for channel in optical_adcs if channel != reference_adc)
+        if not optical_adcs:
+            raise ValueError("no optical ADC channels are configured")
+        max_optical_lag = int(acquisition.get(
+            "loopback_max_optical_lag_samples", 1024))
+        window_padding = int(acquisition.get(
+            "loopback_window_padding_samples", 8))
+        channels = tuple(dict.fromkeys((*optical_adcs, reference_adc)))
+        loaded = [
+            _load_heater_channels(experiment_dir, descriptor, channels)
+            for descriptor in heater_captures
+        ]
+        stacks_by_adc = {channel: [] for channel in channels}
+        baseline_end = max(4, step_sample - 10)
+        for _heater_dir, raw_channels in loaded:
+            for channel, values in raw_channels.items():
+                repetitions = values.astype(np.float64) * VOLTS_PER_COUNT
+                stacks_by_adc[channel].append(repetitions)
+            reference_reps = stacks_by_adc[reference_adc][-1]
+            baseline = np.median(
+                reference_reps[:, :baseline_end], axis=1)
+            reference_averages.append(
+                (reference_reps - baseline[:, None]).mean(axis=0))
+
+        # BCPT captures are already aligned by the hardware trigger. Pooling
+        # the direct ADC3 repetitions only improves the clean reference SNR;
+        # no repetition is shifted in software.
+        reference_reps = np.concatenate(
+            stacks_by_adc[reference_adc], axis=0)
+        reference = measure_triggered_spikes(
+            reference_reps, step_sample,
+            threshold_sigma=float(detection["threshold_sigma"]),
+            boundary_sigma=float(detection["boundary_sigma"]),
+            minimum_seed_samples=int(detection["minimum_seed_samples"]),
+        )
+        reference_first_peak_latency_samples = int(
+            reference.peak_indices[0] - step_sample)
+
+        xbar_sources = manifest.get("xbar", {}).get("sources_by_dac", {})
+        channel_work = {}
+        all_valid_lags = []
+        for channel in optical_adcs:
+            averages = []
+            candidates = []
+            repetitions_by_point = stacks_by_adc[channel]
+            for repetitions, reference_average in zip(
+                    repetitions_by_point, reference_averages):
+                baseline = np.median(
+                    repetitions[:, :baseline_end], axis=1)
+                average = (repetitions - baseline[:, None]).mean(axis=0)
+                averages.append(average)
+                try:
+                    candidate = estimate_correlation_lag(
+                        average, reference_average, max_optical_lag,
+                        allow_inversion=True)
+                except ValueError:
+                    candidate = None
+                candidates.append(candidate)
+
+            source = str(xbar_sources.get(f"DAC{channel}", "Spike 0"))
+            stimulus_enabled = source != "Off"
+            valid = [
+                candidate for candidate in candidates
+                if (stimulus_enabled and candidate is not None and
+                    abs(float(candidate.score)) >= 0.10)
+            ]
+            valid_lags = [int(candidate.lag_samples) for candidate in valid]
+            all_valid_lags.extend(valid_lags)
+            channel_work[channel] = {
+                "averages": averages,
+                "candidates": candidates,
+                "valid": valid,
+                "valid_lags": valid_lags,
+                "repetitions": repetitions_by_point,
+                "source": source,
+                "stimulus_enabled": stimulus_enabled,
+            }
+
+        fallback_lag = (
+            int(round(float(np.median(all_valid_lags))))
+            if all_valid_lags else 0)
+        for channel in optical_adcs:
+            work = channel_work[channel]
+            valid = work["valid"]
+            latency = (
+                int(round(float(np.median(work["valid_lags"]))))
+                if work["valid_lags"] else fallback_lag)
+            valid_scores = [float(candidate.score) for candidate in valid]
+            correlation_score = (
+                float(np.median(valid_scores)) if valid_scores else 0.0)
+            response_polarity = -1 if correlation_score < 0 else 1
+            nominal, starts, ends, signs = optical_schedule_from_loopback(
+                reference, work["averages"][0], latency,
+                padding_samples=window_padding,
+                response_polarity=response_polarity)
+            measurements = []
+            independent = [None] * len(heater_captures)
+            for point_index, (
+                    (heater_dir, _raw), descriptor, repetitions
+            ) in enumerate(zip(
+                    loaded, heater_captures, work["repetitions"])):
+                measurement = measure_spikes_in_windows(
+                    repetitions, step_sample, nominal,
+                    start_indices=starts, end_indices=ends,
+                    polarities=signs)
+                measurements.append(measurement)
+                candidate = work["candidates"][point_index]
+                point_score = (
+                    None if candidate is None else float(candidate.score))
+                _write_heater_analysis(
+                    heater_dir, measurement, descriptor, None,
+                    loopback_reference_average=
+                        reference_averages[point_index],
+                    reference_adc=reference_adc,
+                    optical_latency_samples=latency,
+                    optical_correlation_score=point_score,
+                    adc_channel=channel,
+                    primary_channel=(channel == primary_adc))
+            result = _analyze_channel_measurements(
+                measurements, independent,
+                constant_voltage=constant_voltage)
+            result.update({
+                "adc_channel": channel,
+                "stimulus_enabled": bool(work["stimulus_enabled"]),
+                "source": work["source"],
+                "reference_heater_capture_index": None,
+                "optical_latency_samples": latency,
+                "optical_correlation_score": correlation_score,
+                "optical_correlation_valid": bool(valid),
+                "point_correlation_scores": [
+                    None if candidate is None else float(candidate.score)
+                    for candidate in work["candidates"]
+                ],
+            })
+            channel_results[channel] = result
+    else:
+        optical_adcs = (primary_adc,)
+        loaded = [
+            _load_heater_capture(experiment_dir, descriptor, primary_adc)
+            for descriptor in heater_captures
+        ]
+        metrics = []
+        for _heater_dir, raw in loaded:
+            volts = raw.astype(np.float64) * VOLTS_PER_COUNT
+            baseline = np.median(
+                volts[:, :max(4, step_sample - 10)], axis=1)
+            average = (volts - baseline[:, None]).mean(axis=0)
+            metrics.append(float(np.max(np.abs(average[step_sample:]))))
+        reference_index = int(np.argmax(metrics))
+        reference_raw = (
+            loaded[reference_index][1].astype(np.float64) * VOLTS_PER_COUNT)
+        reference = measure_triggered_spikes(
+            reference_raw, step_sample,
+            threshold_sigma=float(detection["threshold_sigma"]),
+            boundary_sigma=float(detection["boundary_sigma"]),
+            minimum_seed_samples=int(detection["minimum_seed_samples"]),
+        )
+        measurements = []
+        independent = []
+        for (heater_dir, raw), descriptor in zip(loaded, heater_captures):
+            volts = raw.astype(np.float64) * VOLTS_PER_COUNT
+            measurement = measure_spikes_at_indices(
+                volts, step_sample, reference.peak_indices,
+                start_indices=reference.start_indices,
+                end_indices=reference.end_indices,
+                polarities=reference.polarities)
+            try:
+                detected = measure_triggered_spikes(
+                    volts, step_sample,
+                    threshold_sigma=float(detection["threshold_sigma"]),
+                    boundary_sigma=float(detection["boundary_sigma"]),
+                    minimum_seed_samples=int(detection["minimum_seed_samples"]),
+                )
+            except ValueError:
+                detected = None
+            measurements.append(measurement)
+            independent.append(detected)
+            _write_heater_analysis(
+                heater_dir, measurement, descriptor, detected,
+                adc_channel=primary_adc, primary_channel=True)
+        result = _analyze_channel_measurements(
+            measurements, independent, constant_voltage=constant_voltage)
+        result.update({
+            "adc_channel": primary_adc,
+            "stimulus_enabled": True,
+            "source": "legacy",
+            "reference_heater_capture_index": reference_index,
+            "optical_latency_samples": 0,
+            "optical_correlation_score": None,
+            "optical_correlation_valid": False,
+        })
+        channel_results[primary_adc] = result
+
+    if primary_adc not in channel_results:
+        primary_adc = optical_adcs[0]
+    primary = channel_results[primary_adc]
+
+    channel_summaries = {}
+    for channel, result in channel_results.items():
+        channel_path = experiment_dir / f"optical_curve_ch{channel}.csv"
+        _write_channel_curve_csv(
+            channel_path, heater_captures, voltages, result)
+        plot_name = f"optical_curve_ch{channel}.png"
+        if make_plot:
+            _write_curve_plot(
+                experiment_dir / plot_name, voltages, directions,
+                result["normalized"], result["filtered_peak_means_v"],
+                result["raw_normalized"], result["raw_peak_means_v"])
+        minimum = result["min_height"]
+        maximum = result["max_height"]
+        extinction_db = float(10.0 * np.log10(
+            max(maximum, np.finfo(float).tiny) /
+            max(minimum, np.finfo(float).tiny)))
+        result["extinction_db"] = extinction_db
+        result["min_voltage"] = float(
+            voltages[int(np.argmin(result["filtered_peak_means_v"]))])
+        channel_summaries[f"ADC{channel}"] = {
+            "adc_channel": channel,
+            "dac_source": result["source"],
+            "stimulus_enabled": result["stimulus_enabled"],
+            "optical_latency_from_loopback_samples":
+                result["optical_latency_samples"],
+            "optical_loopback_correlation_score":
+                result["optical_correlation_score"],
+            "optical_correlation_valid": result["optical_correlation_valid"],
+            "minimum_amplitude_v": minimum,
+            "maximum_amplitude_v": maximum,
+            "extinction_db": extinction_db,
+            "curve_csv": channel_path.name,
+            "curve_plot": plot_name if make_plot else None,
+        }
+
+    primary_curve = experiment_dir / "optical_curve.csv"
+    _write_channel_curve_csv(
+        primary_curve, heater_captures, voltages, primary)
+    primary_plot = experiment_dir / "optical_curve.png"
     if make_plot:
         _write_curve_plot(
-            plot_path, voltages, directions, normalized, absolute,
-            raw_normalized, raw_peak_means)
+            primary_plot, voltages, directions, primary["normalized"],
+            primary["filtered_peak_means_v"], primary["raw_normalized"],
+            primary["raw_peak_means_v"])
 
-    extinction_db = float(10.0 * np.log10(
-        max(maximum, np.finfo(float).tiny) /
-        max(minimum, np.finfo(float).tiny)))
     summary = {
         "schema": "daq_optical_sweep_analysis",
-        "schema_version": 1,
+        "schema_version": 2,
         "processed_utc": utc_now(),
         "experiment_directory": str(experiment_dir),
         "heater_capture_count": len(heater_captures),
-        "reference_heater_index": int(heater_captures[reference_index]["index"]),
-        "reference_heater_directory": heater_captures[reference_index]["directory"],
+        "primary_optical_adc": primary_adc,
+        "optical_adc_channels": list(channel_results),
+        "channels_averaged_independently": True,
+        "channels": channel_summaries,
         "reference_spike_count": int(reference.peak_indices.size),
-        "amplitude_metric": "sigma_clipped_mean_dominant_polarity_peak_amplitude",
-        "default_peak_polarity": "auto",
-        "default_outlier_sigma": 2.5,
-        "minimum_amplitude_v": minimum,
-        "maximum_amplitude_v": maximum,
-        "minimum_voltage_v": float(voltages[int(np.argmin(absolute))]),
-        "extinction_db": extinction_db,
+        "timing_source": (
+            f"ADC{reference_adc} and optical triggered-average cross-correlation"
+            if loopback_enabled else "strongest optical heater capture"),
+        "loopback_reference_adc": reference_adc,
+        "reference_first_peak_latency_samples":
+            reference_first_peak_latency_samples,
+        "loopback_alignment_applied": False,
+        "trigger_aligned_repetitions_averaged_without_shifting": loopback_enabled,
         "constant_voltage_control": constant_voltage,
         "normalization_is_transfer_curve": not constant_voltage,
-        "repeatability_standard_deviation_v": float(np.std(absolute)),
-        "repeatability_peak_to_peak_v": float(np.ptp(absolute)),
-        "curve_csv": curve_path.name,
-        "curve_plot": plot_path.name if make_plot else None,
+        "curve_csv": primary_curve.name,
+        "curve_plot": primary_plot.name if make_plot else None,
     }
     write_json(experiment_dir / "analysis_summary.json", summary)
     update_manifest(experiment_dir, analysis=summary)
+
     return {
-        "voltages": voltages, "directions": directions,
-        "signed": signed, "absolute": absolute, "normalized": normalized,
-        "min_height": minimum, "max_height": maximum,
-        "min_voltage": summary["minimum_voltage_v"],
-        "extinction_db": extinction_db,
+        "voltages": voltages,
+        "directions": directions,
+        "signed": primary["filtered_peak_means_v"].copy(),
+        "absolute": primary["filtered_peak_means_v"].copy(),
+        "normalized": primary["normalized"],
+        "min_height": primary["min_height"],
+        "max_height": primary["max_height"],
+        "min_voltage": primary["min_voltage"],
+        "extinction_db": primary["extinction_db"],
         "constant_voltage_control": constant_voltage,
-        "repeatability_std_v": summary["repeatability_standard_deviation_v"],
-        "repeatability_peak_to_peak_v": summary["repeatability_peak_to_peak_v"],
+        "repeatability_std_v": float(np.std(
+            primary["filtered_peak_means_v"])),
+        "repeatability_peak_to_peak_v": float(np.ptp(
+            primary["filtered_peak_means_v"])),
         "reference_measurement": reference,
-        "measurements": measurements,
-        "independent_measurements": independent_measurements,
-        "raw_peak_means_v": raw_peak_means,
-        "filtered_peak_means_v": filtered_peak_means,
-        "raw_normalized": raw_normalized,
-        "peak_analyses": peak_analyses,
+        "reference_averages": reference_averages,
+        "measurements": primary["measurements"],
+        "independent_measurements": primary["independent_measurements"],
+        "raw_peak_means_v": primary["raw_peak_means_v"],
+        "filtered_peak_means_v": primary["filtered_peak_means_v"],
+        "raw_normalized": primary["raw_normalized"],
+        "peak_analyses": primary["peak_analyses"],
+        "channel_results": channel_results,
+        "primary_optical_adc": primary_adc,
         "heater_captures": heater_captures,
-        "reference_heater_capture_index": reference_index,
+        "reference_heater_capture_index":
+            primary["reference_heater_capture_index"],
+        "loopback_reference_adc": reference_adc,
+        "loopback_alignments": alignments,
+        "reference_first_peak_latency_samples":
+            reference_first_peak_latency_samples,
+        "optical_latency_samples": primary["optical_latency_samples"],
+        "optical_correlation_score": primary["optical_correlation_score"],
         "path": str(experiment_dir),
     }
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("experiment", type=Path)
