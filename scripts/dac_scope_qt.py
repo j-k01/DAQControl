@@ -899,40 +899,6 @@ class DacControl:
             raise RuntimeError(f"malformed XBar readback: {reply}") from exc
         return labels, value & 0xFFFF
 
-    def set_dac_invert(self, ch, enabled):
-        """Set one destination polarity bit and verify live reg29 readback."""
-        channel = int(ch)
-        requested = bool(enabled)
-        reply = self.cmd(
-            f"DINV {channel} {1 if requested else 0}",
-            ok=("OK DINV", "ERR"))
-        if not reply or reply.startswith("ERR"):
-            return reply or "ERR no UART response to DINV"
-        rb = self.cmd("RDRW 29", ok=("REG29", "ERR"))
-        if not rb.startswith("REG29"):
-            return f"ERR DAC inversion readback failed ({rb or 'no UART response'})"
-        try:
-            value = int(rb.split("=", 1)[1].strip(), 0) & 0xF
-        except (IndexError, ValueError):
-            return f"ERR malformed DAC inversion readback ({rb})"
-        actual = bool((value >> channel) & 1)
-        if actual != requested:
-            return (f"ERR DAC{channel} inversion readback: requested "
-                    f"{int(requested)}, read {int(actual)} "
-                    f"(reg29=0x{value:X})")
-        return f"{reply}; reg29=0x{value:X}"
-
-    def get_dac_invert(self):
-        """Read the four live post-crossbar destination polarity bits."""
-        rb = self.cmd("RDRW 29", ok=("REG29", "ERR"))
-        if not rb.startswith("REG29"):
-            raise RuntimeError(rb or "no UART response to RDRW 29")
-        try:
-            value = int(rb.split("=", 1)[1].strip(), 0) & 0xF
-        except (IndexError, ValueError) as exc:
-            raise RuntimeError(f"malformed DAC inversion readback: {rb}") from exc
-        return [bool((value >> channel) & 1) for channel in range(4)], value
-
     def set_neuron(self, ch, profile):
         return self.cmd(f"NEUR {ch} {profile}", ok=("OK", "NEUR", "ERR"))
 
@@ -3721,7 +3687,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
         route_summary = QtWidgets.QLabel(
             "DAC0-DAC2 are independent optical stimulus paths. DAC3 always "
-            "carries Spike 0 and is physically looped to ADC3 as the clean "
+            "carries Spike 3 and is physically looped to ADC3 as the clean "
             "timing reference. Every ADC is captured and averaged separately.")
         route_summary.setWordWrap(True)
         route_summary.setStyleSheet("color:#81C784; font-size:11px;")
@@ -3733,7 +3699,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             source_row.addWidget(QtWidgets.QLabel(f"DAC{channel}"))
             source = QtWidgets.QComboBox()
             source.addItems(SOURCE_LABELS)
-            source.setCurrentText("Spike 0")
+            source.setCurrentText(f"Spike {channel}")
             source.setToolTip(
                 f"Normal 16:4 crossbar source for DAC{channel}. The selection "
                 "is staged until Program setup is pressed.")
@@ -3741,18 +3707,18 @@ class ScopeWindow(QtWidgets.QMainWindow):
             source_row.addWidget(source)
             invert = QtWidgets.QCheckBox("Invert")
             invert.setToolTip(
-                f"Invert DAC{channel} after the crossbar. This remains "
-                "independent when another DAC uses the same source.")
+                f"Invert DAC{channel}'s selected spike signal through the existing "
+                "per-neuron SCAL control.")
             self.mzi_dac_invert.append(invert)
             source_row.addWidget(invert)
-        reference_label = QtWidgets.QLabel("DAC3: Spike 0 reference")
+        reference_label = QtWidgets.QLabel("DAC3: Spike 3 reference")
         reference_label.setStyleSheet("color:#4FC3F7;")
         reference_label.setToolTip(
-            "DAC3 is fixed to Spike 0 because ADC3 is the timing reference.")
+            "DAC3 is fixed to Spike 3 because ADC3 is the timing reference.")
         source_row.addWidget(reference_label)
         reference_invert = QtWidgets.QCheckBox("Invert")
         reference_invert.setToolTip(
-            "Invert the DAC3 electrical timing reference after the crossbar.")
+            "Invert the DAC3 Spike 3 timing reference through SCAL.")
         self.mzi_dac_invert.append(reference_invert)
         source_row.addWidget(reference_invert)
         source_row.addStretch(1)
@@ -3761,7 +3727,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_program_btn.setToolTip(
             "Program the 5 kHz square current, all four zero-bias neurons, all pulse shapers, "
             "and the selected DAC0-DAC2 crossbar routes. DAC3 stays on "
-            "Spike 0 as the reference. Heater voltages are not changed.")
+            "Spike 3 as the reference. Heater voltages are not changed.")
         self.mzi_program_btn.clicked.connect(self._on_mzi_program_test)
         sf.addRow("", self.mzi_program_btn)
         setup_column.addWidget(stimulus)
@@ -4399,7 +4365,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "heater_voltages_before_sweep": dict(self._mzi_heater_voltages),
             "xbar_sources": [
                 *(source.currentText() for source in self.mzi_dac_sources),
-                "Spike 0",
+                "Spike 3",
             ],
             "dac_invert": [
                 invert.isChecked() for invert in self.mzi_dac_invert
@@ -4463,10 +4429,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     f"DAC{channel}": bool(inverted)
                     for channel, inverted in enumerate(spec["dac_invert"])
                 },
-                "register29_readback": spec.get("dac_invert_register29"),
+                "inversion_implementation": "existing per-neuron SCAL signed gain",
                 "optical_test_route": (
                     "DAC0..DAC2 use normal independent crossbar selections; DAC3 always "
-                    "Spike 0 looped to ADC3; ADC0..ADC2 analyzed separately"),
+                    "Spike 3 looped to ADC3; ADC0..ADC2 analyzed separately"),
             },
             "stimulus": {
                 "neurons": neurons,
@@ -4556,13 +4522,32 @@ class ScopeWindow(QtWidgets.QMainWindow):
             replies.append(self.dac.set_neuron_param(neuron, "i", 0))
             replies.append(self.dac.set_neuron_param(neuron, "iconst", 0))
             replies.append(self.dac.program_pulse(pulse, target=neuron))
-            replies.append(self.dac.set_spike_cal(neuron, 0x4000, 0))
-            replies.append(
-                self.dac.set_source(neuron, spec["xbar_sources"][neuron]))
-            replies.append(
-                self.dac.set_dac_invert(neuron, spec["dac_invert"][neuron]))
+
+        inversion_by_signal = {}
+        for dac_channel, source in enumerate(spec["xbar_sources"]):
+            requested = bool(spec["dac_invert"][dac_channel])
+            if not source.startswith("Spike "):
+                if requested:
+                    raise RuntimeError(
+                        f"DAC{dac_channel} inversion uses the existing spike "
+                        "SCAL control; select a Spike 0..3 source first")
+                continue
+            signal = int(source.rsplit(" ", 1)[1])
+            previous = inversion_by_signal.get(signal)
+            if previous is not None and previous != requested:
+                raise RuntimeError(
+                    f"DAC outputs sharing {source} cannot request opposite "
+                    "SCAL polarity; select distinct Spike sources")
+            inversion_by_signal[signal] = requested
+
+        for signal in range(4):
+            gain = 0xC000 if inversion_by_signal.get(signal, False) else 0x4000
+            replies.append(self.dac.set_spike_cal(signal, gain, 0))
+        for dac_channel, source in enumerate(spec["xbar_sources"]):
+            replies.append(self.dac.set_source(dac_channel, source))
         self.mzi_setup_progress.emit(
-            "DAC routes programmed; DAC3 is the fixed Spike 0 reference. "
+            "DAC routes and per-signal SCAL polarity programmed; "
+            "DAC3 is the fixed Spike 3 reference. "
             "Programming 15 mA, 5 kHz square...")
         current_samples, current_cps, actual_frequency = gen_current_wave(
             "Square", spec["current_ma"], spec["current_frequency_hz"],
@@ -4883,13 +4868,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     live_sources, xbar_value = self.dac.get_sources()
                     spec["xbar_sources"] = list(live_sources)
                     spec["xbar_register17"] = f"0x{xbar_value:04X}"
-                except Exception:
-                    pass
-            if hasattr(self.dac, "get_dac_invert"):
-                try:
-                    live_invert, invert_value = self.dac.get_dac_invert()
-                    spec["dac_invert"] = list(live_invert)
-                    spec["dac_invert_register29"] = f"0x{invert_value:X}"
                 except Exception:
                     pass
             self._mzi_controller.connect(

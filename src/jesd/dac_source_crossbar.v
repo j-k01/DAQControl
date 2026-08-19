@@ -18,7 +18,6 @@
 module dac_source_crossbar (
     input  wire [16*64-1:0] sources,   // {src15, ..., src0}, src[i] at [i*64 +: 64]
     input  wire [15:0]      sel,
-    input  wire [3:0]       invert,    // post-route polarity, bit n -> DACn
 
     output wire [63:0]      dac0_word,
     output wire [63:0]      dac1_word,
@@ -36,33 +35,9 @@ module dac_source_crossbar (
         end
     endgenerate
 
-    function [15:0] negate_sat16;
-        input [15:0] sample;
-        begin
-            // Two's-complement -32768 has no positive s16 representation.
-            negate_sat16 = (sample == 16'h8000) ?
-                           16'h7FFF : (~sample + 16'd1);
-        end
-    endfunction
-
-    function [63:0] apply_invert;
-        input [63:0] word_in;
-        input        invert_in;
-        begin
-            if (invert_in) begin
-                apply_invert[15:0]  = negate_sat16(word_in[15:0]);
-                apply_invert[31:16] = negate_sat16(word_in[31:16]);
-                apply_invert[47:32] = negate_sat16(word_in[47:32]);
-                apply_invert[63:48] = negate_sat16(word_in[63:48]);
-            end else begin
-                apply_invert = word_in;
-            end
-        end
-    endfunction
-
-    assign dac0_word = apply_invert(src[sel[ 3:0]], invert[0]);
-    assign dac1_word = apply_invert(src[sel[ 7:4]], invert[1]);
-    assign dac2_word = apply_invert(src[sel[11:8]], invert[2]);
-    assign dac3_word = apply_invert(src[sel[15:12]], invert[3]);
+    assign dac0_word = src[sel[ 3:0]];
+    assign dac1_word = src[sel[ 7:4]];
+    assign dac2_word = src[sel[11:8]];
+    assign dac3_word = src[sel[15:12]];
 
 endmodule

@@ -162,7 +162,6 @@
  * (inverted); raw 0 = unity passthrough. */
 #define SPIKE_CAL_REG(n)   (REG_BASE + (21u + (n)) * 4u)
 #define SPIKE_CAL_GAIN_ONE 0x4000u
-#define DAC_INVERT_REG     (REG_BASE + 29u*4u) /* reg29[3:0], bit n -> DACn */
 #define CUR_DAC_GAIN_ONE   0x0100u
 #define XSRC_OFF     0u
 #define XSRC_DDS     1u    /* broadcast sine (single entry, any DAC) */
@@ -1770,54 +1769,6 @@ static void cmd_scal(void)
     send_hex(gain & 0xFFFFu);
     send_str(" offset=");
     send_int(offset);
-    send_str("\r\n");
-}
-
-/* DINV [ch|all] [0|1] -- post-crossbar inversion for each DAC destination.
- * This is intentionally destination-side: DAC0 and DAC3 may route the same
- * Spike 0 source while using opposite output polarity. With no arguments,
- * print the live four-bit inversion mask. */
-static void cmd_dinv(void)
-{
-    char *p = &cmd[4];
-    u32 channel = 0u;
-    u32 all_channels = 0u;
-    u32 enabled;
-    u32 mask;
-
-    while (*p == ' ' || *p == '\t')
-        p++;
-    if (*p == '\0') {
-        send_str("DINV mask=");
-        send_hex(Xil_In32(DAC_INVERT_REG) & 0xFu);
-        send_str("\r\n");
-        return;
-    }
-
-    if (token_eq_ci(p, "all")) {
-        all_channels = 1u;
-        advance_token(&p);
-    } else if (!parse_u32_arg(&p, &channel) || channel > 3u) {
-        send_str("ERR DINV expects channel 0..3 or all\r\n");
-        return;
-    }
-
-    if (!parse_u32_arg(&p, &enabled) || enabled > 1u) {
-        send_str("ERR DINV expects 0 or 1\r\n");
-        return;
-    }
-
-    mask = Xil_In32(DAC_INVERT_REG) & 0xFu;
-    if (all_channels)
-        mask = enabled ? 0xFu : 0u;
-    else if (enabled)
-        mask |= 1u << channel;
-    else
-        mask &= ~(1u << channel);
-    Xil_Out32(DAC_INVERT_REG, mask);
-
-    send_str("OK DINV mask=");
-    send_hex(Xil_In32(DAC_INVERT_REG) & 0xFu);
     send_str("\r\n");
 }
 
@@ -3823,7 +3774,6 @@ static void cmd_help(void)
     send_str("  ADCT [all|adc0|adc1] mode  ADS54J60 test mode: off,d21,k28,ila,rpat,transport\r\n");
     send_str("  COUP [all|1..4] [ac|dc] ADC input coupling; default/safe state is AC\r\n");
     send_str("  NSRC [ch|all] src  DAC crossbar (reg17): off,dds,bram[0-3],spike[0-3],mon[0-3],current,tag,0..15\r\n");
-    send_str("  DINV [ch|all] [0|1]  post-crossbar DAC polarity; no args prints mask\r\n");
     send_str("  DDSI default|step  DDS phase increment reg19[23:0]; 0/default uses HDL 0x19999A\r\n");
     send_str("  CURG [default|gain_q8_8]  pure current DAC-view gain only; 0x0100=1x, 0x1400=20x\r\n");
 #if HAS_BRAM_DATAPLANE
@@ -3963,8 +3913,6 @@ static void cmd_status(void)
     send_hex((rw2 & RW2_DAC_TX_POL_MASK) >> RW2_DAC_TX_POL_SHIFT);
     send_str(" dac_xbar=");
     send_hex(Xil_In32(DAC_XBAR_SEL_REG) & 0xFFFFu);
-    send_str(" dac_inv=");
-    send_hex(Xil_In32(DAC_INVERT_REG) & 0xFu);
     send_str(" dds_inc=");
     send_hex(Xil_In32(DDS_PHASE_INC_REG) & 0x00FFFFFFu);
     send_str(" cur_gain=");
@@ -3991,7 +3939,6 @@ static void launch_defaults(void)
     Xil_Out32(RW_REG0, ctrl);
     /* Default crossbar: DDS (broadcast sine, code 1) on all four DACs. */
     Xil_Out32(DAC_XBAR_SEL_REG, 0x00001111u);
-    Xil_Out32(DAC_INVERT_REG, 0u);
     Xil_Out32(DDS_PHASE_INC_REG, 0u);
     Xil_Out32(CUR_DAC_GAIN_REG, CUR_DAC_GAIN_ONE);
     restart_dac_tx_path();
@@ -4018,8 +3965,6 @@ static void process_cmd(void)
         cmd_coup();
     } else if (strncmp(cmd, "NSRC", 4) == 0) {
         cmd_nsrc();
-    } else if (strncmp(cmd, "DINV", 4) == 0) {
-        cmd_dinv();
     } else if (strncmp(cmd, "DDSI", 4) == 0) {
         cmd_ddsi();
     } else if (strncmp(cmd, "CURG", 4) == 0) {
