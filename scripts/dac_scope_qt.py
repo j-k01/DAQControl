@@ -5376,9 +5376,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     reference_mv = np.asarray(
                         reference_averages[index], dtype=np.float64) * 1e3
                     reference = result.get("reference_measurement")
-                    reference_peaks = (
-                        np.empty(0, dtype=np.int32) if reference is None else
-                        np.asarray(reference.peak_indices, dtype=np.int32))
+                    if reference is None:
+                        reference_peaks = np.empty(0, dtype=np.int32)
+                    else:
+                        reference_polarity = dominant_spike_polarity(reference)
+                        reference_peaks = np.asarray(
+                            reference.peak_indices[
+                                reference.polarities == reference_polarity],
+                            dtype=np.int32)
                     display_x, display_y = event_preserving_trace(
                         reference_mv, reference_peaks)
                     plot.plot(
@@ -5394,8 +5399,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
                             symbolBrush=None)
                 plot.setToolTip(
                     "ADC3 is averaged independently and supplies the clean "
-                    "event schedule used to measure each optical lane's latency. "
-                    "No captured trace is shifted.")
+                    "main-polarity event schedule used to measure each optical "
+                    "lane's latency. Opposite AC-recovery detections are hidden; "
+                    "no captured trace is shifted.")
             else:
                 channel_result = channel_results.get(selected_channel)
                 if channel_result is not None:
