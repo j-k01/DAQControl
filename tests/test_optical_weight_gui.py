@@ -153,6 +153,8 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertEqual(self.window.mzi_trace_y_max.value(), 25.0)
         self.assertEqual(self.window.mzi_channel_tabs.count(), 4)
         self.assertEqual(self.window.mzi_channel_tabs.currentIndex(), 0)
+        self.assertEqual(self.window.mzi_preview_adc.currentData(), 0)
+        self.assertIsNone(self.window._mzi_last_point_result)
         self.assertEqual(
             [profile.currentText() for profile in self.window.mzi_profiles],
             ["regular"] * 4)
@@ -526,6 +528,28 @@ class OpticalWeightGuiTests(unittest.TestCase):
             self.assertEqual(int(saved["reference_adc_channel"]), 3)
             self.assertEqual(
                 int(saved["optical_latency_from_loopback_samples"]), 0)
+            self.assertEqual(
+                saved["expected_peak_indices_ch0"].shape,
+                saved["peak_indices_ch0"].shape)
+
+        self.assertEqual(result["reference_average"].shape, (16384,))
+        self.assertEqual(set(result["channel_results"]), {0, 1, 2})
+        self.window._show_mzi_point_diagnostics(result)
+        self.assertIn(
+            "arithmetic average of N=16",
+            self.window.mzi_reference_plot.plotItem.titleLabel.text)
+        self.assertIn(
+            "normalized corr",
+            self.window.mzi_spike_plot.plotItem.titleLabel.text)
+        self.assertGreaterEqual(
+            len(self.window.mzi_reference_plot.listDataItems()), 2)
+        self.assertGreaterEqual(
+            len(self.window.mzi_spike_plot.listDataItems()), 3)
+        self.window.mzi_preview_adc.setCurrentIndex(1)
+        self.window._mzi_last_point_result = result
+        self.window._refresh_mzi_point_preview()
+        self.assertIn(
+            "ADC1", self.window.mzi_spike_plot.plotItem.titleLabel.text)
 
     def test_named_sweep_writes_raw_heater_directories_and_curve(self):
         fake_dac = FakeDac()
@@ -575,6 +599,8 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.window._on_mzi_cal_result(result)
         self.assertEqual(len(self.window.mzi_sweep_trace_plots), 3)
         self.assertEqual(self.window.mzi_channel_tabs.currentIndex(), 0)
+        self.assertEqual(self.window.mzi_preview_adc.currentData(), 0)
+        self.assertIsNone(self.window._mzi_last_point_result)
         self.assertGreaterEqual(
             len(self.window.mzi_sweep_trace_plots[0].listDataItems()), 2)
         summary_text = self.window.mzi_results_summary.text()

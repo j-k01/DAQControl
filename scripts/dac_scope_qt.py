@@ -3874,25 +3874,38 @@ class ScopeWindow(QtWidgets.QMainWindow):
             pen=pg.mkPen("#FFB74D", width=1.5), symbol="o",
             symbolSize=4, symbolBrush="#FFB74D")
         result_column.addWidget(self.mzi_plot)
+        self.mzi_reference_plot = pg.PlotWidget()
+        self.mzi_reference_plot.setMinimumHeight(175)
+        self.mzi_reference_plot.setBackground("#101418")
+        self.mzi_reference_plot.showGrid(x=True, y=True, alpha=0.22)
+        self.mzi_reference_plot.setLabel(
+            "left", "ADC3 reference", units="mV")
+        self.mzi_reference_plot.setTitle(
+            "ADC3 electrical timing reference: no capture yet")
+        result_column.addWidget(self.mzi_reference_plot)
+
         self.mzi_spike_plot = pg.PlotWidget()
-        self.mzi_spike_plot.setMinimumHeight(260)
+        self.mzi_spike_plot.setMinimumHeight(220)
         self.mzi_spike_plot.setBackground("#101418")
         self.mzi_spike_plot.showGrid(x=True, y=True, alpha=0.22)
-        self.mzi_spike_plot.setLabel("left", "averaged output", units="mV")
+        self.mzi_spike_plot.setLabel("left", "optical output", units="mV")
         self.mzi_spike_plot.setLabel("bottom", "ADC sample", units="ns")
-        self.mzi_spike_plot.setTitle("Latest ADC0 capture: automatic spike boundaries")
+        self.mzi_spike_plot.setTitle(
+            "ADC0 optical response: no capture yet")
+        self.mzi_reference_plot.setXLink(self.mzi_spike_plot)
         result_column.addWidget(self.mzi_spike_plot)
+        self._mzi_last_point_result = None
 
         buttons = QtWidgets.QGridLayout()
         self.mzi_quick_btn = QtWidgets.QPushButton("Test one trigger")
         self.mzi_quick_btn.setToolTip(
-            "Program the setup, write the manual voltage to every checked heater, "
-            "then capture and display one trigger-aligned acquisition.")
+            "Capture one hardware-triggered repetition (N=1, no averaging) "
+            "and display ADC3 above the selected optical ADC.")
         self.mzi_quick_btn.clicked.connect(self._on_mzi_quick_capture)
         self.mzi_point_btn = QtWidgets.QPushButton("Capture averaged point")
         self.mzi_point_btn.setToolTip(
-            "Program the setup, write the manual voltage to every checked heater, "
-            "wait for settling, then save the configured number of aligned captures.")
+            "Capture the configured N trigger-aligned repetitions, average each "
+            "ADC independently, and display ADC3 above the selected optical ADC.")
         self.mzi_point_btn.clicked.connect(self._on_mzi_capture_point)
         self.mzi_run_btn = QtWidgets.QPushButton("Run sweep")
         self.mzi_run_btn.setToolTip(
@@ -3902,8 +3915,18 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_cancel_btn = QtWidgets.QPushButton("Stop")
         self.mzi_cancel_btn.setEnabled(False)
         self.mzi_cancel_btn.clicked.connect(self._on_mzi_cal_cancel)
+        self.mzi_preview_adc = QtWidgets.QComboBox()
+        for channel in range(3):
+            self.mzi_preview_adc.addItem(f"ADC{channel}", channel)
+        self.mzi_preview_adc.setToolTip(
+            "Choose which independently averaged optical ADC appears below "
+            "the ADC3 timing reference.")
+        self.mzi_preview_adc.currentIndexChanged.connect(
+            self._refresh_mzi_point_preview)
         buttons.addWidget(self.mzi_quick_btn, 0, 0)
-        buttons.addWidget(self.mzi_point_btn, 1, 0)
+        buttons.addWidget(QtWidgets.QLabel("Preview"), 0, 1)
+        buttons.addWidget(self.mzi_preview_adc, 0, 2)
+        buttons.addWidget(self.mzi_point_btn, 1, 0, 1, 3)
         buttons.addWidget(self.mzi_run_btn, 2, 0)
         buttons.addWidget(self.mzi_cancel_btn, 3, 0)
         result_column.addLayout(buttons)
@@ -4724,6 +4747,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 point_channels[channel] = {
                     "measurement": channel_measurement,
                     "average": channel_measurement.averaged_waveform,
+                    "expected_peaks": nominal,
                     "peaks": channel_measurement.peak_indices,
                     "starts": channel_measurement.start_indices,
                     "ends": channel_measurement.end_indices,
@@ -4797,6 +4821,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             for channel, channel_result in point_channels.items():
                 payload[f"averaged_waveform_ch{channel}_v"] = (
                     channel_result["average"])
+                payload[f"expected_peak_indices_ch{channel}"] = (
+                    channel_result["expected_peaks"])
                 payload[f"peak_indices_ch{channel}"] = channel_result["peaks"]
                 payload[f"spike_amplitudes_ch{channel}_v"] = (
                     channel_result["amplitudes"])
@@ -4817,6 +4843,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 "loopback_lags": np.zeros(
                     reference_reps.shape[0], dtype=np.int32),
                 "loopback_scores": primary["loopback_scores"],
+                "reference_average": reference_average,
+                "reference_measurement": reference,
                 "channel_results": point_channels,
             }
         except Exception as exc:  # noqa: BLE001
@@ -4959,6 +4987,97 @@ class ScopeWindow(QtWidgets.QMainWindow):
             f"response {height * 1e3:.3f} mV")
 
 
+    def _refresh_mzi_point_preview(self, *_):
+        if self._mzi_last_point_result is not None:
+            self._show_mzi_point_diagnostics(self._mzi_last_point_result)
+
+    def _show_mzi_point_diagnostics(self, result):
+        """Show exactly what the pre-sweep point acquisition measured."""
+
+        self.mzi_reference_plot.clear()
+        self.mzi_spike_plot.clear()
+        spec = result["spec"]
+        repetitions = int(spec["reps"])
+        averaging = (
+            "single trigger, N=1 (not averaged)" if repetitions == 1 else
+            f"arithmetic average of N={repetitions} aligned triggers")
+
+        reference = result["reference_measurement"]
+        reference_mv = np.asarray(
+            result["reference_average"], dtype=np.float64) * 1e3
+        reference_polarity = dominant_spike_polarity(reference)
+        reference_peaks = np.asarray(
+            reference.peak_indices[
+                reference.polarities == reference_polarity],
+            dtype=np.int32)
+        display_x, display_y = event_preserving_trace(
+            reference_mv, reference_peaks)
+        self.mzi_reference_plot.plot(
+            display_x, display_y, pen=pg.mkPen("#E8EDF2", width=1.1))
+        valid_reference = (
+            (reference_peaks >= 0) & (reference_peaks < reference_mv.size))
+        if np.any(valid_reference):
+            peaks = reference_peaks[valid_reference]
+            self.mzi_reference_plot.plot(
+                peaks, reference_mv[peaks], pen=None, symbol="x",
+                symbolSize=7, symbolPen=pg.mkPen("#F6AE2D", width=1.5),
+                symbolBrush=None)
+        self.mzi_reference_plot.setTitle(
+            f"ADC3 electrical reference | {averaging} | "
+            f"{reference_peaks.size} main-polarity spikes")
+        self.mzi_reference_plot.getViewBox().enableAutoRange(
+            axis=pg.ViewBox.YAxis, enable=True)
+
+        channel = int(self.mzi_preview_adc.currentData())
+        channel_result = result["channel_results"].get(channel)
+        if channel_result is None:
+            self.mzi_spike_plot.setTitle(
+                f"ADC{channel}: no optical result in this capture")
+            return
+        average_mv = np.asarray(
+            channel_result["average"], dtype=np.float64) * 1e3
+        measured = np.asarray(channel_result["peaks"], dtype=np.int32)
+        expected = np.asarray(
+            channel_result["expected_peaks"], dtype=np.int32)
+        important = np.unique(np.concatenate((expected, measured)))
+        display_x, display_y = event_preserving_trace(
+            average_mv, important)
+        self.mzi_spike_plot.plot(
+            display_x, display_y,
+            pen=pg.mkPen(CH_COLORS[channel], width=1.1))
+        expected_valid = (expected >= 0) & (expected < average_mv.size)
+        if np.any(expected_valid):
+            locations = expected[expected_valid]
+            self.mzi_spike_plot.plot(
+                locations, average_mv[locations], pen=None, symbol="+",
+                symbolSize=7, symbolPen=pg.mkPen("#4FC3F7", width=1.4),
+                symbolBrush=None)
+        measured_valid = (measured >= 0) & (measured < average_mv.size)
+        if np.any(measured_valid):
+            locations = measured[measured_valid]
+            self.mzi_spike_plot.plot(
+                locations, average_mv[locations], pen=None, symbol="x",
+                symbolSize=7, symbolPen=pg.mkPen("#F6AE2D", width=1.5),
+                symbolBrush=None)
+
+        lag = int(channel_result["optical_latency_samples"])
+        score = float(channel_result["optical_correlation_score"])
+        validity = (
+            "valid" if channel_result["optical_correlation_valid"] else
+            "below threshold")
+        self.mzi_spike_plot.setTitle(
+            f"ADC{channel} from {channel_result['source']} | {averaging} | "
+            f"lag {lag:+d} samples | normalized corr {score:.3f} ({validity})")
+        self.mzi_spike_plot.setYRange(
+            float(self.mzi_trace_y_min.value()),
+            float(self.mzi_trace_y_max.value()), padding=0.0)
+        if important.size:
+            first = int(np.min(important))
+            last = int(np.max(important))
+            margin = max(32, int(max(1, last - first) * 0.05))
+            self.mzi_spike_plot.setXRange(
+                max(0, first - margin),
+                min(average_mv.size - 1, last + margin), padding=0.0)
     def _show_mzi_spikes(self, average, peaks, starts, ends, amplitudes):
         self.mzi_spike_plot.clear()
         trace_mv = np.asarray(average, dtype=np.float64) * 1e3
@@ -5540,15 +5659,15 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if kind == "point":
             self.mzi_progress.setValue(1)
 
-            self._show_mzi_spikes(
-                result["average"], result["peaks"], result["starts"],
-                result["ends"], result["amplitudes"])
+            self._mzi_last_point_result = result
+            self._show_mzi_point_diagnostics(result)
             lane_timing = "; ".join(
                 f"ADC{channel} {self._mzi_lane_timing_text(channel_result)}"
                 for channel, channel_result in
                 sorted(result.get("channel_results", {}).items()))
             self.mzi_status.setText(
-                f"Captured {spec['reps']} hardware-triggered samples at "
+                f"Captured {spec['reps']} hardware-triggered "
+                f"{'sample (not averaged)' if spec['reps'] == 1 else 'samples and averaged each ADC independently'} at "
                 f"{result['voltage']:.4f} V: {len(result['peaks'])} spikes, "
                 f"mean {result['height'] * 1e3:.3f} mV; ADC3 first peak "
                 f"{result['reference_latency_samples']} samples after guard; "
