@@ -409,6 +409,42 @@ def estimate_main_lobe_lag(
         signal_feature, reference_feature, limit, allow_inversion=False)
 
 
+def estimate_main_lobe_lag_auto_polarity(
+    observed: np.ndarray,
+    template: np.ndarray,
+    max_lag: int,
+    *,
+    template_polarity: int,
+    template_peak_indices: np.ndarray | None = None,
+) -> tuple[CorrelationLag, int]:
+    """Return the strongest main-lobe match and its observed polarity.
+
+    DAC polarity is not a reliable proxy after the optical and AC-coupled
+    receive paths. Test both possible response polarities against the same
+    ADC3 main-lobe template and select the stronger normalized correlation.
+    The returned polarity is relative to the reference: +1 for the same lobe,
+    -1 for the opposite lobe.
+    """
+
+    candidates = []
+    errors = []
+    for relative_polarity in (1, -1):
+        try:
+            candidate = estimate_main_lobe_lag(
+                observed, template, max_lag,
+                observed_polarity=(
+                    int(template_polarity) * relative_polarity),
+                template_polarity=template_polarity,
+                template_peak_indices=template_peak_indices)
+        except ValueError as exc:
+            errors.append(exc)
+            continue
+        candidates.append((candidate, relative_polarity))
+    if not candidates:
+        raise ValueError(
+            "observed signal has no correlation energy in either polarity"
+        ) from (errors[-1] if errors else None)
+    return max(candidates, key=lambda item: float(item[0].score))
 def _shift_without_wrap(trace: np.ndarray, lag_samples: int) -> np.ndarray:
     """Remove a measured delay without wrapping capture-edge samples."""
 

@@ -99,6 +99,7 @@ from mzi_calibration import (
     calibration_voltage_sequence,
     dominant_spike_polarity,
     estimate_main_lobe_lag,
+    estimate_main_lobe_lag_auto_polarity,
     measure_spikes_at_indices,
     measure_spikes_in_windows,
     measure_spikes_with_loopback,
@@ -3864,9 +3865,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_plot.setMinimumHeight(260)
         self.mzi_plot.setBackground("#101418")
         self.mzi_plot.showGrid(x=True, y=True, alpha=0.22)
-        self.mzi_plot.setLabel("left", "normalized optical weight")
+        self.mzi_plot.setLabel(
+            "left", "mean detected spike peak", units="mV")
         self.mzi_plot.setLabel("bottom", "heater", units="V")
-        self.mzi_plot.setYRange(-0.05, 1.05)
+        self.mzi_plot.enableAutoRange(axis=pg.ViewBox.YAxis)
         self.mzi_curve_fwd = self.mzi_plot.plot(
             pen=pg.mkPen("#4FC3F7", width=1.5), symbol="o",
             symbolSize=4, symbolBrush="#4FC3F7")
@@ -3995,7 +3997,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_peak_polarity.setToolTip(
             "Auto selects the polarity with the larger median peak magnitude.")
         self.mzi_outlier_filter = QtWidgets.QCheckBox("Reject height outliers")
-        self.mzi_outlier_filter.setChecked(True)
+        self.mzi_outlier_filter.setChecked(False)
         self.mzi_outlier_filter.setToolTip(
             "Iteratively reject peak amplitudes outside the selected sigma limit.")
         self.mzi_outlier_sigma = QtWidgets.QDoubleSpinBox()
@@ -4076,9 +4078,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_result_curve_plot = pg.PlotWidget()
         self.mzi_result_curve_plot.setBackground("#101418")
         self.mzi_result_curve_plot.showGrid(x=True, y=True, alpha=0.22)
-        self.mzi_result_curve_plot.setLabel("left", "normalized optical weight")
+        self.mzi_result_curve_plot.setLabel(
+            "left", "mean detected spike peak", units="mV")
         self.mzi_result_curve_plot.setLabel("bottom", "heater", units="V")
-        self.mzi_result_curve_plot.setYRange(-0.05, 1.05)
+        self.mzi_result_curve_plot.enableAutoRange(axis=pg.ViewBox.YAxis)
         self.mzi_result_curve_plot.addLegend(offset=(10, 10))
         self.mzi_result_curve_raw_fwd = self.mzi_result_curve_plot.plot(
             pen=pg.mkPen("#90A4AE", width=1.2, style=QtCore.Qt.DashLine),
@@ -4660,7 +4663,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self._set_mzi_heater_voltages(requested)
             if spec["settle_s"]:
                 time.sleep(spec["settle_s"])
-            capture = self._multisample_once(spec["capture_bytes"], spec["reps"])
+            capture = self._mzi_multisample_with_retries(
+                spec, voltage=float(voltage))
             if "_err" in capture:
                 return {"_err": capture["_err"]}
             raw_stacks = {
@@ -4699,19 +4703,20 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     repetitions[:, :baseline_end], axis=1)
                 channel_average = (
                     repetitions - baseline[:, None]).mean(axis=0)
-                relative_polarity = (
+                configured_relative_polarity = (
                     -1 if bool(spec["dac_invert"][channel]) !=
                     bool(spec["dac_invert"][spec["reference_adc"]]) else 1)
                 try:
-                    candidate = estimate_main_lobe_lag(
-                        channel_average, reference_average,
-                        spec["optical_max_lag"],
-                        observed_polarity=reference_polarity * relative_polarity,
-                        template_polarity=reference_polarity,
-                        template_peak_indices=selected_reference_peaks)
+                    candidate, relative_polarity = (
+                        estimate_main_lobe_lag_auto_polarity(
+                            channel_average, reference_average,
+                            spec["optical_max_lag"],
+                            template_polarity=reference_polarity,
+                            template_peak_indices=selected_reference_peaks))
                     candidate_lag = int(candidate.lag_samples)
                     candidate_score = float(candidate.score)
                 except ValueError:
+                    relative_polarity = configured_relative_polarity
                     candidate_lag = 0
                     candidate_score = 0.0
                 stimulus_enabled = spec["xbar_sources"][channel] != "Off"
@@ -4920,8 +4925,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 self._set_mzi_heater_voltages(requested)
                 if spec["settle_s"]:
                     time.sleep(spec["settle_s"])
-                capture = self._multisample_once(
-                    spec["capture_bytes"], spec["reps"])
+                capture = self._mzi_multisample_with_retries(
+                    spec, voltage=float(voltage))
                 if "_err" in capture:
                     raise RuntimeError(f"{voltage:.4f} V: {capture['_err']}")
                 raw = np.asarray(capture["stack"][spec["analysis_adc"]], dtype=np.int16)
@@ -4979,6 +4984,35 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 except Exception:
                     pass
 
+    def _mzi_multisample_with_retries(self, spec, *, voltage, attempts=3):
+        """Retry a transient Ethernet failure without advancing the heater.
+
+        Each call performs a complete, newly triggered BCPT acquisition. Its
+        internal BRDO retries first exhaust rereads of the same DDR image. Only
+        incomplete UDP drains and readout handshakes are retried here;
+        deterministic capture-engine failures remain fatal.
+        """
+        retryable = (
+            "UDP drain incomplete",
+            "BRST registration timed out",
+            "BRDO failed",
+        )
+        attempts = max(1, int(attempts))
+        last = None
+        for attempt in range(attempts):
+            last = self._multisample_once(
+                spec["capture_bytes"], spec["reps"])
+            error = str(last.get("_err", ""))
+            if not error:
+                return last
+            if (attempt + 1 >= attempts or
+                    not any(token in error for token in retryable)):
+                return last
+            self.mzi_setup_progress.emit(
+                f"{voltage:.4f} V Ethernet read incomplete; repeating the "
+                f"trigger-aligned capture ({attempt + 2}/{attempts})...")
+            time.sleep(0.75)
+        return last
     def _on_mzi_cal_progress(self, done, total, voltage, height):
         self.mzi_progress.setMaximum(total)
         self.mzi_progress.setValue(done)
@@ -5053,7 +5087,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 symbolSize=7, symbolPen=pg.mkPen("#4FC3F7", width=1.4),
                 symbolBrush=None)
         measured_valid = (measured >= 0) & (measured < average_mv.size)
-        if np.any(measured_valid):
+        if (channel_result["optical_correlation_valid"] and
+                np.any(measured_valid)):
             locations = measured[measured_valid]
             self.mzi_spike_plot.plot(
                 locations, average_mv[locations], pen=None, symbol="x",
@@ -5295,9 +5330,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
         score_text = (
             "n/a" if score is None or not np.isfinite(float(score))
             else f"{abs(float(score)):.3f}")
+        validity = (
+            "valid" if channel_result.get("optical_correlation_valid", False)
+            else "INVALID - no correlated response")
         return (
             f"latency {latency:+d} samples ({latency:+d} ns @ 1 GS/s), "
-            f"|corr|={score_text}")
+            f"|corr|={score_text} ({validity})")
     def _mzi_peak_analyses(self, result, channel=None):
         if channel is None:
             channel = self._selected_mzi_result_channel()
@@ -5414,9 +5452,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     plot.plot(
                         display_x, display_y,
                         pen=pg.mkPen(CH_COLORS[selected_channel], width=1.1))
+                    correlation_valid = bool(
+                        channel_result.get("optical_correlation_valid", False))
                     accepted = analysis.accepted
                     rejected = ~accepted
-                    if np.any(accepted):
+                    if correlation_valid and np.any(accepted):
                         plot.addItem(pg.InfiniteLine(
                             pos=analysis.filtered_mean_v * 1e3, angle=0,
                             movable=False,
@@ -5427,7 +5467,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
                             pen=None, symbol="x", symbolSize=7,
                             symbolPen=pg.mkPen("#F6AE2D", width=1.5),
                             symbolBrush=None)
-                    if np.any(rejected):
+                    if (correlation_valid and
+                            self.mzi_outlier_filter.isChecked() and
+                            np.any(rejected)):
                         plot.plot(
                             analysis.peak_indices[rejected],
                             analysis.waveform_values_v[rejected] * 1e3,
@@ -5468,13 +5510,20 @@ class ScopeWindow(QtWidgets.QMainWindow):
             analyses = analyses_by_channel.get(selected_channel, [])
             values = np.asarray([
                 analysis.filtered_mean_v for analysis in analyses])
+            valid = bool(
+                channel_result.get("optical_correlation_valid", False))
+            marker_note = (
+                "Gold x marks measured spike peaks."
+                if valid else
+                "No peak marks or optical curve are shown because this lane "
+                "has no valid ADC3 correlation.")
             self.mzi_results_summary.setText(
                 f"ADC{selected_channel} from "
                 f"{channel_result.get('source', 'unknown')}: "
                 f"{self._mzi_lane_timing_text(channel_result)}; "
-                f"{len(analyses)} points, filtered span "
+                f"{len(analyses)} points, mean-peak span "
                 f"{float(np.ptp(values)) * 1e3 if values.size else 0.0:.3f} mV. "
-                "Gold x marks accepted peaks; red x marks rejected outliers.")
+                f"{marker_note}")
 
     def _show_mzi_result_curve(self, result):
         plot = self.mzi_result_curve_plot
@@ -5499,6 +5548,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
             channel_result = self._mzi_channel_result(result, channel)
             if channel_result is None:
                 continue
+            if not channel_result.get("optical_correlation_valid", False):
+                plot.setTitle(
+                    f"ADC{channel}: no valid ADC3 correlation; "
+                    "optical curve unavailable")
+                continue
+            plot.setTitle("")
             analyses = self._mzi_peak_analyses(result, channel)
             if not analyses:
                 continue
@@ -5524,8 +5579,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
                         symbol="o", symbolSize=3,
                         symbolBrush="#90A4AE", name="unfiltered")
             else:
-                filtered_weight = self._normalize_mzi_values(filtered, False)
-                raw_weight = self._normalize_mzi_values(raw, False)
+                filtered_mv = filtered * 1e3
+                raw_mv = raw * 1e3
+                visible_values.append(filtered_mv)
+                if use_filter:
+                    visible_values.append(raw_mv)
                 forward = direction == 0
                 reverse = direction == 1
                 for selected, suffix, style in (
@@ -5534,16 +5592,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     if not np.any(selected):
                         continue
                     plot.plot(
-                        voltage[selected], filtered_weight[selected],
+                        voltage[selected], filtered_mv[selected],
                         pen=pg.mkPen(color, width=1.7, style=style),
                         symbol="o", symbolSize=4, symbolBrush=color,
                         name=f"ADC{channel} {source} {suffix}")
-                if use_filter:
-                    plot.plot(
-                        voltage[forward], raw_weight[forward],
-                        pen=pg.mkPen("#90A4AE", width=1.0,
-                                     style=QtCore.Qt.DotLine),
-                        name="unfiltered")
+                    if use_filter:
+                        plot.plot(
+                            voltage[selected], raw_mv[selected],
+                            pen=pg.mkPen("#90A4AE", width=1.0,
+                                         style=QtCore.Qt.DotLine),
+                            name=f"unfiltered {suffix}")
 
         if constant:
             held = float(voltage[0]) if voltage.size else float("nan")
@@ -5557,9 +5615,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 padding = max(0.05 * (upper - lower), 0.01)
                 plot.setYRange(lower - padding, upper + padding, padding=0.0)
         else:
-            plot.setLabel("left", "normalized optical weight")
+            plot.setLabel(
+                "left", "mean detected spike peak", units="mV")
             plot.setLabel("bottom", "heater", units="V")
-            plot.setYRange(-0.05, 1.05, padding=0.0)
+            if visible_values:
+                combined = np.concatenate(visible_values)
+                lower = float(np.min(combined))
+                upper = float(np.max(combined))
+                padding = max(0.05 * (upper - lower), 0.01)
+                plot.setYRange(
+                    lower - padding, upper + padding, padding=0.0)
     def _on_mzi_cal_result(self, result):
         self._mzi_running = False
         enabled = bool(self.dac)
@@ -5681,23 +5746,24 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return
         voltage = np.asarray(result.get("voltages", []), dtype=float)
         direction = np.asarray(result.get("directions", []), dtype=np.int8)
-        weight = np.asarray(result.get("normalized", []), dtype=float)
+        amplitude_mv = np.asarray(
+            result.get("absolute", []), dtype=np.float64) * 1e3
         if result.get("constant_voltage_control"):
-            amplitude_mv = np.asarray(
-                result.get("absolute", []), dtype=np.float64) * 1e3
-            self.mzi_plot.setLabel("left", "mean spike amplitude", units="mV")
+            self.mzi_plot.setLabel(
+                "left", "mean detected spike peak", units="mV")
             self.mzi_plot.setLabel("bottom", "capture index")
             self.mzi_plot.enableAutoRange()
             self.mzi_curve_fwd.setData(np.arange(voltage.size), amplitude_mv)
             self.mzi_curve_rev.setData([], [])
         else:
-            self.mzi_plot.setLabel("left", "normalized optical weight")
+            self.mzi_plot.setLabel(
+                "left", "mean detected spike peak", units="mV")
             self.mzi_plot.setLabel("bottom", "heater", units="V")
-            self.mzi_plot.setYRange(-0.05, 1.05)
+            self.mzi_plot.enableAutoRange(axis=pg.ViewBox.YAxis)
             self.mzi_curve_fwd.setData(
-                voltage[direction == 0], weight[direction == 0])
+                voltage[direction == 0], amplitude_mv[direction == 0])
             self.mzi_curve_rev.setData(
-                voltage[direction == 1], weight[direction == 1])
+                voltage[direction == 1], amplitude_mv[direction == 1])
         if result.get("measurements"):
             self._remember_mzi_dataset(result)
         reference = result.get("reference_measurement")
@@ -5804,6 +5870,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
             # decoupled -- so a fresh BRST registration + BRDO re-drains the
             # SAME repetitions without re-triggering anything.
             drain_tries = 3
+            # Every BRDO below rereads the same immutable DDR image. Preserve
+            # each request's received slots so packet loss from separate drains
+            # can be filled in rather than clearing all prior progress.
+            combined_buf = [bytearray(total), bytearray(total)]
+            combined_cov = [
+                np.zeros(asm.nslot, dtype=bool),
+                np.zeros(asm.nslot, dtype=bool),
+            ]
             for attempt in range(drain_tries):
                 if attempt:
                     time.sleep(0.4)   # human-paced settle; fast re-issue races the A53
@@ -5821,16 +5895,27 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     if started and asm.idle(0.8):
                         break
                     time.sleep(0.05)
-                if asm.complete():
+                with asm.lock:
+                    request_cov = [asm.cov[0].copy(), asm.cov[1].copy()]
+                    request_buf = [bytes(asm.buf[0]), bytes(asm.buf[1])]
+                for chip in range(2):
+                    for slot in np.flatnonzero(request_cov[chip]):
+                        start = int(slot) * asm.slot
+                        end = min(total, start + asm.slot)
+                        combined_buf[chip][start:end] = (
+                            request_buf[chip][start:end])
+                    combined_cov[chip] |= request_cov[chip]
+                if combined_cov[0].all() and combined_cov[1].all():
                     break
-            cov = min(asm.coverage(0), asm.coverage(1))
-            if not asm.complete():
+            coverage = [float(bits.mean()) for bits in combined_cov]
+            cov = min(coverage)
+            if not (combined_cov[0].all() and combined_cov[1].all()):
                 return {"_err": (f"UDP drain incomplete after {drain_tries} "
-                                 f"attempts: chip0 {100 * asm.coverage(0):.1f}%, "
-                                 f"chip1 {100 * asm.coverage(1):.1f}% coverage")}
+                                 f"attempts: chip0 {100 * coverage[0]:.1f}%, "
+                                 f"chip1 {100 * coverage[1]:.1f}% combined coverage")}
             chans = {}
-            chans.update(decode_chip(asm.buf[0], 0))
-            chans.update(decode_chip(asm.buf[1], 2))
+            chans.update(decode_chip(combined_buf[0], 0))
+            chans.update(decode_chip(combined_buf[1], 2))
 
             # slice the strided DDR layout: per channel 4 bytes/sample
             spr = meta["bytes_per_rep"] // 4      # wanted samples per rep

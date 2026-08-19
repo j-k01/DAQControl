@@ -147,7 +147,7 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertEqual(len(pulse), 40)
         self.assertLess(min(pulse), 0)
         self.assertEqual(self.window.mzi_peak_polarity.currentData(), "auto")
-        self.assertTrue(self.window.mzi_outlier_filter.isChecked())
+        self.assertFalse(self.window.mzi_outlier_filter.isChecked())
         self.assertEqual(self.window.mzi_outlier_sigma.value(), 2.5)
         self.assertEqual(self.window.mzi_trace_y_min.value(), -25.0)
         self.assertEqual(self.window.mzi_trace_y_max.value(), 25.0)
@@ -497,6 +497,31 @@ class OpticalWeightGuiTests(unittest.TestCase):
             }
         return capture
 
+    def test_mzi_capture_retries_transient_udp_failure(self):
+        calls = []
+        success = {"stack": {}, "meta": {"cov": 1.0}}
+
+        def capture(nbytes, repetitions):
+            calls.append((nbytes, repetitions))
+            if len(calls) == 1:
+                return {
+                    "_err": "UDP drain incomplete after 3 attempts: "
+                            "chip0 70.6%, chip1 100.0% combined coverage"
+                }
+            return success
+
+        self.window._multisample_once = capture
+        original_sleep = dac_scope_qt.time.sleep
+        dac_scope_qt.time.sleep = lambda _seconds: None
+        try:
+            result = self.window._mzi_multisample_with_retries(
+                {"capture_bytes": 64 * 1024, "reps": 16},
+                voltage=0.4)
+        finally:
+            dac_scope_qt.time.sleep = original_sleep
+
+        self.assertIs(result, success)
+        self.assertEqual(calls, [(64 * 1024, 16), (64 * 1024, 16)])
     def test_selected_voltage_reuses_aligned_capture_and_saves_average(self):
         fake_dac = FakeDac()
         fake_mzi = FakeMziController()
@@ -598,6 +623,9 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.window._mzi_resume_tap = False
         self.window._on_mzi_cal_result(result)
         self.assertEqual(len(self.window.mzi_sweep_trace_plots), 3)
+        np.testing.assert_allclose(
+            self.window.mzi_curve_fwd.getData()[1],
+            np.asarray(result["absolute"]) * 1e3)
         self.assertEqual(self.window.mzi_channel_tabs.currentIndex(), 0)
         self.assertEqual(self.window.mzi_preview_adc.currentData(), 0)
         self.assertIsNone(self.window._mzi_last_point_result)

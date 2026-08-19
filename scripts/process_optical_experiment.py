@@ -14,6 +14,7 @@ from mzi_calibration import (
     analyze_optical_peaks,
     dominant_spike_polarity,
     estimate_main_lobe_lag,
+    estimate_main_lobe_lag_auto_polarity,
     measure_spikes_at_indices,
     measure_spikes_in_windows,
     measure_triggered_spikes,
@@ -64,7 +65,7 @@ def _write_heater_analysis(
     detected_count = 0 if detected is None else int(detected.peak_indices.size)
     optical = analyze_optical_peaks(
         measurement, detected, polarity="auto",
-        sigma_limit=2.5, filter_enabled=True)
+        sigma_limit=2.5, filter_enabled=False)
     suffix = "" if primary_channel else f"_ch{int(adc_channel)}"
     processed_name = f"processed{suffix}.npz"
     measurements_name = f"spike_measurements{suffix}.csv"
@@ -237,29 +238,27 @@ def _write_curve_plot(
             f"capture index (heater held at {float(voltages[0]):.4f} V)")
     else:
         styles = ((0, "forward", "#20A4F3"), (1, "reverse", "#F6AE2D"))
+        raw_mv = raw_v * 1e3
+        mean_peak_mv = filtered_v * 1e3
         for code, label, color in styles:
             selected = directions == code
             if not np.any(selected):
                 continue
             axes[0].plot(
-                voltages[selected], raw_normalized[selected], "o--",
+                voltages[selected], raw_mv[selected], "o--",
                 color="#90A4AE", linewidth=1.0, markersize=3,
-                label=f"unfiltered {label}")
+                label=f"all peaks {label}")
             axes[0].plot(
-                voltages[selected], normalized[selected], "o-",
+                voltages[selected], mean_peak_mv[selected], "o-",
                 color=color, linewidth=1.5, markersize=4,
-                label=f"filtered {label}")
+                label=f"mean peak {label}")
             axes[1].plot(
-                voltages[selected], raw_v[selected] * 1e3, "o--",
-                color="#90A4AE", linewidth=1.0, markersize=3,
-                label=f"unfiltered {label}")
-            axes[1].plot(
-                voltages[selected], filtered_v[selected] * 1e3, "o-",
-                color=color, linewidth=1.5, markersize=4,
-                label=f"filtered {label}")
-        axes[0].set_ylabel("normalized optical weight")
-        axes[0].set_ylim(-0.05, 1.05)
-        axes[1].set_ylabel("mean peak amplitude (mV)")
+                voltages[selected],
+                raw_mv[selected] - mean_peak_mv[selected], "o-",
+                color=color, linewidth=1.3, markersize=3,
+                label=f"outlier-filter change {label}")
+        axes[0].set_ylabel("mean detected spike peak (mV)")
+        axes[1].set_ylabel("filter change (mV)")
         axes[1].set_xlabel("heater voltage (V)")
     for axis in axes:
         axis.grid(alpha=0.25)
@@ -277,7 +276,7 @@ def _analyze_channel_measurements(
     peak_analyses = [
         analyze_optical_peaks(
             measurement, detected, polarity="auto",
-            sigma_limit=2.5, filter_enabled=True)
+            sigma_limit=2.5, filter_enabled=False)
         for measurement, detected in zip(measurements, independent_measurements)
     ]
     if any(analysis.peak_indices.size == 0 for analysis in peak_analyses):
@@ -421,9 +420,9 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
         all_valid_lags = []
         for channel in optical_adcs:
             averages = []
-            candidates = []
+            automatic = []
             repetitions_by_point = stacks_by_adc[channel]
-            relative_polarity = (
+            configured_relative_polarity = (
                 -1 if bool(invert_by_dac.get(f"DAC{channel}", False)) !=
                 bool(invert_by_dac.get(f"DAC{reference_adc}", False)) else 1)
             for repetitions, reference_average in zip(
@@ -433,17 +432,44 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
                 average = (repetitions - baseline[:, None]).mean(axis=0)
                 averages.append(average)
                 try:
+                    automatic.append(estimate_main_lobe_lag_auto_polarity(
+                        average, reference_average, max_optical_lag,
+                        template_polarity=reference_polarity,
+                        template_peak_indices=selected_reference_peaks))
+                except ValueError:
+                    automatic.append((None, configured_relative_polarity))
+
+            source = str(xbar_sources.get(f"DAC{channel}", "Spike 0"))
+            stimulus_enabled = source != "Off"
+            usable = [
+                item for item in automatic
+                if stimulus_enabled and item[0] is not None
+            ]
+            if usable:
+                strongest, relative_polarity = max(
+                    usable, key=lambda item: float(item[0].score))
+                del strongest
+                polarity_source = "measured correlation"
+            else:
+                relative_polarity = configured_relative_polarity
+                polarity_source = "configured fallback"
+
+            # Keep one measured polarity for the complete heater sweep. This
+            # allows low-transmission points to use the timing and polarity
+            # established at a strong point without chasing noise extrema.
+            candidates = []
+            for average, reference_average in zip(
+                    averages, reference_averages):
+                try:
                     candidate = estimate_main_lobe_lag(
                         average, reference_average, max_optical_lag,
-                        observed_polarity=reference_polarity * relative_polarity,
+                        observed_polarity=(
+                            reference_polarity * relative_polarity),
                         template_polarity=reference_polarity,
                         template_peak_indices=selected_reference_peaks)
                 except ValueError:
                     candidate = None
                 candidates.append(candidate)
-
-            source = str(xbar_sources.get(f"DAC{channel}", "Spike 0"))
-            stimulus_enabled = source != "Off"
             valid = [
                 candidate for candidate in candidates
                 if (stimulus_enabled and candidate is not None and
@@ -460,6 +486,7 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
                 "source": source,
                 "stimulus_enabled": stimulus_enabled,
                 "relative_polarity": relative_polarity,
+                "polarity_source": polarity_source,
             }
 
         fallback_lag = (
@@ -512,6 +539,8 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
                 "optical_latency_samples": latency,
                 "optical_correlation_score": correlation_score,
                 "optical_correlation_valid": bool(valid),
+                "response_polarity": int(work["relative_polarity"]),
+                "polarity_source": work["polarity_source"],
                 "point_correlation_scores": [
                     None if candidate is None else float(candidate.score)
                     for candidate in work["candidates"]
@@ -645,7 +674,9 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
         "loopback_alignment_applied": False,
         "trigger_aligned_repetitions_averaged_without_shifting": loopback_enabled,
         "constant_voltage_control": constant_voltage,
-        "normalization_is_transfer_curve": not constant_voltage,
+        "primary_curve_quantity": "arithmetic mean detected spike peak amplitude in volts",
+        "normalization_is_transfer_curve": False,
+        "normalized_fields_legacy_only": True,
         "curve_csv": primary_curve.name,
         "curve_plot": primary_plot.name if make_plot else None,
     }

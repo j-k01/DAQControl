@@ -17,6 +17,7 @@ from mzi_calibration import (
     analyze_optical_peaks,
     calibration_voltage_sequence,
     estimate_main_lobe_lag,
+    estimate_main_lobe_lag_auto_polarity,
     measure_periodic_pulses,
     measure_spikes_at_indices,
     measure_spikes_in_windows,
@@ -336,6 +337,21 @@ class MziCalibrationTests(unittest.TestCase):
 
         self.assertEqual(result.lag_samples, 29)
 
+    def test_main_lobe_correlation_auto_detects_inverted_lane(self):
+        length = 4096
+        events = np.asarray([500, 1100, 1700, 2300, 2900, 3500])
+        reference = np.zeros(length)
+        reference[events] = 0.5
+        observed = np.roll(-reference * 0.03, 37)
+
+        result, relative_polarity = (
+            estimate_main_lobe_lag_auto_polarity(
+                observed, reference, 100, template_polarity=1,
+                template_peak_indices=events))
+
+        self.assertEqual(result.lag_samples, 37)
+        self.assertGreater(result.score, 0.99)
+        self.assertEqual(relative_polarity, -1)
     def test_loopback_simulation_recovers_reference_and_optical_latency(self):
         report = run_simulation(seed=83)
 
