@@ -370,6 +370,26 @@ class MziCalibrationTests(unittest.TestCase):
         self.assertEqual(result.lag_samples, latency)
         self.assertGreater(result.score, 0.9)
 
+    def test_chattering_correlation_searches_beyond_shortest_spacing(self):
+        length = 4096
+        events = np.asarray([
+            500, 540, 580, 620,
+            1500, 1540, 1580, 1620,
+            2800, 2840, 2880, 2920,
+        ])
+        latency = 74
+        reference = np.zeros(length)
+        observed = np.zeros(length)
+        reference[events] = 0.500
+        observed[events + latency] = 0.012
+
+        result = estimate_main_lobe_lag(
+            observed, reference, 256,
+            observed_polarity=1, template_polarity=1,
+            template_peak_indices=events)
+
+        self.assertEqual(result.lag_samples, latency)
+        self.assertGreater(result.score, 0.99)
     def test_main_lobe_correlation_accepts_explicit_channel_inversion(self):
         length = 2048
         events = np.asarray([300, 800, 1300, 1800])

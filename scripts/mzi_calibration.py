@@ -402,9 +402,10 @@ def estimate_main_lobe_lag(
         signal * (-1 if int(observed_polarity) < 0 else 1), 0.0)
     reference_feature = np.maximum(
         reference * (-1 if int(template_polarity) < 0 else 1), 0.0)
+    # The optical path delay can exceed the shortest inter-spike interval in a
+    # chattering burst. Restricting the lag to half that interval excludes the
+    # physical solution, so search the configured hardware latency range.
     limit = int(max_lag)
-    if template_peak_indices is not None:
-        limit = polarity_aware_lag_limit(limit, template_peak_indices)
     return estimate_correlation_lag(
         signal_feature, reference_feature, limit, allow_inversion=False)
 

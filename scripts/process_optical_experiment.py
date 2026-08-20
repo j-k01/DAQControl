@@ -381,8 +381,9 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
             raise ValueError("no optical ADC channels are configured")
         max_optical_lag = int(acquisition.get(
             "loopback_max_optical_lag_samples", 1024))
-        window_padding = int(acquisition.get(
-            "loopback_window_padding_samples", 8))
+        window_padding = max(
+            int(acquisition.get("loopback_window_padding_samples", 8)),
+            max(1, reference_peak_distance // 2))
         channels = tuple(dict.fromkeys((*optical_adcs, reference_adc)))
         loaded = [
             _load_heater_channels(experiment_dir, descriptor, channels)
@@ -504,6 +505,12 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
             valid_scores = [float(candidate.score) for candidate in valid]
             correlation_score = (
                 float(np.median(valid_scores)) if valid_scores else 0.0)
+            timing_valid = bool(
+                work["stimulus_enabled"] and (valid or all_valid_lags))
+            timing_source = (
+                "lane correlation" if valid else
+                "shared optical-lane latency" if timing_valid else
+                "unavailable")
             nominal, starts, ends, signs = optical_schedule_from_loopback(
                 reference, work["averages"][0], latency,
                 padding_samples=window_padding,
@@ -541,7 +548,8 @@ def process_experiment(experiment_dir: Path, *, make_plot: bool = True) -> dict:
                 "reference_heater_capture_index": None,
                 "optical_latency_samples": latency,
                 "optical_correlation_score": correlation_score,
-                "optical_correlation_valid": bool(valid),
+                "optical_correlation_valid": timing_valid,
+                "optical_timing_source": timing_source,
                 "response_polarity": int(work["relative_polarity"]),
                 "polarity_source": work["polarity_source"],
                 "point_correlation_scores": [

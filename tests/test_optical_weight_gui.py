@@ -547,9 +547,9 @@ class OpticalWeightGuiTests(unittest.TestCase):
             np.testing.assert_array_equal(
                 saved["peak_indices"], [6000, 9000, 12000])
             np.testing.assert_array_equal(
-                saved["spike_start_indices"], [5992, 8992, 11992])
+                saved["spike_start_indices"], [5980, 8980, 11980])
             np.testing.assert_array_equal(
-                saved["spike_end_indices"], [6008, 9008, 12008])
+                saved["spike_end_indices"], [6020, 9020, 12020])
             self.assertEqual(int(saved["reference_adc_channel"]), 3)
             self.assertEqual(
                 int(saved["optical_latency_from_loopback_samples"]), 0)

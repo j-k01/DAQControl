@@ -4724,6 +4724,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     stimulus_enabled and candidate_score >= 0.10)
                 if correlation_valid:
                     valid_lags.append(candidate_lag)
+                else:
+                    relative_polarity = configured_relative_polarity
                 channel_work[channel] = {
                     "repetitions": repetitions,
                     "average": channel_average,
@@ -4740,10 +4742,19 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 work = channel_work[channel]
                 latency = (work["candidate_lag"]
                            if work["correlation_valid"] else fallback_lag)
+                timing_valid = bool(
+                    work["stimulus_enabled"] and
+                    (work["correlation_valid"] or valid_lags))
+                timing_source = (
+                    "lane correlation" if work["correlation_valid"] else
+                    "shared optical-lane latency" if timing_valid else
+                    "unavailable")
                 nominal, channel_starts, channel_ends, signs = (
                     optical_schedule_from_loopback(
                         reference, work["average"], latency,
-                        padding_samples=spec["loopback_window_padding"],
+                        padding_samples=max(
+                            spec["loopback_window_padding"],
+                            max(1, spec["pulse_len"] // 2)),
                         response_polarity=work["relative_polarity"]))
                 channel_measurement = measure_spikes_in_windows(
                     work["repetitions"], step_sample, nominal,
@@ -4762,7 +4773,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     "stimulus_enabled": work["stimulus_enabled"],
                     "optical_latency_samples": latency,
                     "optical_correlation_score": work["candidate_score"],
-                    "optical_correlation_valid": work["correlation_valid"],
+                    "optical_correlation_valid": timing_valid,
+                    "optical_timing_source": timing_source,
                     "loopback_lags": np.zeros(
                         reference_reps.shape[0], dtype=np.int32),
                     "loopback_scores": np.full(
@@ -5330,8 +5342,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         score_text = (
             "n/a" if score is None or not np.isfinite(float(score))
             else f"{abs(float(score)):.3f}")
+        timing_source = str(
+            channel_result.get("optical_timing_source", "lane correlation"))
         validity = (
-            "valid" if channel_result.get("optical_correlation_valid", False)
+            f"valid, {timing_source}"
+            if channel_result.get("optical_correlation_valid", False)
             else "INVALID - no correlated response")
         return (
             f"latency {latency:+d} samples ({latency:+d} ns @ 1 GS/s), "
