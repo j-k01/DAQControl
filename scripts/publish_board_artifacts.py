@@ -34,6 +34,9 @@ def sha256(path: Path) -> str:
 
 
 def atomic_copy(source: Path, destination: Path) -> None:
+    destination_mode = (
+        destination.stat().st_mode & 0o7777 if destination.exists() else None
+    )
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         dir=destination.parent, prefix=f".{destination.name}.", delete=False
@@ -41,6 +44,8 @@ def atomic_copy(source: Path, destination: Path) -> None:
         temporary_path = Path(temporary.name)
     try:
         shutil.copy2(source, temporary_path)
+        if destination_mode is not None:
+            os.chmod(temporary_path, destination_mode)
         os.replace(temporary_path, destination)
     finally:
         temporary_path.unlink(missing_ok=True)
