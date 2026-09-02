@@ -2,9 +2,11 @@
 """Extract per-heater MZI calibrations from headless Mode B batches.
 
 Pass one or more batch directories produced by
-``headless_tone_characterization.py``. For complete observability, acquire the
-same heater set separately with input DAC0, DAC1, and DAC2 and pass all three
-batches together.
+``headless_tone_characterization.py``. The physical mapping is DAC0 to
+photonic row 7, DAC1 to row 8, and DAC2 to row 9. A complete calibration
+therefore contains six row-7 sweeps from DAC0, six row-8 sweeps from DAC1,
+and six row-9 sweeps from DAC2. Off-row sweeps may characterize crosstalk but
+are never selected as the primary calibration path.
 
 The primary reported response remains fitted tone amplitude in millivolts.
 ADC3 is used only to compensate capture-to-capture gain drift while preserving
@@ -26,7 +28,11 @@ from typing import Iterable
 
 import numpy as np
 
-from mzi_heater_map import MZI_NET_NAMES
+from mzi_heater_map import (
+    PHOTONIC_INPUT_DAC_BY_ROW,
+    PHOTONIC_INPUT_ROW_BY_DAC,
+    calibration_heaters_for_dac,
+)
 from optical_experiment import load_manifest, write_json
 
 
@@ -606,8 +612,16 @@ def analyze_batches(batch_directories, output_dir: Path, *, max_fringes=4.0,
     for result in results:
         by_heater.setdefault(result["heater_net"], []).append(result)
     element_results = []
-    for heater in MZI_NET_NAMES:
-        candidates = by_heater.get(heater, [])
+    expected_heaters = tuple(
+        net for dac in sorted(PHOTONIC_INPUT_ROW_BY_DAC)
+        for net in calibration_heaters_for_dac(dac))
+    for heater in expected_heaters:
+        row = int(heater.split("_")[1])
+        expected_dac = PHOTONIC_INPUT_DAC_BY_ROW[row]
+        candidates = [
+            result for result in by_heater.get(heater, [])
+            if result["input_dac"] == expected_dac
+        ]
         if not candidates:
             continue
         best = max(candidates, key=lambda result: result["quality_score"])
@@ -628,6 +642,14 @@ def analyze_batches(batch_directories, output_dir: Path, *, max_fringes=4.0,
         "input_dacs_present": sorted({item["input_dac"] for item in batches}),
         "complete_input_coverage":
             {item["input_dac"] for item in batches} >= {0, 1, 2},
+        "physical_input_mapping": {
+            f"DAC{dac}": f"photonic_row_{row}"
+            for dac, row in PHOTONIC_INPUT_ROW_BY_DAC.items()
+        },
+        "expected_calibration_heaters": list(expected_heaters),
+        "complete_element_coverage": (
+            {result["heater_net"] for result in element_results} >=
+            set(expected_heaters)),
         "reported_response": (
             "ADC3 drift-corrected fitted tone amplitude in mV; the raw "
             "absolute amplitudes remain in each source tone_analysis.json"),
@@ -682,10 +704,10 @@ def main(argv=None):
     print(f"Calibration written to {output}")
     print("Element grades: " + ", ".join(
         f"{grade}={count}" for grade, count in sorted(grades.items())))
-    if not payload["complete_input_coverage"]:
+    if not payload["complete_element_coverage"]:
         print(
-            "WARNING: DAC0/DAC1/DAC2 batches were not all supplied; elements "
-            "unobservable from the supplied input(s) cannot be calibrated.",
+            "WARNING: mapped DAC0/row7, DAC1/row8, and DAC2/row9 batches were "
+            "not all supplied; the 18 driven MZIs are not fully calibrated.",
             file=sys.stderr)
     return 0
 

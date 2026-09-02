@@ -30,7 +30,12 @@ import serial
 
 from burst_capture import Reassembler, decode_chip, parse_brdo_request
 from mzi_calibration import PydaqMziController, calibration_voltage_sequence
-from mzi_heater_map import MZI_NET_NAMES, ordered_heater_nets
+from mzi_heater_map import (
+    MZI_NET_NAMES,
+    PHOTONIC_INPUT_ROW_BY_DAC,
+    calibration_heaters_for_dac,
+    ordered_heater_nets,
+)
 from optical_experiment import (
     create_experiment,
     experiment_slug,
@@ -46,6 +51,7 @@ DAC_FULLSCALE_V = 32767 * VOLTS_PER_COUNT
 MAX_TOTAL_BYTES_PER_CHIP = 16 << 20
 CAPTURE_GUARD_SAMPLES = 64
 MIN_CAPTURED_CYCLES = 1.5
+RECOMMENDED_CAPTURED_CYCLES = 16.0
 
 SOURCE_TOKENS = {"Off": "off", "DDS": "dds"}
 SOURCE_CODES = {"Off": 0, "DDS": 1}
@@ -217,7 +223,8 @@ def _parse_number_set(text: str, *, minimum: int, maximum: int) -> set[int]:
     return selected
 
 
-def select_heaters(heaters: str | None, rows: str | None) -> tuple[str, ...]:
+def select_heaters(heaters: str | None, rows: str | None,
+                   input_dac: int | None = None) -> tuple[str, ...]:
     if heaters and rows:
         raise ValueError("use either --heaters or --rows, not both")
     if rows:
@@ -225,18 +232,25 @@ def select_heaters(heaters: str | None, rows: str | None) -> tuple[str, ...]:
         return tuple(
             net for net in MZI_NET_NAMES
             if int(net.split("_")[1]) in selected_rows)
-    if not heaters or heaters.strip().lower() == "all":
+    if not heaters:
+        return (
+            calibration_heaters_for_dac(input_dac)
+            if input_dac is not None else tuple(MZI_NET_NAMES))
+    if heaters.strip().lower() == "all":
         return tuple(MZI_NET_NAMES)
     requested = [item.strip() for item in heaters.split(",") if item.strip()]
     return ordered_heater_nets(requested)
 
 
-def automatic_capture_kb(frequency_hz: float) -> int:
+def automatic_capture_kb(frequency_hz: float, repetitions: int = 16) -> int:
     samples = CAPTURE_GUARD_SAMPLES + math.ceil(
-        MIN_CAPTURED_CYCLES * 1.0e9 / float(frequency_hz))
+        RECOMMENDED_CAPTURED_CYCLES * 1.0e9 / float(frequency_hz))
     raw_bytes = samples * 4
     block = 64 * 1024
-    return max(64, math.ceil(raw_bytes / block) * 64)
+    required_bytes = max(block, math.ceil(raw_bytes / block) * block)
+    repetitions = max(1, int(repetitions))
+    budget_bytes = (MAX_TOTAL_BYTES_PER_CHIP // repetitions // block) * block
+    return min(required_bytes, budget_bytes) // 1024
 
 
 def validate_config(config: CharacterizationConfig) -> None:
@@ -259,7 +273,7 @@ def validate_config(config: CharacterizationConfig) -> None:
         raise ValueError(
             f"capture contains only {captured_cycles:.3f} tone cycles; "
             f"use at least --capture-kb "
-            f"{automatic_capture_kb(config.frequency_hz)}")
+            f"{automatic_capture_kb(config.frequency_hz, config.repetitions)}")
     if not config.heater_nets:
         raise ValueError("select at least one heater")
     ordered_heater_nets(config.heater_nets)
@@ -589,6 +603,7 @@ def run_characterization(
             "capture_status": "running",
             "experiment_name": config.name,
             "input_dac": config.input_dac,
+            "photonic_input_row": PHOTONIC_INPUT_ROW_BY_DAC[config.input_dac],
             "selected_heaters": list(config.heater_nets),
             "heater_baseline_v": all_zero,
             "baseline_interpretation":
@@ -753,7 +768,8 @@ def build_parser() -> argparse.ArgumentParser:
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument(
         "--heaters",
-        help="comma-separated nets such as h_1_1,h_7_3, or 'all' (default)")
+        help="comma-separated nets such as h_7_1,h_7_3, or 'all'; default is "
+             "the six-heater photonic row physically driven by --input-dac")
     selection.add_argument(
         "--rows",
         help="comma-separated physical rows/ranges such as 1,3,7-9")
@@ -782,7 +798,7 @@ def config_from_args(args) -> CharacterizationConfig:
     frequency_hz = float(args.frequency_khz) * 1000.0
     capture_kb = int(args.capture_kb)
     if capture_kb == 0:
-        capture_kb = automatic_capture_kb(frequency_hz)
+        capture_kb = automatic_capture_kb(frequency_hz, args.reps)
     return CharacterizationConfig(
         port=args.port,
         baud=args.baud,
@@ -794,7 +810,7 @@ def config_from_args(args) -> CharacterizationConfig:
         frequency_hz=frequency_hz,
         repetitions=args.reps,
         capture_kb=capture_kb,
-        heater_nets=select_heaters(args.heaters, args.rows),
+        heater_nets=select_heaters(args.heaters, args.rows, args.input_dac),
         start_v=args.start_v,
         stop_v=args.stop_v,
         points=args.points,

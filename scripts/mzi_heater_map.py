@@ -43,6 +43,26 @@ MZI_NET_NAMES = tuple(
     )
 )
 
+# Electrical tone outputs are wired to the final three photonic input rows.
+# DAC3 remains the electrical timing/amplitude reference and does not drive a
+# photonic input during calibration.
+PHOTONIC_INPUT_ROW_BY_DAC = {0: 7, 1: 8, 2: 9}
+PHOTONIC_INPUT_DAC_BY_ROW = {
+    row: dac for dac, row in PHOTONIC_INPUT_ROW_BY_DAC.items()
+}
+
+
+def calibration_heaters_for_dac(dac: int) -> tuple[str, ...]:
+    try:
+        row = PHOTONIC_INPUT_ROW_BY_DAC[int(dac)]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("photonic input DAC must be 0, 1, or 2") from exc
+    return tuple(
+        net for net in MZI_NET_NAMES
+        if int(net.split("_")[1]) == row
+    )
+
+
 HEATER_HARDWARE = {
     net: {
         "board": board,

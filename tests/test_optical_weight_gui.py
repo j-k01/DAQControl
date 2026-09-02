@@ -769,6 +769,18 @@ class OpticalWeightGuiTests(unittest.TestCase):
             (spec["capture_bytes"] // 4 - 64)
             * spec["tone_actual_frequency_hz"] / 1.0e9)
         self.assertGreaterEqual(captured_cycles, 1.5)
+    def test_pure_tone_100khz_selects_about_sixteen_cycles(self):
+        index = self.window.mzi_mode.findData("tone")
+        self.window.mzi_mode.setCurrentIndex(index)
+        self.window.mzi_tone_frequency.setValue(100.0)
+
+        self.assertEqual(
+            self.window.mzi_capture_size.currentData(), 768 * 1024)
+        spec = self.window._mzi_gui_spec()
+        captured_cycles = (
+            (spec["capture_bytes"] // 4 - 64)
+            * spec["tone_actual_frequency_hz"] / 1.0e9)
+        self.assertGreaterEqual(captured_cycles, 16.0)
     def test_pure_tone_capture_selects_bcpd(self):
         index = self.window.mzi_mode.findData("tone")
         self.window.mzi_mode.setCurrentIndex(index)

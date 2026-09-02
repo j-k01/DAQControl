@@ -113,11 +113,21 @@ class HeadlessToneCharacterizationTests(unittest.TestCase):
         self.assertEqual(len(row_nets), 18)
         self.assertEqual(
             {int(net.split("_")[1]) for net in row_nets}, {2, 7, 8})
-        self.assertEqual(select_heaters(None, None), MZI_NET_NAMES)
+        self.assertEqual(
+            select_heaters(None, None, 0),
+            tuple(f"h_7_{column}" for column in range(1, 7)))
+        self.assertEqual(
+            select_heaters(None, None, 1),
+            tuple(f"h_8_{column}" for column in range(1, 7)))
+        self.assertEqual(
+            select_heaters(None, None, 2),
+            tuple(f"h_9_{column}" for column in range(1, 7)))
+        self.assertEqual(select_heaters("all", None, 0), MZI_NET_NAMES)
 
     def test_low_frequency_auto_capture_contains_enough_cycles(self):
-        self.assertEqual(automatic_capture_kb(100.0e3), 64)
-        self.assertGreaterEqual(automatic_capture_kb(10.0e3), 640)
+        self.assertEqual(automatic_capture_kb(100.0e3), 640)
+        self.assertEqual(automatic_capture_kb(1.0e6), 64)
+        self.assertEqual(automatic_capture_kb(10.0e3), 1024)
 
     def test_each_heater_sweep_starts_and_ends_with_explicit_all_zero_drive(self):
         with tempfile.TemporaryDirectory() as directory:

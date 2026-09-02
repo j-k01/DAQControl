@@ -4410,7 +4410,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         except ValueError:
             return
         required_samples = int(np.ceil(
-            1.5 * 1.0e9 / actual_frequency)) + 64
+            16.0 * 1.0e9 / actual_frequency)) + 64
         required_bytes = required_samples * 4
         current_bytes = int(self.mzi_capture_size.currentData())
         if current_bytes >= required_bytes:
@@ -4419,6 +4419,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
             if int(self.mzi_capture_size.itemData(index)) >= required_bytes:
                 self.mzi_capture_size.setCurrentIndex(index)
                 return
+        self.mzi_capture_size.setCurrentIndex(
+            self.mzi_capture_size.count() - 1)
+
     def _on_mzi_mode_changed(self, *_):
         tone_mode = (
             hasattr(self, "mzi_mode") and self.mzi_mode.currentData() == "tone")

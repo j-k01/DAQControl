@@ -134,11 +134,11 @@ class AnalyzeMziCalibrationTests(unittest.TestCase):
             strong = lambda voltage: 0.80 + 0.65 * np.cos(
                 1.8 * np.pi * voltage ** 2 + 0.25)
             batches = [
-                create_batch(root, 0, "h_1_1", {
+                create_batch(root, 0, "h_7_1", {
                     0: weak, 1: medium, 2: strong}),
-                create_batch(root, 1, "h_1_1", {
+                create_batch(root, 1, "h_7_1", {
                     0: medium, 1: weak, 2: weak}),
-                create_batch(root, 2, "h_1_1", {
+                create_batch(root, 2, "h_7_1", {
                     0: weak, 1: weak, 2: medium}),
             ]
             output, payload = analyze_batches(
@@ -148,9 +148,10 @@ class AnalyzeMziCalibrationTests(unittest.TestCase):
             self.assertTrue(payload["complete_input_coverage"])
             self.assertEqual(len(payload["elements"]), 1)
             element = payload["elements"][0]
-            self.assertEqual(element["heater_net"], "h_1_1")
+            self.assertEqual(element["heater_net"], "h_7_1")
             self.assertEqual(element["input_dac"], 0)
             self.assertEqual(element["output_adc"], 2)
+            self.assertFalse(payload["complete_element_coverage"])
             self.assertGreater(element["fit"]["r_squared"], 0.90)
             self.assertTrue((output / "mzi_calibration.json").exists())
             self.assertTrue((output / "mzi_calibration_summary.csv").exists())
