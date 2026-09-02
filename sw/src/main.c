@@ -4192,7 +4192,7 @@ int main(void)
 
     XUartNs550_Initialize(&uart, XPAR_AXI_UART16550_0_DEVICE_ID);
     firmware_marker(3);
-    XUartNs550_SetLineControlReg(&uart, XUN_LCR_8_DATA_BITS);
+    XUartNs550_SetLineControlReg(uart.BaseAddress, XUN_LCR_8_DATA_BITS);
     firmware_marker(4);
 
     u32 base = uart.BaseAddress;
