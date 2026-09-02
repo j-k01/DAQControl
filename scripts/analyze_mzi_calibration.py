@@ -296,9 +296,7 @@ def _load_experiment(experiment_dir: Path, input_dac: int):
                     point["channels"][str(channel)][key] for point in points
                 ], dtype=np.float64)
                 for key in (
-                    "amplitude_v", "amplitude_std_v", "residual_rms_v",
-                    "gain_vs_reference", "phase_vs_reference_rad",
-                    "latency_modulo_period_ns")
+                    "amplitude_v", "amplitude_std_v", "residual_rms_v")
             }
             for channel in range(4)
         },
@@ -346,22 +344,18 @@ def _reverse_hysteresis(voltage, direction, response):
 def analyze_experiment(experiment, *, max_fringes=4.0, lut_levels=33):
     voltage = experiment["voltage_v"]
     direction = experiment["direction"]
-    reference = experiment["channels"][3]["amplitude_v"] * 1.0e3
-    valid_reference = np.isfinite(reference) & (reference > 0.0)
-    if not np.all(valid_reference):
-        raise ValueError(
-            f"ADC3 reference is invalid for DAC{experiment['input_dac']} "
-            f"{experiment['heater_net']}")
-    reference_scale = float(np.median(reference))
+    reference = experiment["channels"].get(3, {}).get("amplitude_v")
+    if reference is not None:
+        reference = np.asarray(reference, dtype=np.float64) * 1.0e3
     results = []
     for channel in range(3):
         absolute = experiment["channels"][channel]["amplitude_v"] * 1.0e3
-        corrected = absolute * reference_scale / reference
+        calibration = absolute
         forward = direction == 0
         fit = fit_power_curve(
-            voltage[forward], corrected[forward], max_fringes=max_fringes)
+            voltage[forward], calibration[forward], max_fringes=max_fringes)
         branch = choose_monotonic_branch(
-            voltage[forward], corrected[forward])
+            voltage[forward], calibration[forward])
         target_mv, target_voltage_v = branch_lut(branch, lut_levels)
         repetitions = max(1, int(experiment["repetitions"]))
         point_uncertainty = (
@@ -370,8 +364,8 @@ def analyze_experiment(experiment, *, max_fringes=4.0, lut_levels=33):
         uncertainty = max(
             float(np.median(point_uncertainty[np.isfinite(point_uncertainty)])),
             1.0e-6)
-        observed_span = float(np.ptp(corrected[forward]))
-        hysteresis = _reverse_hysteresis(voltage, direction, corrected)
+        observed_span = float(np.ptp(calibration[forward]))
+        hysteresis = _reverse_hysteresis(voltage, direction, calibration)
         hysteresis_ratio = (
             hysteresis / observed_span
             if np.isfinite(hysteresis) and observed_span > 0.0 else float("nan"))
@@ -394,8 +388,8 @@ def analyze_experiment(experiment, *, max_fringes=4.0, lut_levels=33):
             "heater_net": experiment["heater_net"],
             "output_adc": channel,
             "absolute_amplitude_mv": absolute,
-            "reference_corrected_amplitude_mv": corrected,
-            "adc3_reference_amplitude_mv": reference,
+            "calibration_amplitude_mv": calibration,
+            "adc3_diagnostic_amplitude_mv": reference,
             "voltage_v": voltage,
             "direction": direction,
             "forward_observed_span_mv": observed_span,
@@ -424,8 +418,8 @@ def _serializable_result(result):
     data = {
         key: value for key, value in result.items()
         if key not in (
-            "absolute_amplitude_mv", "reference_corrected_amplitude_mv",
-            "adc3_reference_amplitude_mv", "voltage_v", "direction",
+            "absolute_amplitude_mv", "calibration_amplitude_mv",
+            "adc3_diagnostic_amplitude_mv", "voltage_v", "direction",
             "fit", "branch", "lut_target_amplitude_mv",
             "lut_heater_voltage_v", "experiment_dir")
     }
@@ -567,7 +561,7 @@ def _plot_results(output_dir: Path, results, element_results, *, show=False):
             for channel, (axis, result) in enumerate(zip(axes, group)):
                 voltage = result["voltage_v"]
                 direction = result["direction"]
-                response = result["reference_corrected_amplitude_mv"]
+                response = result["calibration_amplitude_mv"]
                 forward = direction == 0
                 reverse = direction == 1
                 axis.plot(
@@ -651,11 +645,10 @@ def analyze_batches(batch_directories, output_dir: Path, *, max_fringes=4.0,
             {result["heater_net"] for result in element_results} >=
             set(expected_heaters)),
         "reported_response": (
-            "ADC3 drift-corrected fitted tone amplitude in mV; the raw "
-            "absolute amplitudes remain in each source tone_analysis.json"),
-        "reference_correction": (
-            "ADC3 amplitude drift correction preserving median mV scale; "
-            "no 0..1 normalization"),
+            "absolute fitted tone amplitude in mV on ADC0 through ADC2"),
+        "reference_policy": (
+            "ADC3 is optional diagnostic data only; it does not rescale, "
+            "validate, rank, fit, or otherwise change the calibration"),
         "model": "a + b*cos(k*V^2) + c*sin(k*V^2)",
         "elements": [_serializable_result(result) for result in element_results],
         "all_input_output_fits": [

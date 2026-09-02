@@ -112,7 +112,9 @@ from optical_experiment import (
     create_experiment, load_manifest, save_heater_capture, update_manifest,
 )
 from process_optical_experiment import process_experiment
-from tone_calibration import analyze_tone_capture, dds_phase_increment
+from tone_calibration import (
+    analyze_tone_capture, dds_phase_increment, fit_phasor_locus,
+)
 
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
@@ -3695,12 +3697,23 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 f"Route the shared full-scale, zero-offset DDS tone to DAC{channel}.")
             self.mzi_tone_inputs.append(enabled)
             tone_routes.addWidget(enabled)
-        tone_routes.addWidget(QtWidgets.QLabel("DAC3: DDS reference"))
         tone_routes.addStretch(1)
-        tone_form.addRow("Photonic inputs", tone_routes)
+        tone_form.addRow("Stimulus DACs", tone_routes)
+        self.mzi_adc3_role = QtWidgets.QComboBox()
+        self.mzi_adc3_role.addItem(
+            "Fourth optical output (DAC3 off)", "optical")
+        self.mzi_adc3_role.addItem(
+            "DDS electrical loopback diagnostic", "loopback")
+        self.mzi_adc3_role.addItem("Unused (DAC3 off)", "unused")
+        self.mzi_adc3_role.setCurrentIndex(2)
+        self.mzi_adc3_role.setToolTip(
+            "Optical treats ADC3 as a fourth independent photonic output and "
+            "leaves DAC3 off. Loopback drives DAC3 with the shared DDS and "
+            "uses ADC3 only for optional timing/source diagnostics.")
+        tone_form.addRow("ADC3 role", self.mzi_adc3_role)
         tone_note = QtWidgets.QLabel(
-            "0 V offset, full bipolar DAC range. DAC3 is always looped to "
-            "ADC3 as the electrical amplitude and phase reference.")
+            "0 V offset, full bipolar DAC range. ADC0-ADC2 are optical; ADC3 "
+            "can be a fourth optical output without any DAC3 loopback.")
         tone_note.setWordWrap(True)
         tone_note.setStyleSheet("color:#4FC3F7; font-size:11px;")
         tone_form.addRow("", tone_note)
@@ -3972,11 +3985,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_cancel_btn.setEnabled(False)
         self.mzi_cancel_btn.clicked.connect(self._on_mzi_cal_cancel)
         self.mzi_preview_adc = QtWidgets.QComboBox()
-        for channel in range(3):
+        for channel in range(4):
             self.mzi_preview_adc.addItem(f"ADC{channel}", channel)
         self.mzi_preview_adc.setToolTip(
-            "Choose which independently averaged optical ADC appears below "
-            "the ADC3 timing reference.")
+            "Choose which independently averaged ADC appears in the detailed "
+            "point preview.")
         self.mzi_preview_adc.currentIndexChanged.connect(
             self._refresh_mzi_point_preview)
         buttons.addWidget(self.mzi_quick_btn, 0, 0)
@@ -4034,12 +4047,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_channel_tabs = QtWidgets.QTabBar()
         for channel in range(3):
             self.mzi_channel_tabs.addTab(f"ADC{channel}")
-        self.mzi_channel_tabs.addTab("ADC3 Reference")
+        self.mzi_channel_tabs.addTab("ADC3")
         self.mzi_channel_tabs.setExpanding(False)
         self.mzi_channel_tabs.setToolTip(
-            "ADC0-ADC2 are independent optical measurements with one shared "
-            "Y scale. ADC3 is the separate DAC3 electrical loopback used as "
-            "the cross-correlation reference.")
+            "ADC0-ADC2 are optical measurements. For Mode B, ADC3 can be a "
+            "fourth optical measurement, a DDS loopback diagnostic, or unused.")
         self.mzi_channel_tabs.currentChanged.connect(
             self._on_mzi_channel_tab_changed)
         analysis_row.addWidget(self.mzi_channel_tabs)
@@ -4083,7 +4095,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         traces_layout.addWidget(self.mzi_results_summary)
         trace_scale_row = QtWidgets.QHBoxLayout()
         self.mzi_trace_scale_label = QtWidgets.QLabel(
-            "Optical Y range shared by ADC0-ADC2")
+            "Optical Y range shared by configured optical ADCs")
         trace_scale_row.addWidget(self.mzi_trace_scale_label)
         self.mzi_trace_y_min = QtWidgets.QDoubleSpinBox()
         self.mzi_trace_y_min.setRange(-10000.0, 9999.0)
@@ -4091,14 +4103,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_trace_y_min.setValue(-25.0)
         self.mzi_trace_y_min.setSuffix(" mV")
         self.mzi_trace_y_min.setToolTip(
-            "Lower Y-axis limit shared by ADC0, ADC1, and ADC2.")
+            "Lower Y-axis limit shared by every configured optical ADC.")
         self.mzi_trace_y_max = QtWidgets.QDoubleSpinBox()
         self.mzi_trace_y_max.setRange(-9999.0, 10000.0)
         self.mzi_trace_y_max.setDecimals(3)
         self.mzi_trace_y_max.setValue(25.0)
         self.mzi_trace_y_max.setSuffix(" mV")
         self.mzi_trace_y_max.setToolTip(
-            "Upper Y-axis limit shared by ADC0, ADC1, and ADC2.")
+            "Upper Y-axis limit shared by every configured optical ADC.")
         self.mzi_trace_scale_apply = QtWidgets.QPushButton("Apply")
         self.mzi_trace_scale_apply.setToolTip(
             "Apply this fixed Y range to every averaged sweep trace.")
@@ -4153,6 +4165,42 @@ class ScopeWindow(QtWidgets.QMainWindow):
             symbolSize=5, symbolBrush="#FFB74D", name="filtered reverse")
         curve_layout.addWidget(self.mzi_result_curve_plot, 1)
         self.mzi_results_tabs.addTab(curve_tab, "Optical curve")
+
+        complex_tab = QtWidgets.QWidget()
+        complex_layout = QtWidgets.QVBoxLayout(complex_tab)
+        self.mzi_complex_summary = QtWidgets.QLabel(
+            "Complex response is available for Mode B pure-tone experiments.")
+        self.mzi_complex_summary.setWordWrap(True)
+        self.mzi_complex_summary.setStyleSheet(
+            "color:#9fb3c8; font-size:11px;")
+        complex_layout.addWidget(self.mzi_complex_summary)
+        complex_grid = QtWidgets.QGridLayout()
+        complex_grid.setContentsMargins(0, 0, 0, 0)
+        complex_grid.setHorizontalSpacing(8)
+        complex_grid.setVerticalSpacing(8)
+        self.mzi_complex_plots = []
+        for channel in range(4):
+            phasor_plot = pg.PlotWidget()
+            phasor_plot.setBackground("#101418")
+            phasor_plot.showGrid(x=True, y=True, alpha=0.22)
+            phasor_plot.setLabel(
+                "bottom", "I: sine coefficient", units="mV")
+            phasor_plot.setLabel(
+                "left", "Q: cosine coefficient", units="mV")
+            phasor_plot.setTitle(f"ADC{channel}")
+            phasor_plot.getViewBox().setAspectLocked(True, ratio=1.0)
+            phasor_plot.setToolTip(
+                "Each point is one heater voltage. Solid is the forward "
+                "sweep, dashed is reverse, the gray dashed segment is the "
+                "best straight-line locus, and + marks I=Q=0.")
+            complex_grid.addWidget(
+                phasor_plot, channel // 2, channel % 2)
+            self.mzi_complex_plots.append(phasor_plot)
+        complex_layout.addLayout(complex_grid, 1)
+        self.mzi_complex_tab_index = self.mzi_results_tabs.addTab(
+            complex_tab, "Complex tone response")
+        self.mzi_results_tabs.setTabEnabled(
+            self.mzi_complex_tab_index, False)
 
     def _selected_mzi_nets(self):
         return ordered_heater_nets(self._mzi_selected_heaters)
@@ -4444,8 +4492,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.mzi_advanced_btn.setEnabled(not tone_mode)
         if hasattr(self, "mzi_program_btn"):
             self.mzi_program_btn.setToolTip(
-                "Program the shared DDS frequency and fixed tone routes. "
-                "DAC3 is always the electrical reference."
+                "Program the shared DDS frequency and fixed DAC routes. "
+                "The ADC3 role determines whether DAC3 is off or drives the "
+                "optional electrical loopback."
                 if tone_mode else
                 "Program the neuron, current source, pulse shapers, and "
                 "selected spike routes for Mode A.")
@@ -4474,6 +4523,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 raise ValueError(
                     "pure-tone capture must contain at least 1.5 cycles; "
                     "select a longer capture length")
+            adc3_role = str(self.mzi_adc3_role.currentData())
+            optical_adc_channels = (
+                [0, 1, 2, 3] if adc3_role == "optical" else [0, 1, 2])
+            reference_adc = 3 if adc3_role == "loopback" else None
             return {
                 "mode": "tone",
                 "capture_command": "BCPD",
@@ -4496,13 +4549,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 "xbar_sources": [
                     *("DDS" if channel in enabled_inputs else "Off"
                       for channel in range(3)),
-                    "DDS",
+                    "DDS" if adc3_role == "loopback" else "Off",
                 ],
                 "dac_invert": [False] * 4,
                 "adc_channels": [0, 1, 2, 3],
-                "optical_adc_channels": [0, 1, 2],
+                "optical_adc_channels": optical_adc_channels,
                 "analysis_adc": 0,
-                "reference_adc": 3,
+                "reference_adc": reference_adc,
+                "adc3_role": adc3_role,
             }
         pulse_counts = self._optical_pulse_counts()
         if not pulse_counts:
@@ -4576,7 +4630,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     "optical_adc_channels":
                         list(spec["optical_adc_channels"]),
                     "reference_adc_channel": spec["reference_adc"],
-                    "reference_dac_channel": 3,
+                    "reference_dac_channel": (
+                        3 if spec["adc3_role"] == "loopback" else None),
+                    "adc3_role": spec["adc3_role"],
+                    "reference_required_for_calibration": False,
                     "channels_averaged_independently": True,
                 },
                 "xbar": {
@@ -4594,7 +4651,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     "offset_v": 0.0,
                     "range_v": [-DAC_VMAX, DAC_VMAX],
                     "enabled_photonic_dacs": list(spec["tone_inputs"]),
-                    "electrical_reference": "DAC3 to ADC3",
+                    "adc3_role": spec["adc3_role"],
+                    "electrical_reference": (
+                        "optional DAC3 to ADC3 diagnostic"
+                        if spec["adc3_role"] == "loopback" else
+                        "not enabled"),
                     "phase_restarted_for_every_repetition": True,
                     "captured_tone_cycles": (
                         (spec["capture_bytes"] // 4 - 64) *
@@ -4614,10 +4675,18 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 },
                 "analysis": {
                     "method": "coherent average then least-squares sine fit",
+                    "calibration_metric": (
+                        "absolute fitted amplitude_v on " +
+                        ",".join(
+                            f"ADC{channel}" for channel in
+                            spec["optical_adc_channels"])),
                     "reported_per_adc": [
-                        "amplitude_v", "gain_vs_reference",
-                        "phase_vs_reference_rad",
-                        "latency_modulo_period_ns"],
+                        "amplitude_v", "amplitude_std_v", "residual_rms_v"],
+                    "optional_reference_diagnostics": [
+                        "gain_vs_reference", "phase_vs_reference_rad",
+                        "latency_modulo_period_ns",
+                    ] if spec["reference_adc"] is not None else [],
+                    "reference_affects_calibration": False,
                     "latency_note":
                         "single-tone latency is modulo one tone period",
                 },
@@ -4772,9 +4841,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
                         f"pure-tone setup failed: "
                         f"{response or 'no UART reply'}")
             spec["dds_reply"] = reply
+            reference_status = (
+                "DAC3/ADC3 diagnostic enabled"
+                if spec["reference_adc"] is not None else
+                "ADC3 diagnostic off")
             self.mzi_setup_progress.emit(
                 f"DDS verified at {actual / 1000.0:.3f} kHz; "
-                "DAC3 is the fixed ADC3 electrical reference.")
+                f"{reference_status}; optical calibration is independent.")
             return
         self.mzi_setup_progress.emit("Programming shared neuron timing...")
         replies = list(self.dac.set_neuron_timing(0x8000, period=1))
@@ -4912,7 +4985,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "heater_voltage_v": float(voltage),
             "heater_nets": np.asarray(spec["nets"]),
             "tone_frequency_hz": spec["tone_actual_frequency_hz"],
-            "reference_adc_channel": spec["reference_adc"],
+            "reference_adc_channel": (
+                -1 if spec["reference_adc"] is None else
+                spec["reference_adc"]),
         }
         for channel, stack in raw_stacks.items():
             channel_result = analysis["channels"][channel]
@@ -4921,10 +4996,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
             payload[f"fitted_ch{channel}_v"] = channel_result["fitted_v"]
             payload[f"amplitude_ch{channel}_v"] = (
                 channel_result["amplitude_v"])
-            payload[f"gain_ch{channel}_vs_adc3"] = (
-                channel_result["gain_vs_reference"])
-            payload[f"latency_ch{channel}_ns"] = (
-                channel_result["latency_modulo_period_ns"])
+            if "gain_vs_reference" in channel_result:
+                payload[f"gain_ch{channel}_vs_adc3"] = (
+                    channel_result["gain_vs_reference"])
+                payload[f"latency_ch{channel}_ns"] = (
+                    channel_result["latency_modulo_period_ns"])
         np.savez_compressed(path, **payload)
         return {
             "kind": "point", "mode": "tone", "spec": spec,
@@ -4935,8 +5011,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 channel: analysis["channels"][channel]
                 for channel in spec["optical_adc_channels"]
             },
-            "reference_average":
-                analysis["channels"][spec["reference_adc"]]["average_v"],
+            "reference_average": (
+                analysis["channels"][spec["reference_adc"]]["average_v"]
+                if spec["reference_adc"] is not None else None),
         }
 
     def _run_mzi_point(self, spec, voltage):
@@ -5200,6 +5277,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "kind": "sweep", "spec": spec, "heater_dirs": [], "metrics": [],
             "voltages": [], "directions": [], "cancelled": False,
             "tone_points": [],
+            "tone_analyses": [],
         }
         experiment_dir = None
         self._mzi_active_sweep_nets = tuple(spec["nets"])
@@ -5286,6 +5364,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                         "channels": scalar_channels,
                     }
                     result["tone_points"].append(tone_point)
+                    result["tone_analyses"].append(tone)
                     with open(
                             os.path.join(heater_dir, "tone_analysis.json"),
                             "w", encoding="utf-8") as handle:
@@ -5306,6 +5385,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 experiment_dir, capture_status="complete",
                 completed_utc=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
             if spec.get("mode") == "tone":
+                result["mode"] = "tone"
+                result["tone_frequency_hz"] = spec["tone_actual_frequency_hz"]
+                result["reference_adc"] = spec["reference_adc"]
+                result["optical_adc_channels"] = list(
+                    spec["optical_adc_channels"])
+                result["adc3_role"] = spec["adc3_role"]
                 result["voltages"] = np.asarray(
                     result["voltages"], dtype=np.float64)
                 result["directions"] = np.asarray(
@@ -5316,34 +5401,70 @@ class ScopeWindow(QtWidgets.QMainWindow):
                         for point in result["tone_points"]], dtype=np.float64)
                     for channel in range(4)
                 }
-                result["tone_gains"] = {
+                result["tone_in_phase_v"] = {
                     channel: np.asarray([
-                        point["channels"][str(channel)]["gain_vs_reference"]
+                        point["channels"][str(channel)]["in_phase_v"]
                         for point in result["tone_points"]], dtype=np.float64)
-                    for channel in range(3)
+                    for channel in range(4)
                 }
-                result["tone_latencies_ns"] = {
+                result["tone_quadrature_v"] = {
                     channel: np.asarray([
-                        point["channels"][str(channel)]
-                        ["latency_modulo_period_ns"]
+                        point["channels"][str(channel)]["quadrature_v"]
                         for point in result["tone_points"]], dtype=np.float64)
-                    for channel in range(3)
+                    for channel in range(4)
                 }
-                np.savez_compressed(
-                    os.path.join(experiment_dir, "tone_summary.npz"),
-                    voltages_v=result["voltages"],
-                    directions=result["directions"],
+                has_reference = all(
+                    "gain_vs_reference" in point["channels"]["0"]
+                    for point in result["tone_points"])
+                result["tone_gains"] = {}
+                result["tone_latencies_ns"] = {}
+                if has_reference:
+                    result["tone_gains"] = {
+                        channel: np.asarray([
+                            point["channels"][str(channel)]
+                            ["gain_vs_reference"]
+                            for point in result["tone_points"]],
+                            dtype=np.float64)
+                        for channel in range(3)
+                    }
+                    result["tone_latencies_ns"] = {
+                        channel: np.asarray([
+                            point["channels"][str(channel)]
+                            ["latency_modulo_period_ns"]
+                            for point in result["tone_points"]],
+                            dtype=np.float64)
+                        for channel in range(3)
+                    }
+                summary = {
+                    "voltages_v": result["voltages"],
+                    "directions": result["directions"],
                     **{
                         f"amplitude_adc{channel}_v": values
                         for channel, values in
                         result["tone_amplitudes_v"].items()},
                     **{
-                        f"gain_adc{channel}_vs_adc3": values
-                        for channel, values in result["tone_gains"].items()},
-                    **{
-                        f"latency_adc{channel}_ns": values
+                        f"in_phase_adc{channel}_v": values
                         for channel, values in
-                        result["tone_latencies_ns"].items()})
+                        result["tone_in_phase_v"].items()},
+                    **{
+                        f"quadrature_adc{channel}_v": values
+                        for channel, values in
+                        result["tone_quadrature_v"].items()},
+                }
+                if has_reference:
+                    summary.update({
+                        **{
+                            f"gain_adc{channel}_vs_adc3": values
+                            for channel, values in
+                            result["tone_gains"].items()},
+                        **{
+                            f"latency_adc{channel}_ns": values
+                            for channel, values in
+                            result["tone_latencies_ns"].items()},
+                    })
+                np.savez_compressed(
+                    os.path.join(experiment_dir, "tone_summary.npz"),
+                    **summary)
                 result["absolute"] = result["tone_amplitudes_v"][0]
                 return result
             analysis = process_experiment(experiment_dir)
@@ -5419,19 +5540,28 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_spike_plot.clear()
         spec = result["spec"]
         analysis = result["tone_analysis"]
-        reference = analysis["channels"][spec["reference_adc"]]
-        reference_mv = np.asarray(reference["average_v"]) * 1e3
-        reference_fit_mv = np.asarray(reference["fitted_v"]) * 1e3
+        adc3 = analysis["channels"][3]
+        adc3_mv = np.asarray(adc3["average_v"]) * 1e3
+        adc3_fit_mv = np.asarray(adc3["fitted_v"]) * 1e3
+        adc3_is_optical = 3 in spec["optical_adc_channels"]
         self.mzi_reference_plot.plot(
-            reference_mv, pen=pg.mkPen("#E8EDF2", width=1.0))
+            adc3_mv, pen=pg.mkPen(
+                CH_COLORS[3] if adc3_is_optical else "#E8EDF2", width=1.0))
         self.mzi_reference_plot.plot(
-            reference_fit_mv, pen=pg.mkPen("#F6AE2D", width=1.5))
+            adc3_fit_mv, pen=pg.mkPen("#F6AE2D", width=1.5))
+        adc3_description = {
+            "optical": "fourth optical output",
+            "loopback": "DDS loopback diagnostic",
+            "unused": "unused captured input",
+        }[spec["adc3_role"]]
         self.mzi_reference_plot.setTitle(
-            f"ADC3 electrical reference | {spec['reps']} aligned capture(s) "
-            f"| fitted amplitude {reference['amplitude_v'] * 1e3:.3f} mV")
+            f"ADC3 {adc3_description} | {spec['reps']} aligned capture(s) "
+            f"| fitted amplitude {adc3['amplitude_v'] * 1e3:.3f} mV")
+        adc3_range = (
+            self._mzi_optical_trace_range if adc3_is_optical else
+            self._mzi_reference_trace_range)
         self.mzi_reference_plot.setYRange(
-            self._mzi_reference_trace_range[0],
-            self._mzi_reference_trace_range[1], padding=0.0)
+            adc3_range[0], adc3_range[1], padding=0.0)
 
         channel = int(self.mzi_preview_adc.currentData())
         measured = analysis["channels"][channel]
@@ -5441,15 +5571,27 @@ class ScopeWindow(QtWidgets.QMainWindow):
             average_mv, pen=pg.mkPen(CH_COLORS[channel], width=1.0))
         self.mzi_spike_plot.plot(
             fitted_mv, pen=pg.mkPen("#F6AE2D", width=1.5))
-        state = "enabled" if channel in spec["tone_inputs"] else "not driven"
-        self.mzi_spike_plot.setTitle(
-            f"ADC{channel} ({state}) | amplitude "
-            f"{measured['amplitude_v'] * 1e3:.3f} mV | gain/ADC3 "
-            f"{measured['gain_vs_reference']:.6f} | latency "
-            f"{measured['latency_modulo_period_ns']:.3f} ns modulo period")
+        if channel in spec["optical_adc_channels"]:
+            state = "optical output"
+        elif channel == spec["reference_adc"]:
+            state = "electrical loopback diagnostic"
+        else:
+            state = "unused captured input"
+        title = (
+            f"ADC{channel} ({state}) | absolute fitted amplitude "
+            f"{measured['amplitude_v'] * 1e3:.3f} mV")
+        if "gain_vs_reference" in measured:
+            title += (
+                f" | diagnostic gain/ADC3 "
+                f"{measured['gain_vs_reference']:.6f} | latency "
+                f"{measured['latency_modulo_period_ns']:.3f} ns modulo period")
+        self.mzi_spike_plot.setTitle(title)
+        selected_range = (
+            self._mzi_optical_trace_range
+            if channel in spec["optical_adc_channels"] else
+            self._mzi_reference_trace_range)
         self.mzi_spike_plot.setYRange(
-            self._mzi_optical_trace_range[0],
-            self._mzi_optical_trace_range[1], padding=0.0)
+            selected_range[0], selected_range[1], padding=0.0)
 
     def _show_mzi_point_diagnostics(self, result):
         """Show exactly what the pre-sweep point acquisition measured."""
@@ -5598,8 +5740,19 @@ class ScopeWindow(QtWidgets.QMainWindow):
         stimulus = manifest.get("stimulus", {})
         frequency_hz = float(stimulus["actual_frequency_hz"])
         acquisition = manifest.get("acquisition", {})
-        reference_adc = int(
-            acquisition.get("reference_adc_channel", 3))
+        reference_value = acquisition.get("reference_adc_channel")
+        reference_adc = (
+            int(reference_value) if reference_value is not None else None)
+        optical_adc_channels = [
+            int(channel) for channel in
+            acquisition.get("optical_adc_channels", [0, 1, 2])
+            if int(channel) in (0, 1, 2, 3)
+        ]
+        adc3_role = str(acquisition.get("adc3_role") or "").lower()
+        if adc3_role not in ("optical", "loopback", "unused"):
+            adc3_role = (
+                "loopback" if reference_adc == 3 else
+                "optical" if 3 in optical_adc_channels else "unused")
         analyses = []
         voltages = []
         directions = []
@@ -5649,6 +5802,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "tone_analyses": analyses,
             "tone_frequency_hz": frequency_hz,
             "reference_adc": reference_adc,
+            "optical_adc_channels": optical_adc_channels,
+            "adc3_role": adc3_role,
         }
         result["tone_amplitudes_v"] = {
             channel: np.asarray([
@@ -5656,18 +5811,25 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 for analysis in analyses], dtype=np.float64)
             for channel in range(4)
         }
-        result["tone_gains"] = {
-            channel: np.asarray([
-                analysis["channels"][channel]["gain_vs_reference"]
-                for analysis in analyses], dtype=np.float64)
-            for channel in range(3)
-        }
-        result["tone_latencies_ns"] = {
-            channel: np.asarray([
-                analysis["channels"][channel]["latency_modulo_period_ns"]
-                for analysis in analyses], dtype=np.float64)
-            for channel in range(3)
-        }
+        has_reference = all(
+            analysis.get("reference_available", False)
+            for analysis in analyses)
+        result["tone_gains"] = {}
+        result["tone_latencies_ns"] = {}
+        if has_reference:
+            result["tone_gains"] = {
+                channel: np.asarray([
+                    analysis["channels"][channel]["gain_vs_reference"]
+                    for analysis in analyses], dtype=np.float64)
+                for channel in range(3)
+            }
+            result["tone_latencies_ns"] = {
+                channel: np.asarray([
+                    analysis["channels"][channel]
+                    ["latency_modulo_period_ns"]
+                    for analysis in analyses], dtype=np.float64)
+                for channel in range(3)
+            }
         return result
 
     def _run_mzi_import_experiment(self, path):
@@ -5736,9 +5898,31 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if result is not None:
             self._display_mzi_dataset(result)
 
+    @staticmethod
+    def _mzi_tone_optical_channels(result):
+        channels = result.get("optical_adc_channels")
+        if channels is None:
+            channels = result.get("manifest", {}).get(
+                "acquisition", {}).get("optical_adc_channels", [0, 1, 2])
+        return tuple(
+            int(channel) for channel in channels
+            if int(channel) in (0, 1, 2, 3))
+
+    @classmethod
+    def _mzi_tone_adc3_role(cls, result):
+        role = str(result.get("adc3_role") or "").lower()
+        if role in ("optical", "loopback", "unused"):
+            return role
+        if result.get("reference_adc") == 3:
+            return "loopback"
+        return (
+            "optical" if 3 in cls._mzi_tone_optical_channels(result)
+            else "unused")
+
     def _show_mzi_tone_measurements(self, result):
         self._clear_mzi_trace_grid()
         selected_channel = self._selected_mzi_result_channel()
+        optical_channels = self._mzi_tone_optical_channels(result)
         analyses = list(result.get("tone_analyses", []))
         voltages = np.asarray(result.get("voltages", []), dtype=np.float64)
         directions = np.asarray(result.get("directions", []), dtype=np.int8)
@@ -5773,8 +5957,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
             plot.plot(
                 display_x, display_y,
                 pen=pg.mkPen(
-                    "#E8EDF2" if selected_channel == 3
-                    else CH_COLORS[selected_channel], width=1.0))
+                    CH_COLORS[selected_channel]
+                    if selected_channel in optical_channels else "#E8EDF2",
+                    width=1.0))
             finite = np.isfinite(fitted_mv)
             plot.plot(
                 np.flatnonzero(finite), fitted_mv[finite],
@@ -5800,23 +5985,33 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 plot, index // columns, index % columns)
             self.mzi_sweep_trace_plots.append(plot)
             amplitudes.append(amplitude_mv)
-            if selected_channel != 3:
+            if (selected_channel != result.get("reference_adc") and
+                    "gain_vs_reference" in channel_result):
                 gains.append(float(channel_result["gain_vs_reference"]))
                 latencies.append(float(
                     channel_result["latency_modulo_period_ns"]))
-        if selected_channel == 3:
-            self.mzi_results_summary.setText(
-                f"ADC3 electrical reference: {len(analyses)} fitted points; "
-                f"amplitude {min(amplitudes):.3f}.."
-                f"{max(amplitudes):.3f} mV.")
+        if selected_channel in optical_channels:
+            summary = (
+                f"ADC{selected_channel} optical output: {len(analyses)} "
+                f"fitted points; absolute calibration amplitude "
+                f"{min(amplitudes):.3f}..{max(amplitudes):.3f} mV")
+            if gains:
+                summary += (
+                    f"; optional gain vs ADC3 {min(gains):.6f}.."
+                    f"{max(gains):.6f}; latency modulo the tone period "
+                    f"{min(latencies):.3f}..{max(latencies):.3f} ns")
+            else:
+                summary += "; no electrical loopback diagnostic enabled"
+            self.mzi_results_summary.setText(summary + ".")
         else:
+            role = self._mzi_tone_adc3_role(result)
+            description = (
+                "electrical DDS loopback diagnostic"
+                if role == "loopback" else "captured unused input")
             self.mzi_results_summary.setText(
-                f"ADC{selected_channel}: {len(analyses)} fitted points; "
-                f"absolute amplitude {min(amplitudes):.3f}.."
-                f"{max(amplitudes):.3f} mV; gain vs ADC3 "
-                f"{min(gains):.6f}..{max(gains):.6f}; latency modulo the "
-                f"tone period {min(latencies):.3f}.."
-                f"{max(latencies):.3f} ns.")
+                f"ADC3 {description}: {len(analyses)} fitted points; "
+                f"amplitude {min(amplitudes):.3f}.."
+                f"{max(amplitudes):.3f} mV. It is not an optical output.")
 
     def _show_mzi_tone_result_curve(self, result):
         plot = self.mzi_result_curve_plot
@@ -5828,7 +6023,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             legend.clear()
         voltages = np.asarray(result["voltages"], dtype=np.float64)
         directions = np.asarray(result["directions"], dtype=np.int8)
-        for channel in range(3):
+        for channel in self._mzi_tone_optical_channels(result):
             values = np.asarray(
                 result["tone_amplitudes_v"][channel],
                 dtype=np.float64) * 1e3
@@ -5849,15 +6044,103 @@ class ScopeWindow(QtWidgets.QMainWindow):
         plot.setLabel("left", "fitted tone amplitude", units="mV")
         plot.setLabel("bottom", "heater", units="V")
         plot.enableAutoRange(axis=pg.ViewBox.YAxis)
+    def _show_mzi_tone_complex_response(self, result):
+        analyses = list(result.get("tone_analyses", []))
+        directions = np.asarray(result.get("directions", []), dtype=np.int8)
+        diagnostics = []
+        for channel, plot in enumerate(self.mzi_complex_plots):
+            plot.clear()
+            if not analyses:
+                plot.setTitle(f"ADC{channel} | no fitted tone points")
+                continue
+            in_phase_mv = np.asarray([
+                analysis["channels"][channel]["in_phase_v"]
+                for analysis in analyses
+            ], dtype=np.float64) * 1e3
+            quadrature_mv = np.asarray([
+                analysis["channels"][channel]["quadrature_v"]
+                for analysis in analyses
+            ], dtype=np.float64) * 1e3
+            for direction, style in (
+                    (0, QtCore.Qt.SolidLine),
+                    (1, QtCore.Qt.DashLine)):
+                selected = directions == direction
+                if not np.any(selected):
+                    continue
+                plot.plot(
+                    in_phase_mv[selected], quadrature_mv[selected],
+                    pen=pg.mkPen(
+                        CH_COLORS[channel], width=1.7, style=style),
+                    symbol="o", symbolSize=6,
+                    symbolBrush=CH_COLORS[channel],
+                    symbolPen=pg.mkPen("#101418", width=0.8))
+            plot.plot(
+                [0.0], [0.0], pen=None, symbol="+", symbolSize=13,
+                symbolPen=pg.mkPen("#E8EDF2", width=1.5))
+            fit_selected = directions == 0
+            if np.count_nonzero(fit_selected) < 2:
+                fit_selected = np.ones(in_phase_mv.size, dtype=bool)
+            try:
+                locus = fit_phasor_locus(
+                    in_phase_mv[fit_selected],
+                    quadrature_mv[fit_selected])
+            except ValueError:
+                plot.setTitle(f"ADC{channel} | insufficient locus points")
+            else:
+                line = np.vstack((
+                    locus["line_start"], locus["line_end"]))
+                plot.plot(
+                    line[:, 0], line[:, 1],
+                    pen=pg.mkPen(
+                        "#B0BEC5", width=1.2,
+                        style=QtCore.Qt.DashLine))
+                plot.setTitle(
+                    f"ADC{channel} | linearity "
+                    f"{locus['linearity']:.4f} | "
+                    f"d-perp {locus['origin_distance']:.3f} mV",
+                    size="9pt")
+                diagnostics.append(
+                    f"ADC{channel}: linearity "
+                    f"{locus['linearity']:.4f}, d-perp "
+                    f"{locus['origin_distance']:.3f} mV")
+            plot.enableAutoRange()
+        detail = "; ".join(diagnostics) if diagnostics else "no valid loci"
+        self.mzi_complex_summary.setText(
+            "Electrical tone phasor derived from each real averaged trace: "
+            "I is the fitted sine coefficient and Q is the fitted cosine "
+            "coefficient; amplitude = sqrt(I^2 + Q^2). The straight-line "
+            "fit uses forward points. d-perp is only the perpendicular "
+            "origin-to-line distance, not the full pickup amplitude. " + detail)
+
+    def _clear_mzi_complex_response(self):
+        for channel, plot in enumerate(self.mzi_complex_plots):
+            plot.clear()
+            plot.setTitle(f"ADC{channel} | Mode B data required")
+        self.mzi_complex_summary.setText(
+            "Complex response is available for Mode B pure-tone experiments.")
+
     def _display_mzi_dataset(self, result):
         if result.get("mode") == "tone":
+            adc3_role = self._mzi_tone_adc3_role(result)
+            self.mzi_channel_tabs.setTabText(3, {
+                "optical": "ADC3 optical",
+                "loopback": "ADC3 loopback",
+                "unused": "ADC3 unused",
+            }[adc3_role])
             self._show_mzi_tone_measurements(result)
             self._show_mzi_tone_result_curve(result)
+            self._show_mzi_tone_complex_response(result)
+            self.mzi_results_tabs.setTabEnabled(
+                self.mzi_complex_tab_index, True)
             manifest = result.get("manifest", {})
             point_count = len(result.get("tone_analyses", []))
         else:
+            self.mzi_channel_tabs.setTabText(3, "ADC3 reference")
             self._show_mzi_sweep_measurements(result)
             self._show_mzi_result_curve(result)
+            self._clear_mzi_complex_response()
+            self.mzi_results_tabs.setTabEnabled(
+                self.mzi_complex_tab_index, False)
             manifest = result.get("manifest", {})
             point_count = len(result.get("measurements", []))
         name = str(
@@ -5880,10 +6163,27 @@ class ScopeWindow(QtWidgets.QMainWindow):
     def _selected_mzi_result_channel(self):
         return int(self.mzi_channel_tabs.currentIndex())
 
-    def _on_mzi_channel_tab_changed(self, _index):
+    def _mzi_selected_result_channel_is_optical(self):
         channel = self._selected_mzi_result_channel()
-        lower, upper = (self._mzi_reference_trace_range if channel == 3
-                        else self._mzi_optical_trace_range)
+        if channel != 3:
+            return True
+        index = self.mzi_dataset_combo.currentIndex()
+        if index >= 0:
+            path = self.mzi_dataset_combo.itemData(index)
+            result = self._mzi_result_datasets.get(path)
+            if result is not None:
+                return (
+                    result.get("mode") == "tone" and
+                    3 in self._mzi_tone_optical_channels(result))
+        return (
+            self.mzi_mode.currentData() == "tone" and
+            self.mzi_adc3_role.currentData() == "optical")
+
+    def _on_mzi_channel_tab_changed(self, _index):
+        is_optical = self._mzi_selected_result_channel_is_optical()
+        lower, upper = (
+            self._mzi_optical_trace_range if is_optical else
+            self._mzi_reference_trace_range)
         self.mzi_trace_y_min.blockSignals(True)
         self.mzi_trace_y_max.blockSignals(True)
         self.mzi_trace_y_min.setValue(lower)
@@ -5891,8 +6191,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.mzi_trace_y_min.blockSignals(False)
         self.mzi_trace_y_max.blockSignals(False)
         self.mzi_trace_scale_label.setText(
-            "ADC3 reference Y range" if channel == 3 else
-            "Optical Y range shared by ADC0-ADC2")
+            "Optical Y range shared by configured optical ADCs"
+            if is_optical else "ADC3 diagnostic/reference Y range")
         self._apply_mzi_peak_analysis()
 
     def _apply_mzi_trace_scale(self):
@@ -5902,10 +6202,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.mzi_results_summary.setText(
                 "Trace Y minimum must be lower than the maximum.")
             return
-        if self._selected_mzi_result_channel() == 3:
-            self._mzi_reference_trace_range = (lower, upper)
-        else:
+        if self._mzi_selected_result_channel_is_optical():
             self._mzi_optical_trace_range = (lower, upper)
+        else:
+            self._mzi_reference_trace_range = (lower, upper)
         for plot in self.mzi_sweep_trace_plots:
             plot.setYRange(lower, upper, padding=0.0)
 
@@ -6392,10 +6692,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
             if kind == "configured":
                 enabled_inputs = ", ".join(
                     f"DAC{channel}" for channel in spec["tone_inputs"])
+                diagnostic = (
+                    "DAC3/ADC3 diagnostic enabled"
+                    if spec["reference_adc"] is not None else
+                    "ADC3 diagnostic off")
                 self.mzi_status.setText(
                     f"Pure-tone setup programmed: {enabled_inputs}; "
                     f"{spec['tone_actual_frequency_hz'] / 1000.0:.3f} kHz, "
-                    "0 V offset, full bipolar range; DAC3/ADC3 reference.")
+                    f"0 V offset, full bipolar range; {diagnostic}.")
                 return
             if kind == "point":
                 self.mzi_progress.setValue(1)
@@ -6414,6 +6718,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     f"Saved to {result['path']}")
                 return
             self._show_mzi_tone_sweep(result)
+            self._remember_mzi_dataset(result)
             points = len(result.get("tone_points", []))
             lane_text = "; ".join(
                 f"ADC{channel} amplitude "

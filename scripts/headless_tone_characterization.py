@@ -2,9 +2,10 @@
 """Headless one-input, one-heater-at-a-time MZI characterization.
 
 This is the non-Qt counterpart of optical-experiment Mode B. It routes the
-shared DDS to one selected photonic input, routes the same DDS to DAC3 as the
-ADC3 electrical reference, performs phase-reset BCPD captures, and saves each
-heater sweep in the same ``daq_optical_sweep`` format understood by the GUI.
+shared DDS to one selected photonic input, configures ADC3 as a fourth optical
+output, an optional DAC3 loopback diagnostic, or an unused captured lane,
+performs phase-reset BCPD captures, and saves each heater sweep in the same
+``daq_optical_sweep`` format understood by the GUI.
 
 Every heater is explicitly commanded to 0 V before every individual heater
 sweep. Only the selected heater is then changed. A 0 V heater drive is an
@@ -143,8 +144,8 @@ class DaqToneControl:
                 f"DAC{channel} route readback is {actual}, expected "
                 f"{SOURCE_CODES[source]} (reg17=0x{value & 0xFFFF:04X})")
 
-    def configure_tone(self, input_dac: int,
-                       frequency_hz: float) -> dict[str, object]:
+    def configure_tone(self, input_dac: int, frequency_hz: float,
+                       adc3_role: str = "unused") -> dict[str, object]:
         increment, actual = dds_phase_increment(frequency_hz)
         reply = self.cmd(
             f"DDSI 0x{increment:06X}", ok=("DDS inc=", "ERR"))
@@ -154,7 +155,7 @@ class DaqToneControl:
         sources = [
             "DDS" if channel == int(input_dac) else "Off"
             for channel in range(3)
-        ] + ["DDS"]
+        ] + ["DDS" if adc3_role == "loopback" else "Off"]
         for channel, source in enumerate(sources):
             self.set_source(channel, source)
         readback = self.cmd("RDRW 17", ok=("REG17", "ERR"))
@@ -181,6 +182,7 @@ class CharacterizationConfig:
     local_ip: str = "192.168.2.1"
     local_port: int = 5005
     input_dac: int = 0
+    adc3_role: str = "unused"
     frequency_hz: float = 100.0e3
     repetitions: int = 16
     capture_kb: int = 64
@@ -255,7 +257,10 @@ def automatic_capture_kb(frequency_hz: float, repetitions: int = 16) -> int:
 
 def validate_config(config: CharacterizationConfig) -> None:
     if config.input_dac not in (0, 1, 2):
-        raise ValueError("input DAC must be 0, 1, or 2; DAC3 is the reference")
+        raise ValueError("input DAC must be 0, 1, or 2")
+    if config.adc3_role not in ("optical", "loopback", "unused"):
+        raise ValueError(
+            "ADC3 role must be optical, loopback, or unused")
     if not 10.0e3 <= config.frequency_hz <= 10.0e6:
         raise ValueError("tone frequency must be in the 10 kHz..10 MHz range")
     if config.repetitions < 1:
@@ -429,9 +434,15 @@ def _tone_metadata(
             "samples_per_channel_per_repetition": config.capture_bytes // 4,
             "repetitions_per_heater_capture": config.repetitions,
             "adc_channels": [0, 1, 2, 3],
-            "optical_adc_channels": [0, 1, 2],
-            "reference_adc_channel": 3,
-            "reference_dac_channel": 3,
+            "optical_adc_channels": (
+                [0, 1, 2, 3]
+                if config.adc3_role == "optical" else [0, 1, 2]),
+            "reference_adc_channel": (
+                3 if config.adc3_role == "loopback" else None),
+            "reference_dac_channel": (
+                3 if config.adc3_role == "loopback" else None),
+            "adc3_role": config.adc3_role,
+            "reference_required_for_calibration": False,
             "channels_averaged_independently": True,
         },
         "xbar": {
@@ -451,7 +462,10 @@ def _tone_metadata(
             "offset_v": 0.0,
             "range_v": [-DAC_FULLSCALE_V, DAC_FULLSCALE_V],
             "enabled_photonic_dacs": [config.input_dac],
-            "electrical_reference": "DAC3 to ADC3",
+            "adc3_role": config.adc3_role,
+            "electrical_reference": (
+                "optional DAC3 to ADC3 diagnostic"
+                if config.adc3_role == "loopback" else "not enabled"),
             "phase_restarted_for_every_repetition": True,
             "captured_tone_cycles": (
                 (config.capture_bytes // 4 - CAPTURE_GUARD_SAMPLES) *
@@ -473,10 +487,18 @@ def _tone_metadata(
         },
         "analysis": {
             "method": "coherent average then least-squares sine fit",
+            "calibration_metric": (
+                "absolute fitted amplitude_v on ADC0..ADC3"
+                if config.adc3_role == "optical" else
+                "absolute fitted amplitude_v on ADC0..ADC2"),
             "reported_per_adc": [
-                "amplitude_v", "gain_vs_reference",
-                "phase_vs_reference_rad", "latency_modulo_period_ns",
+                "amplitude_v", "amplitude_std_v", "residual_rms_v",
             ],
+            "optional_reference_diagnostics": [
+                "gain_vs_reference", "phase_vs_reference_rad",
+                "latency_modulo_period_ns",
+            ] if config.adc3_role == "loopback" else [],
+            "reference_affects_calibration": False,
             "latency_note": "single-tone latency is modulo one tone period",
         },
         "software": {
@@ -519,31 +541,50 @@ def _save_tone_summary(experiment_dir: Path, points: list[dict[str, object]]) ->
         ], dtype=np.float64)
         for channel in range(4)
     }
-    gains = {
+    in_phase = {
         channel: np.asarray([
-            point["channels"][str(channel)]["gain_vs_reference"]
+            point["channels"][str(channel)]["in_phase_v"]
             for point in points
         ], dtype=np.float64)
-        for channel in range(3)
+        for channel in range(4)
     }
-    latencies = {
+    quadrature = {
         channel: np.asarray([
-            point["channels"][str(channel)]["latency_modulo_period_ns"]
+            point["channels"][str(channel)]["quadrature_v"]
             for point in points
         ], dtype=np.float64)
-        for channel in range(3)
+        for channel in range(4)
     }
-    np.savez_compressed(
-        experiment_dir / "tone_summary.npz",
-        voltages_v=voltages,
-        directions=directions,
+    payload = {
+        "voltages_v": voltages,
+        "directions": directions,
         **{f"amplitude_adc{channel}_v": values
            for channel, values in amplitudes.items()},
-        **{f"gain_adc{channel}_vs_adc3": values
-           for channel, values in gains.items()},
-        **{f"latency_adc{channel}_ns": values
-           for channel, values in latencies.items()},
-    )
+        **{f"in_phase_adc{channel}_v": values
+           for channel, values in in_phase.items()},
+        **{f"quadrature_adc{channel}_v": values
+           for channel, values in quadrature.items()},
+    }
+    has_reference = all(
+        "gain_vs_reference" in point["channels"]["0"]
+        for point in points)
+    if has_reference:
+        payload.update({
+            **{
+                f"gain_adc{channel}_vs_adc3": np.asarray([
+                    point["channels"][str(channel)]["gain_vs_reference"]
+                    for point in points], dtype=np.float64)
+                for channel in range(3)
+            },
+            **{
+                f"latency_adc{channel}_ns": np.asarray([
+                    point["channels"][str(channel)]
+                    ["latency_modulo_period_ns"]
+                    for point in points], dtype=np.float64)
+                for channel in range(3)
+            },
+        })
+    np.savez_compressed(experiment_dir / "tone_summary.npz", **payload)
 
 
 def _create_batch_directory(root: Path, name: str) -> Path:
@@ -582,7 +623,9 @@ def run_characterization(
     batch_dir: Path | None = None
     current_experiment: Path | None = None
     try:
-        tone_setup = daq.configure_tone(config.input_dac, config.frequency_hz)
+        tone_setup = daq.configure_tone(
+            config.input_dac, config.frequency_hz,
+            adc3_role=config.adc3_role)
         if owns_heaters:
             heater_controller.connect(
                 board_ip=config.board_ip, local_ip=config.local_ip)
@@ -649,7 +692,8 @@ def run_characterization(
                             for channel, stack in raw_stacks.items()
                         },
                         float(tone_setup["actual_frequency_hz"]),
-                        reference_adc=3,
+                        reference_adc=(
+                            3 if config.adc3_role == "loopback" else None),
                         start_sample=CAPTURE_GUARD_SAMPLES)
                     live_voltages = dict(all_zero)
                     live_voltages[heater] = voltage
@@ -669,18 +713,23 @@ def run_characterization(
                     point = _save_tone_point(
                         point_dir, voltage, direction, analysis)
                     tone_points.append(point)
+                    optical_channels = (
+                        range(4) if config.adc3_role == "optical"
+                        else range(3))
                     amplitudes_mv = [
                         1.0e3 * float(
                             point["channels"][str(channel)]["amplitude_v"])
-                        for channel in range(3)
+                        for channel in optical_channels
                     ]
                     print(
                         f"  {point_index + 1:02d}/{len(voltages)} "
                         f"{voltage:.4f} V "
                         f"{'reverse' if direction else 'forward'} | "
-                        f"ADC0..2 {amplitudes_mv[0]:.4f}, "
-                        f"{amplitudes_mv[1]:.4f}, "
-                        f"{amplitudes_mv[2]:.4f} mV",
+                        f"ADC0..{len(amplitudes_mv) - 1} " +
+                        ", ".join(
+                            f"{amplitude:.4f}"
+                            for amplitude in amplitudes_mv) +
+                        " mV",
                         flush=True)
                 _save_tone_summary(current_experiment, tone_points)
                 update_manifest(
@@ -757,6 +806,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--local-ip", default="192.168.2.1")
     parser.add_argument("--local-port", type=int, default=5005)
     parser.add_argument("--input-dac", type=int, choices=(0, 1, 2), default=0)
+    adc3 = parser.add_mutually_exclusive_group()
+    adc3.add_argument(
+        "--adc3-role", choices=("optical", "loopback", "unused"),
+        default="unused",
+        help="ADC3 connection: fourth optical output with DAC3 off, "
+             "DDS electrical loopback diagnostic, or captured but unused "
+             "(default: unused)")
+    adc3.add_argument(
+        "--adc3-reference", dest="adc3_role", action="store_const",
+        const="loopback",
+        help="legacy alias for --adc3-role loopback")
     parser.add_argument(
         "--frequency-khz", type=float, default=100.0,
         help="shared DDS frequency, 10..10000 kHz (default: 100)")
@@ -807,6 +867,7 @@ def config_from_args(args) -> CharacterizationConfig:
         local_ip=args.local_ip,
         local_port=args.local_port,
         input_dac=args.input_dac,
+        adc3_role=args.adc3_role,
         frequency_hz=frequency_hz,
         repetitions=args.reps,
         capture_kb=capture_kb,
@@ -836,7 +897,7 @@ def main(argv=None) -> int:
         config.start_v, config.stop_v, config.points, config.reverse,
         spacing=config.spacing)
     print(
-        f"Input DAC{config.input_dac}; DAC3/ADC3 electrical reference; "
+        f"Input DAC{config.input_dac}; ADC3 role {config.adc3_role}; "
         f"{config.frequency_hz / 1000.0:.3f} kHz; "
         f"{config.repetitions} repetitions; {config.capture_kb} KiB/chip/rep")
     print(

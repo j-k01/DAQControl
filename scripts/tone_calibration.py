@@ -11,6 +11,8 @@ DAC_SAMPLE_RATE_HZ = 1.0e9
 
 @dataclass(frozen=True)
 class ToneFit:
+    sin_coefficient: float
+    cos_coefficient: float
     amplitude: float
     phase_rad: float
     offset: float
@@ -52,6 +54,8 @@ def fit_tone(waveform, frequency_hz, sample_rate_hz=DAC_SAMPLE_RATE_HZ,
     fitted[start_sample:] = fitted_tail
     residual = y - fitted_tail
     return ToneFit(
+        sin_coefficient=float(sin_coeff),
+        cos_coefficient=float(cos_coeff),
         amplitude=float(np.hypot(sin_coeff, cos_coeff)),
         phase_rad=float(np.arctan2(cos_coeff, sin_coeff)),
         offset=float(offset),
@@ -61,10 +65,15 @@ def fit_tone(waveform, frequency_hz, sample_rate_hz=DAC_SAMPLE_RATE_HZ,
 
 
 def analyze_tone_capture(stacks_by_adc: Mapping[int, np.ndarray],
-                         frequency_hz, *, reference_adc=3,
+                         frequency_hz, *, reference_adc=None,
                          sample_rate_hz=DAC_SAMPLE_RATE_HZ,
                          start_sample=64):
-    """Average aligned repetitions per ADC, then fit gain and phase vs ADC3."""
+    """Average and fit each ADC independently.
+
+    reference_adc is optional diagnostic context. A present, nonzero reference
+    adds relative gain/phase/latency fields, but it is never needed to obtain
+    the absolute fitted amplitude of any ADC.
+    """
     averages = {}
     fits = {}
     amplitude_std = {}
@@ -82,35 +91,91 @@ def analyze_tone_capture(stacks_by_adc: Mapping[int, np.ndarray],
         ]
         amplitude_std[int(channel)] = float(np.std(rep_amplitudes))
 
-    reference_adc = int(reference_adc)
-    if reference_adc not in fits:
-        raise ValueError(f"reference ADC{reference_adc} is missing")
-    reference = fits[reference_adc]
-    if reference.amplitude <= np.finfo(np.float64).eps:
-        raise ValueError("electrical reference tone has zero fitted amplitude")
+    reference = None
+    reference_reason = "not requested"
+    if reference_adc is not None:
+        reference_adc = int(reference_adc)
+        if reference_adc not in fits:
+            reference_reason = f"ADC{reference_adc} is missing"
+        elif fits[reference_adc].amplitude <= np.finfo(np.float64).eps:
+            reference_reason = f"ADC{reference_adc} fitted amplitude is zero"
+        else:
+            reference = fits[reference_adc]
+            reference_reason = "available"
 
     period_s = 1.0 / float(frequency_hz)
     channels = {}
     for channel, fit in fits.items():
-        phase_delta = float(np.angle(np.exp(
-            1j * (fit.phase_rad - reference.phase_rad))))
-        latency_s = (-phase_delta / (2.0 * np.pi * float(frequency_hz))) % period_s
         channels[channel] = {
             "amplitude_v": fit.amplitude,
+            "in_phase_v": fit.sin_coefficient,
+            "quadrature_v": fit.cos_coefficient,
+            "phase_rad": fit.phase_rad,
             "amplitude_std_v": amplitude_std[channel],
-            "gain_vs_reference": fit.amplitude / reference.amplitude,
-            "phase_vs_reference_rad": phase_delta,
-            "latency_modulo_period_s": latency_s,
-            "latency_modulo_period_ns": latency_s * 1.0e9,
             "offset_v": fit.offset,
             "residual_rms_v": fit.residual_rms,
             "average_v": averages[channel],
             "fitted_v": fit.fitted,
         }
+        if reference is not None:
+            phase_delta = float(np.angle(np.exp(
+                1j * (fit.phase_rad - reference.phase_rad))))
+            latency_s = (
+                -phase_delta / (2.0 * np.pi * float(frequency_hz))) % period_s
+            channels[channel].update({
+                "gain_vs_reference": fit.amplitude / reference.amplitude,
+                "phase_vs_reference_rad": phase_delta,
+                "latency_modulo_period_s": latency_s,
+                "latency_modulo_period_ns": latency_s * 1.0e9,
+            })
     return {
         "frequency_hz": float(frequency_hz),
         "sample_rate_hz": float(sample_rate_hz),
         "reference_adc": reference_adc,
+        "reference_available": reference is not None,
+        "reference_status": reference_reason,
         "period_s": period_s,
         "channels": channels,
+    }
+
+
+def fit_phasor_locus(in_phase, quadrature):
+    """Fit the best straight line through real I/Q tone coefficients."""
+    in_phase = np.asarray(in_phase, dtype=np.float64)
+    quadrature = np.asarray(quadrature, dtype=np.float64)
+    if in_phase.shape != quadrature.shape:
+        raise ValueError("I and Q arrays must have matching shapes")
+    valid = np.isfinite(in_phase) & np.isfinite(quadrature)
+    points = np.column_stack((in_phase[valid], quadrature[valid]))
+    if points.shape[0] < 2:
+        raise ValueError("phasor locus fit requires at least two finite points")
+
+    center = points.mean(axis=0)
+    centered = points - center
+    _u, singular_values, axes = np.linalg.svd(centered, full_matrices=False)
+    if singular_values[0] <= np.finfo(np.float64).eps:
+        raise ValueError("phasor locus points do not vary")
+    direction = axes[0]
+    projection = centered @ direction
+    line_start = center + float(np.min(projection)) * direction
+    line_end = center + float(np.max(projection)) * direction
+    reconstructed = np.outer(projection, direction)
+    perpendicular = centered - reconstructed
+    perpendicular_rms = float(np.sqrt(np.mean(np.sum(
+        perpendicular * perpendicular, axis=1))))
+    total_energy = float(np.sum(singular_values * singular_values))
+    linearity = (
+        float((singular_values[0] * singular_values[0]) / total_energy)
+        if total_energy > 0.0 else 1.0)
+    normal = np.asarray([-direction[1], direction[0]])
+    origin_distance = float(abs(center @ normal))
+    return {
+        "center": center,
+        "direction": direction,
+        "line_start": line_start,
+        "line_end": line_end,
+        "linearity": linearity,
+        "perpendicular_rms": perpendicular_rms,
+        "origin_distance": origin_distance,
+        "point_count": int(points.shape[0]),
     }

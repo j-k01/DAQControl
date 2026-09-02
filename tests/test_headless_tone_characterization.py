@@ -28,12 +28,13 @@ class FakeDaq:
     def __init__(self):
         self.configurations = []
 
-    def configure_tone(self, input_dac, frequency_hz):
+    def configure_tone(
+            self, input_dac, frequency_hz, adc3_role="unused"):
         increment, actual = dds_phase_increment(frequency_hz)
         sources = [
             "DDS" if channel == input_dac else "Off"
             for channel in range(3)
-        ] + ["DDS"]
+        ] + ["DDS" if adc3_role == "loopback" else "Off"]
         self.configurations.append((input_dac, frequency_hz, sources))
         register = sum(
             (1 if source == "DDS" else 0) << (4 * channel)
@@ -134,6 +135,7 @@ class HeadlessToneCharacterizationTests(unittest.TestCase):
             config = CharacterizationConfig(
                 port="COM-test",
                 input_dac=0,
+                adc3_role="optical",
                 frequency_hz=1.0e6,
                 repetitions=4,
                 capture_kb=8,
@@ -159,7 +161,7 @@ class HeadlessToneCharacterizationTests(unittest.TestCase):
 
             self.assertEqual(daq.configurations[0][0], 0)
             self.assertEqual(
-                daq.configurations[0][2], ["DDS", "Off", "Off", "DDS"])
+                daq.configurations[0][2], ["DDS", "Off", "Off", "Off"])
             self.assertGreaterEqual(len(heaters.full_writes), 5)
             for write in heaters.full_writes:
                 self.assertEqual(set(write), set(MZI_NET_NAMES))
@@ -180,6 +182,13 @@ class HeadlessToneCharacterizationTests(unittest.TestCase):
                 self.assertEqual(manifest["schema"], "daq_optical_sweep")
                 self.assertEqual(
                     manifest["stimulus"]["mode"], "shared_dds_pure_tone")
+                self.assertEqual(
+                    manifest["acquisition"]["adc3_role"], "optical")
+                self.assertEqual(
+                    manifest["acquisition"]["optical_adc_channels"],
+                    [0, 1, 2, 3])
+                self.assertIsNone(
+                    manifest["acquisition"]["reference_adc_channel"])
                 self.assertEqual(manifest["capture_status"], "complete")
                 self.assertEqual(len(manifest["heater_captures"]), 2)
                 baseline = manifest["heater_sweep"][
@@ -187,6 +196,13 @@ class HeadlessToneCharacterizationTests(unittest.TestCase):
                 self.assertEqual(set(baseline), set(MZI_NET_NAMES))
                 self.assertTrue(all(value == 0.0 for value in baseline.values()))
                 self.assertTrue((experiment / "tone_summary.npz").exists())
+                with np.load(experiment / "tone_summary.npz") as summary:
+                    in_phase = summary["in_phase_adc0_v"]
+                    quadrature = summary["quadrature_adc0_v"]
+                    amplitude = summary["amplitude_adc0_v"]
+                    np.testing.assert_allclose(
+                        np.hypot(in_phase, quadrature), amplitude,
+                        rtol=1.0e-12, atol=1.0e-12)
                 point = experiment / manifest["heater_captures"][1]["directory"]
                 with np.load(point / "raw_captures.npz") as raw:
                     self.assertEqual(raw["raw_ch0"].shape, (4, 2048))

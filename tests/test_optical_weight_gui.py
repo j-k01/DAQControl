@@ -741,6 +741,23 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertEqual(spec["mode"], "tone")
         self.assertEqual(spec["capture_command"], "BCPD")
         self.assertEqual(spec["tone_inputs"], [1, 2])
+        self.assertEqual(spec["adc3_role"], "unused")
+        self.assertEqual(spec["optical_adc_channels"], [0, 1, 2])
+        self.assertIsNone(spec["reference_adc"])
+        self.assertEqual(spec["xbar_sources"], ["Off", "DDS", "DDS", "Off"])
+        self.window.mzi_adc3_role.setCurrentIndex(
+            self.window.mzi_adc3_role.findData("optical"))
+        spec = self.window._mzi_gui_spec()
+        self.assertEqual(spec["adc3_role"], "optical")
+        self.assertEqual(spec["optical_adc_channels"], [0, 1, 2, 3])
+        self.assertIsNone(spec["reference_adc"])
+        self.assertEqual(spec["xbar_sources"], ["Off", "DDS", "DDS", "Off"])
+        self.window.mzi_adc3_role.setCurrentIndex(
+            self.window.mzi_adc3_role.findData("loopback"))
+        spec = self.window._mzi_gui_spec()
+        self.assertEqual(spec["adc3_role"], "loopback")
+        self.assertEqual(spec["optical_adc_channels"], [0, 1, 2])
+        self.assertEqual(spec["reference_adc"], 3)
         self.assertEqual(spec["xbar_sources"], ["Off", "DDS", "DDS", "DDS"])
         self.assertAlmostEqual(spec["tone_frequency_hz"], 1.25e6)
         self.assertFalse(self.window.mzi_tone_panel.isHidden())
@@ -806,6 +823,8 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.window._mzi_controller = fake_mzi
         mode_index = self.window.mzi_mode.findData("tone")
         self.window.mzi_mode.setCurrentIndex(mode_index)
+        self.window.mzi_adc3_role.setCurrentIndex(
+            self.window.mzi_adc3_role.findData("optical"))
         self.window.mzi_tone_frequency.setValue(1000.0)
         self.window.mzi_reps.setValue(4)
         self.window.mzi_capture_size.setCurrentIndex(
@@ -849,14 +868,34 @@ class OpticalWeightGuiTests(unittest.TestCase):
         self.assertNotIn("_err", imported)
         self.assertEqual(imported["kind"], "imported_tone_sweep")
         self.assertEqual(imported["mode"], "tone")
+        self.assertEqual(imported["adc3_role"], "optical")
+        self.assertEqual(imported["optical_adc_channels"], [0, 1, 2, 3])
         self.assertEqual(len(imported["tone_analyses"]), 2)
         self.assertEqual(len(self.window.mzi_sweep_trace_plots), 2)
-        self.assertIn("absolute amplitude", self.window.mzi_results_summary.text())
+        self.assertIn("absolute calibration amplitude",
+                      self.window.mzi_results_summary.text())
+        self.assertTrue(self.window.mzi_results_tabs.isTabEnabled(
+            self.window.mzi_complex_tab_index))
+        self.assertIn("Electrical tone phasor",
+                      self.window.mzi_complex_summary.text())
+        for analysis in imported["tone_analyses"]:
+            lane = analysis["channels"][0]
+            self.assertAlmostEqual(
+                np.hypot(lane["in_phase_v"], lane["quadrature_v"]),
+                lane["amplitude_v"], delta=1.0e-12)
+        self.assertGreaterEqual(
+            len(self.window.mzi_complex_plots[0].listDataItems()), 2)
         self.assertEqual(self.window.workspace_tabs.currentIndex(), 2)
         np.testing.assert_allclose(
             imported["tone_amplitudes_v"][0],
             np.full(2, 1200.0 * dac_scope_qt.VOLTS_PER_COUNT),
             rtol=2e-3)
+        self.window.mzi_channel_tabs.setCurrentIndex(3)
+        self.assertEqual(self.window.mzi_channel_tabs.tabText(3), "ADC3 optical")
+        self.assertEqual(self.window.mzi_trace_y_min.value(), -25.0)
+        self.assertEqual(self.window.mzi_trace_y_max.value(), 25.0)
+        self.assertIn(
+            "ADC3 optical output", self.window.mzi_results_summary.text())
 
 if __name__ == "__main__":
     unittest.main()

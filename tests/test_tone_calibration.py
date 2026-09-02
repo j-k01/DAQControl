@@ -10,6 +10,7 @@ if str(SCRIPTS) not in sys.path:
 
 from tone_calibration import (  # noqa: E402
     analyze_tone_capture, dds_phase_increment, fit_tone,
+    fit_phasor_locus,
 )
 
 
@@ -54,6 +55,16 @@ class ToneCalibrationTests(unittest.TestCase):
             self.assertAlmostEqual(
                 lane["latency_modulo_period_ns"],
                 delays[channel], delta=1.5)
+            expected_phase = -omega * delays[channel]
+            self.assertAlmostEqual(
+                lane["in_phase_v"],
+                amplitudes[channel] * np.cos(expected_phase), delta=2.0e-4)
+            self.assertAlmostEqual(
+                lane["quadrature_v"],
+                amplitudes[channel] * np.sin(expected_phase), delta=2.0e-4)
+            self.assertAlmostEqual(
+                np.hypot(lane["in_phase_v"], lane["quadrature_v"]),
+                lane["amplitude_v"], delta=1.0e-12)
         self.assertAlmostEqual(
             result["channels"][3]["latency_modulo_period_ns"], 0.0, delta=1e-6)
 
@@ -70,5 +81,22 @@ class ToneCalibrationTests(unittest.TestCase):
         self.assertLess(averaged.residual_rms, single.residual_rms * 0.4)
 
 
+
+    def test_phasor_locus_identifies_translated_straight_line(self):
+        transmission = np.linspace(0.0, 1.0, 21)
+        optical = np.asarray([0.012, -0.005])
+        pickup = np.asarray([0.003, 0.004])
+        points = pickup + transmission[:, None] * optical
+
+        result = fit_phasor_locus(points[:, 0], points[:, 1])
+
+        direction = optical / np.linalg.norm(optical)
+        normal = np.asarray([-direction[1], direction[0]])
+        expected_distance = abs(float(pickup @ normal))
+        self.assertAlmostEqual(result["linearity"], 1.0, delta=1.0e-12)
+        self.assertAlmostEqual(
+            result["origin_distance"], expected_distance, delta=1.0e-12)
+        self.assertAlmostEqual(
+            result["perpendicular_rms"], 0.0, delta=1.0e-12)
 if __name__ == "__main__":
     unittest.main()

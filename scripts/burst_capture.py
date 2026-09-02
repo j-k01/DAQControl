@@ -190,6 +190,18 @@ def decode_chip(raw, base_ch):
     return {base_ch: sm[:, :4].ravel(), base_ch + 1: sm[:, 4:].ravel()}
 
 
+def parse_bcap_bytes(reply):
+    """Return the exact per-chip byte count accepted by firmware."""
+
+    for token in str(reply or "").split():
+        if token.startswith("bytes_per_chip="):
+            try:
+                return int(token.split("=", 1)[1], 0)
+            except ValueError:
+                return None
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -232,6 +244,19 @@ def main():
     print(" ", resp or "(no BCAP response)")
     if not resp.startswith("OK BCAP"):
         asm.close(); s.close(); sys.exit("capture failed")
+    accepted_bytes = parse_bcap_bytes(resp)
+    if accepted_bytes is None or accepted_bytes <= 0:
+        asm.close(); s.close(); sys.exit("BCAP response omitted a valid bytes_per_chip")
+    if accepted_bytes != bytes_per_chip:
+        print(f"  firmware accepted {accepted_bytes} bytes/chip instead of "
+              f"requested {bytes_per_chip}; resizing UDP reassembly")
+        asm.close()
+        bytes_per_chip = accepted_bytes
+        asm = Reassembler(args.board_ip, args.cmd_port, args.local_ip,
+                          args.local_port, bytes_per_chip)
+        if not asm.register(timeout=2.0):
+            asm.close(); s.close(); sys.exit(
+                "resized BRST registration did not return BRST_READY")
     print(f"  capture done in {1000*(time.time()-t0):.0f} ms")
 
     print("BRDO (reading out over UDP) ...")
@@ -253,6 +278,10 @@ def main():
         print(f"  chip{chip}: {asm.got[chip]}/{bytes_per_chip} bytes ({pct:.2f}%)")
     rate = (asm.got[0] + asm.got[1]) / dt / 1e6
     print(f"  drained {dt:.1f} s, ~{rate:.0f} MB/s")
+
+    if not asm.complete():
+        asm.close()
+        sys.exit("UDP drain incomplete; refusing to decode or save a partial capture")
 
     chans = {}
     chans.update(decode_chip(asm.buf[0], 0))
