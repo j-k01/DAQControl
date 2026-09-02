@@ -112,6 +112,7 @@ from optical_experiment import (
     create_experiment, load_manifest, save_heater_capture, update_manifest,
 )
 from process_optical_experiment import process_experiment
+from tone_calibration import analyze_tone_capture, dds_phase_increment
 
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
@@ -881,6 +882,14 @@ class DacControl:
             return (f"ERR XBar readback DAC{ch}: requested {expected}, "
                     f"read {actual} (reg17=0x{value & 0xFFFF:04X})")
         return f"{reply}; reg17=0x{value & 0xFFFF:04X}"
+
+    def set_dds_frequency(self, frequency_hz):
+        increment, actual = dds_phase_increment(frequency_hz)
+        reply = self.cmd(
+            f"DDSI 0x{increment:06X}", ok=("DDS inc=", "ERR"))
+        if not reply or reply.startswith("ERR"):
+            return reply or "ERR no UART response to DDSI", increment, actual
+        return reply, increment, actual
 
     def probe_firmware(self, timeout=2.0):
         """Return reg17 reply only when the DAQ MicroBlaze is actually alive."""
@@ -3657,6 +3666,47 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
         stimulus = QtWidgets.QGroupBox("2. Experiment setup")
         sf = QtWidgets.QFormLayout(stimulus)
+        self.mzi_mode = QtWidgets.QComboBox()
+        self.mzi_mode.addItem("Mode A - Spiking", "spike")
+        self.mzi_mode.addItem("Mode B - Pure tone", "tone")
+        self.mzi_mode.setToolTip(
+            "Spiking uses neuron pulses and BCPT. Pure tone uses the shared "
+            "DDS and a phase-zero BCPD trigger at every averaged capture.")
+        sf.addRow("Experiment mode", self.mzi_mode)
+
+        self.mzi_tone_panel = QtWidgets.QGroupBox("Pure-tone stimulus")
+        tone_form = QtWidgets.QFormLayout(self.mzi_tone_panel)
+        self.mzi_tone_frequency = QtWidgets.QDoubleSpinBox()
+        self.mzi_tone_frequency.setRange(10.0, 10000.0)
+        self.mzi_tone_frequency.setValue(100.0)
+        self.mzi_tone_frequency.setDecimals(3)
+        self.mzi_tone_frequency.setSuffix(" kHz")
+        self.mzi_tone_frequency.valueChanged.connect(
+            self._ensure_mzi_tone_capture_length)
+        self.mzi_tone_frequency.setToolTip(
+            "Shared DDS frequency. It remains identical at every heater voltage.")
+        tone_form.addRow("Frequency", self.mzi_tone_frequency)
+        tone_routes = QtWidgets.QHBoxLayout()
+        self.mzi_tone_inputs = []
+        for channel in range(3):
+            enabled = QtWidgets.QCheckBox(f"DAC{channel}")
+            enabled.setChecked(channel == 0)
+            enabled.setToolTip(
+                f"Route the shared full-scale, zero-offset DDS tone to DAC{channel}.")
+            self.mzi_tone_inputs.append(enabled)
+            tone_routes.addWidget(enabled)
+        tone_routes.addWidget(QtWidgets.QLabel("DAC3: DDS reference"))
+        tone_routes.addStretch(1)
+        tone_form.addRow("Photonic inputs", tone_routes)
+        tone_note = QtWidgets.QLabel(
+            "0 V offset, full bipolar DAC range. DAC3 is always looped to "
+            "ADC3 as the electrical amplitude and phase reference.")
+        tone_note.setWordWrap(True)
+        tone_note.setStyleSheet("color:#4FC3F7; font-size:11px;")
+        tone_form.addRow("", tone_note)
+        self.mzi_tone_panel.setVisible(False)
+        sf.addRow(self.mzi_tone_panel)
+
         self.mzi_profiles = []
         for neuron in range(4):
             profile = QtWidgets.QComboBox()
@@ -3732,6 +3782,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             "Spike 3 as the reference. Heater voltages are not changed.")
         self.mzi_program_btn.clicked.connect(self._on_mzi_program_test)
         sf.addRow("", self.mzi_program_btn)
+        self.mzi_mode.currentIndexChanged.connect(self._on_mzi_mode_changed)
         setup_column.addWidget(stimulus)
 
         capture = QtWidgets.QGroupBox("3. Capture and sweep")
@@ -3852,8 +3903,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
         detection_form.addRow("Optical window padding", self.mzi_loopback_padding)
         self.mzi_detection_panel.setVisible(False)
         advanced_btn.toggled.connect(self.mzi_detection_panel.setVisible)
+        self.mzi_advanced_btn = advanced_btn
         setup_column.addWidget(self.mzi_detection_panel)
         setup_column.addStretch(1)
+        self._on_mzi_mode_changed()
 
         def update_spacing_fields():
             explicit = self.mzi_spacing.currentData() == "explicit"
@@ -4348,10 +4401,53 @@ class ScopeWindow(QtWidgets.QMainWindow):
             return
         self.mzi_config_status.setText(f"Exported {path}")
 
+    def _ensure_mzi_tone_capture_length(self, *_):
+        if not hasattr(self, "mzi_capture_size"):
+            return
+        try:
+            _increment, actual_frequency = dds_phase_increment(
+                self.mzi_tone_frequency.value() * 1000.0)
+        except ValueError:
+            return
+        required_samples = int(np.ceil(
+            1.5 * 1.0e9 / actual_frequency)) + 64
+        required_bytes = required_samples * 4
+        current_bytes = int(self.mzi_capture_size.currentData())
+        if current_bytes >= required_bytes:
+            return
+        for index in range(self.mzi_capture_size.count()):
+            if int(self.mzi_capture_size.itemData(index)) >= required_bytes:
+                self.mzi_capture_size.setCurrentIndex(index)
+                return
+    def _on_mzi_mode_changed(self, *_):
+        tone_mode = (
+            hasattr(self, "mzi_mode") and self.mzi_mode.currentData() == "tone")
+        if hasattr(self, "mzi_tone_panel"):
+            self.mzi_tone_panel.setVisible(tone_mode)
+        if tone_mode:
+            self._ensure_mzi_tone_capture_length()
+        for widget in getattr(self, "mzi_dac_sources", []):
+            widget.setEnabled(not tone_mode)
+        for widget in getattr(self, "mzi_dac_invert", []):
+            widget.setEnabled(not tone_mode)
+        for name in ("mzi_neuron_editor_btn", "mzi_pulse_editor_btn"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(not tone_mode)
+        if hasattr(self, "mzi_advanced_btn"):
+            if tone_mode:
+                self.mzi_advanced_btn.setChecked(False)
+                self.mzi_detection_panel.setVisible(False)
+            self.mzi_advanced_btn.setEnabled(not tone_mode)
+        if hasattr(self, "mzi_program_btn"):
+            self.mzi_program_btn.setToolTip(
+                "Program the shared DDS frequency and fixed tone routes. "
+                "DAC3 is always the electrical reference."
+                if tone_mode else
+                "Program the neuron, current source, pulse shapers, and "
+                "selected spike routes for Mode A.")
+
     def _mzi_gui_spec(self):
-        pulse_counts = self._optical_pulse_counts()
-        if not pulse_counts:
-            raise ValueError("the optical spike pulse must contain at least one point")
         experiment_name = self.mzi_experiment_name.text().strip()
         if not experiment_name:
             raise ValueError("enter an experiment name")
@@ -4360,9 +4456,60 @@ class ScopeWindow(QtWidgets.QMainWindow):
             raise ValueError("select at least one heater to sweep")
         sweep_net = sweep_nets[0]
         capture_bytes = int(self.mzi_capture_size.currentData())
+        if self.mzi_mode.currentData() == "tone":
+            enabled_inputs = [
+                channel for channel, enabled in enumerate(self.mzi_tone_inputs)
+                if enabled.isChecked()]
+            if not enabled_inputs:
+                raise ValueError("enable at least one pure-tone photonic input")
+            requested_frequency = self.mzi_tone_frequency.value() * 1000.0
+            phase_increment, actual_frequency = dds_phase_increment(
+                requested_frequency)
+            captured_cycles = (
+                (capture_bytes // 4 - 64) * actual_frequency / 1.0e9)
+            if captured_cycles < 1.5:
+                raise ValueError(
+                    "pure-tone capture must contain at least 1.5 cycles; "
+                    "select a longer capture length")
+            return {
+                "mode": "tone",
+                "capture_command": "BCPD",
+                "experiment_name": experiment_name,
+                "capture_bytes": capture_bytes,
+                "net": sweep_net,
+                "nets": sweep_nets,
+                "sweep_label": (sweep_net if len(sweep_nets) == 1 else
+                                f"{len(sweep_nets)} selected heaters"),
+                "tone_frequency_hz": requested_frequency,
+                "tone_actual_frequency_hz": actual_frequency,
+                "tone_phase_increment": phase_increment,
+                "tone_inputs": enabled_inputs,
+                "response_start_sample": 64,
+                "reps": self.mzi_reps.value(),
+                "settle_s": self.mzi_settle.value() / 1000.0,
+                "restore_v": self.mzi_restore.value(),
+                "heater_voltages_before_sweep":
+                    dict(self._mzi_heater_voltages),
+                "xbar_sources": [
+                    *("DDS" if channel in enabled_inputs else "Off"
+                      for channel in range(3)),
+                    "DDS",
+                ],
+                "dac_invert": [False] * 4,
+                "adc_channels": [0, 1, 2, 3],
+                "optical_adc_channels": [0, 1, 2],
+                "analysis_adc": 0,
+                "reference_adc": 3,
+            }
+        pulse_counts = self._optical_pulse_counts()
+        if not pulse_counts:
+            raise ValueError(
+                "the optical spike pulse must contain at least one point")
         current_samples, current_cps, actual_frequency = gen_current_wave(
             "Square", 15.0, 5000.0, square_duty=50.0)
         return {
+            "mode": "spike",
+            "capture_command": "BCPT",
             "experiment_name": experiment_name,
             "capture_bytes": capture_bytes,
             "net": sweep_net,
@@ -4406,6 +4553,76 @@ class ScopeWindow(QtWidgets.QMainWindow):
         }
 
     def _mzi_experiment_metadata(self, spec):
+        if spec.get("mode") == "tone":
+            return {
+                "hardware": {
+                    "board_ip": self.args.board_ip,
+                    "local_ip": self.args.local_ip,
+                    "uart_port": self.args.port,
+                    "sample_rate_hz": 1.0e9,
+                },
+                "acquisition": {
+                    "transport":
+                        "BCPD DDS-phase-aligned capture + BRDO UDP Ethernet",
+                    "capture_bytes_per_chip_per_repetition":
+                        spec["capture_bytes"],
+                    "samples_per_channel_per_repetition":
+                        spec["capture_bytes"] // 4,
+                    "repetitions_per_heater_capture": spec["reps"],
+                    "adc_channels": list(spec["adc_channels"]),
+                    "optical_adc_channels":
+                        list(spec["optical_adc_channels"]),
+                    "reference_adc_channel": spec["reference_adc"],
+                    "reference_dac_channel": 3,
+                    "channels_averaged_independently": True,
+                },
+                "xbar": {
+                    "sources_by_dac": {
+                        f"DAC{channel}": source for channel, source in
+                        enumerate(spec["xbar_sources"])},
+                    "register17_readback": spec.get("xbar_register17"),
+                    "fixed_during_sweep": True,
+                },
+                "stimulus": {
+                    "mode": "shared_dds_pure_tone",
+                    "requested_frequency_hz": spec["tone_frequency_hz"],
+                    "actual_frequency_hz": spec["tone_actual_frequency_hz"],
+                    "phase_increment": spec["tone_phase_increment"],
+                    "offset_v": 0.0,
+                    "range_v": [-DAC_VMAX, DAC_VMAX],
+                    "enabled_photonic_dacs": list(spec["tone_inputs"]),
+                    "electrical_reference": "DAC3 to ADC3",
+                    "phase_restarted_for_every_repetition": True,
+                    "captured_tone_cycles": (
+                        (spec["capture_bytes"] // 4 - 64) *
+                        spec["tone_actual_frequency_hz"] / 1.0e9),
+                },
+                "heater_sweep": {
+                    "heater_nets": list(spec["nets"]),
+                    "primary_heater_net": spec["net"],
+                    "shared_sweep_voltage": len(spec["nets"]) > 1,
+                    "spacing": spec["spacing"],
+                    "heater_voltages_before_sweep":
+                        spec["heater_voltages_before_sweep"],
+                    "planned_voltages_v": spec["voltages"],
+                    "planned_directions": spec["directions"],
+                    "settle_seconds": spec["settle_s"],
+                    "restore_voltage_v": spec["restore_v"],
+                },
+                "analysis": {
+                    "method": "coherent average then least-squares sine fit",
+                    "reported_per_adc": [
+                        "amplitude_v", "gain_vs_reference",
+                        "phase_vs_reference_rad",
+                        "latency_modulo_period_ns"],
+                    "latency_note":
+                        "single-tone latency is modulo one tone period",
+                },
+                "software": {
+                    "capture_application": "scripts/dac_scope_qt.py",
+                    "processor": "scripts/tone_calibration.py",
+                },
+            }
         neurons = []
         for neuron in range(4):
             profile_name = spec["profiles"][neuron]
@@ -4536,6 +4753,26 @@ class ScopeWindow(QtWidgets.QMainWindow):
             control.setEnabled(False)
 
     def _program_mzi_test(self, spec):
+        if spec.get("mode") == "tone":
+            self.mzi_setup_progress.emit(
+                "Programming shared DDS and fixed pure-tone routes...")
+            reply, increment, actual = self.dac.set_dds_frequency(
+                spec["tone_frequency_hz"])
+            replies = [reply]
+            spec["tone_phase_increment"] = int(increment)
+            spec["tone_actual_frequency_hz"] = float(actual)
+            for dac_channel, source in enumerate(spec["xbar_sources"]):
+                replies.append(self.dac.set_source(dac_channel, source))
+            for response in replies:
+                if not response or str(response).startswith("ERR"):
+                    raise RuntimeError(
+                        f"pure-tone setup failed: "
+                        f"{response or 'no UART reply'}")
+            spec["dds_reply"] = reply
+            self.mzi_setup_progress.emit(
+                f"DDS verified at {actual / 1000.0:.3f} kHz; "
+                "DAC3 is the fixed ADC3 electrical reference.")
+            return
         self.mzi_setup_progress.emit("Programming shared neuron timing...")
         replies = list(self.dac.set_neuron_timing(0x8000, period=1))
         pulse = list(spec["pulse_counts"])
@@ -4651,6 +4888,54 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._bg(lambda: self.mzi_cal_result.emit(
             self._run_mzi_point(spec, voltage)))
 
+    def _finish_mzi_tone_point(
+            self, spec, voltage, requested, raw_stacks, capture):
+        stacks_v = {
+            channel: np.asarray(stack, dtype=np.float64) * VOLTS_PER_COUNT
+            for channel, stack in raw_stacks.items()
+        }
+        analysis = analyze_tone_capture(
+            stacks_v, spec["tone_actual_frequency_hz"],
+            reference_adc=spec["reference_adc"],
+            start_sample=spec["response_start_sample"])
+        capture_dir = os.path.abspath(os.path.expanduser(self.args.capture_dir))
+        os.makedirs(capture_dir, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        point_name = (spec["net"] if len(spec["nets"]) == 1 else
+                      f"{len(spec['nets'])}_heaters")
+        path = os.path.join(
+            capture_dir, f"tone_point_{point_name}_{stamp}.npz")
+        payload = {
+            "heater_voltage_v": float(voltage),
+            "heater_nets": np.asarray(spec["nets"]),
+            "tone_frequency_hz": spec["tone_actual_frequency_hz"],
+            "reference_adc_channel": spec["reference_adc"],
+        }
+        for channel, stack in raw_stacks.items():
+            channel_result = analysis["channels"][channel]
+            payload[f"raw_ch{channel}"] = stack
+            payload[f"average_ch{channel}_v"] = channel_result["average_v"]
+            payload[f"fitted_ch{channel}_v"] = channel_result["fitted_v"]
+            payload[f"amplitude_ch{channel}_v"] = (
+                channel_result["amplitude_v"])
+            payload[f"gain_ch{channel}_vs_adc3"] = (
+                channel_result["gain_vs_reference"])
+            payload[f"latency_ch{channel}_ns"] = (
+                channel_result["latency_modulo_period_ns"])
+        np.savez_compressed(path, **payload)
+        return {
+            "kind": "point", "mode": "tone", "spec": spec,
+            "voltage": float(voltage), "heater_voltages": requested,
+            "path": path, "capture": capture, "tone_analysis": analysis,
+            "height": analysis["channels"][spec["analysis_adc"]]["amplitude_v"],
+            "channel_results": {
+                channel: analysis["channels"][channel]
+                for channel in spec["optical_adc_channels"]
+            },
+            "reference_average":
+                analysis["channels"][spec["reference_adc"]]["average_v"],
+        }
+
     def _run_mzi_point(self, spec, voltage):
         try:
             self._program_mzi_test(spec)
@@ -4672,6 +4957,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 channel: np.asarray(capture["stack"][channel], dtype=np.int16)
                 for channel in spec["adc_channels"]
             }
+            if spec.get("mode") == "tone":
+                return self._finish_mzi_tone_point(
+                    spec, voltage, requested, raw_stacks, capture)
             step_sample = spec["response_start_sample"]
             volts_by_adc = {
                 channel: stack.astype(np.float64) * VOLTS_PER_COUNT
@@ -4868,6 +5156,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
             import traceback
             traceback.print_exc()
             return {"_err": f"{type(exc).__name__}: {exc}"}
+    def _clear_mzi_tone_curves(self):
+        for curve in getattr(self, "_mzi_tone_curves", []):
+            self.mzi_plot.removeItem(curve)
+        self._mzi_tone_curves = []
     def _on_mzi_calibrate(self):
         if not self.dac or self._mzi_running:
             return
@@ -4886,6 +5178,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         spec["voltages"] = voltages
         spec["directions"] = directions
         spec["spacing"] = spacing
+        self._clear_mzi_tone_curves()
         self.mzi_curve_fwd.setData([], [])
         self.mzi_curve_rev.setData([], [])
         self._mzi_begin(
@@ -4903,6 +5196,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         result = {
             "kind": "sweep", "spec": spec, "heater_dirs": [], "metrics": [],
             "voltages": [], "directions": [], "cancelled": False,
+            "tone_points": [],
         }
         experiment_dir = None
         self._mzi_active_sweep_nets = tuple(spec["nets"])
@@ -4941,24 +5235,59 @@ class ScopeWindow(QtWidgets.QMainWindow):
                     spec, voltage=float(voltage))
                 if "_err" in capture:
                     raise RuntimeError(f"{voltage:.4f} V: {capture['_err']}")
-                raw = np.asarray(capture["stack"][spec["analysis_adc"]], dtype=np.int16)
-                step_sample = spec["response_start_sample"]
-                volts = raw.astype(np.float64) * VOLTS_PER_COUNT
-                baseline = np.median(volts[:, :max(4, step_sample - 10)], axis=1)
-                average = (volts - baseline[:, None]).mean(axis=0)
-                metric = float(np.max(np.abs(average[step_sample:])))
+                raw_stacks = {
+                    channel: np.asarray(capture["stack"][channel], dtype=np.int16)
+                    for channel in range(4)
+                }
+                if spec.get("mode") == "tone":
+                    tone = analyze_tone_capture(
+                        {channel: stack.astype(np.float64) * VOLTS_PER_COUNT
+                         for channel, stack in raw_stacks.items()},
+                        spec["tone_actual_frequency_hz"],
+                        reference_adc=spec["reference_adc"],
+                        start_sample=spec["response_start_sample"])
+                    metric = float(
+                        tone["channels"][spec["analysis_adc"]]["amplitude_v"])
+                else:
+                    raw = raw_stacks[spec["analysis_adc"]]
+                    step_sample = spec["response_start_sample"]
+                    volts = raw.astype(np.float64) * VOLTS_PER_COUNT
+                    baseline = np.median(
+                        volts[:, :max(4, step_sample - 10)], axis=1)
+                    average = (volts - baseline[:, None]).mean(axis=0)
+                    metric = float(np.max(np.abs(average[step_sample:])))
                 heater_dir = save_heater_capture(
                     experiment_dir, index=index, voltage_v=float(voltage),
-                    direction=int(direction),
-                    stacks={channel: np.asarray(capture["stack"][channel], dtype=np.int16)
-                            for channel in range(4)},
+                    direction=int(direction), stacks=raw_stacks,
                     capture_meta={
-                        "bcpt": capture.get("meta", {}),
-                        "hardware_offsets": np.asarray(capture.get("offs", [])).tolist(),
+                        "burst_command": spec.get("capture_command", "BCPT"),
+                        "burst": capture.get("meta", {}),
+                        "hardware_offsets":
+                            np.asarray(capture.get("offs", [])).tolist(),
                         "trigger_diagnostic": capture.get("diag", {}),
                         "heater_nets": list(spec["nets"]),
                         "heater_voltages_v": requested,
                     })
+                if spec.get("mode") == "tone":
+                    scalar_channels = {
+                        str(channel): {
+                            key: float(value)
+                            for key, value in channel_result.items()
+                            if key not in ("average_v", "fitted_v")
+                        }
+                        for channel, channel_result in tone["channels"].items()
+                    }
+                    tone_point = {
+                        "voltage_v": float(voltage),
+                        "direction": int(direction),
+                        "channels": scalar_channels,
+                    }
+                    result["tone_points"].append(tone_point)
+                    with open(
+                            os.path.join(heater_dir, "tone_analysis.json"),
+                            "w", encoding="utf-8") as handle:
+                        json.dump(tone_point, handle, indent=2, sort_keys=True)
+                        handle.write("\n")
                 result["heater_dirs"].append(str(heater_dir))
                 result["metrics"].append(metric)
                 result["voltages"].append(float(voltage))
@@ -4973,6 +5302,47 @@ class ScopeWindow(QtWidgets.QMainWindow):
             update_manifest(
                 experiment_dir, capture_status="complete",
                 completed_utc=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+            if spec.get("mode") == "tone":
+                result["voltages"] = np.asarray(
+                    result["voltages"], dtype=np.float64)
+                result["directions"] = np.asarray(
+                    result["directions"], dtype=np.int8)
+                result["tone_amplitudes_v"] = {
+                    channel: np.asarray([
+                        point["channels"][str(channel)]["amplitude_v"]
+                        for point in result["tone_points"]], dtype=np.float64)
+                    for channel in range(4)
+                }
+                result["tone_gains"] = {
+                    channel: np.asarray([
+                        point["channels"][str(channel)]["gain_vs_reference"]
+                        for point in result["tone_points"]], dtype=np.float64)
+                    for channel in range(3)
+                }
+                result["tone_latencies_ns"] = {
+                    channel: np.asarray([
+                        point["channels"][str(channel)]
+                        ["latency_modulo_period_ns"]
+                        for point in result["tone_points"]], dtype=np.float64)
+                    for channel in range(3)
+                }
+                np.savez_compressed(
+                    os.path.join(experiment_dir, "tone_summary.npz"),
+                    voltages_v=result["voltages"],
+                    directions=result["directions"],
+                    **{
+                        f"amplitude_adc{channel}_v": values
+                        for channel, values in
+                        result["tone_amplitudes_v"].items()},
+                    **{
+                        f"gain_adc{channel}_vs_adc3": values
+                        for channel, values in result["tone_gains"].items()},
+                    **{
+                        f"latency_adc{channel}_ns": values
+                        for channel, values in
+                        result["tone_latencies_ns"].items()})
+                result["absolute"] = result["tone_amplitudes_v"][0]
+                return result
             analysis = process_experiment(experiment_dir)
             result.update(analysis)
             return result
@@ -4999,8 +5369,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
     def _mzi_multisample_with_retries(self, spec, *, voltage, attempts=3):
         """Retry a transient Ethernet failure without advancing the heater.
 
-        Each call performs a complete, newly triggered BCPT acquisition. Its
-        internal BRDO retries first exhaust rereads of the same DDR image. Only
+        Each call performs a complete, newly triggered BCPT/BCPD acquisition.
+        Its internal BRDO retries first exhaust rereads of the same DDR image. Only
         incomplete UDP drains and readout handshakes are retried here;
         deterministic capture-engine failures remain fatal.
         """
@@ -5012,8 +5382,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
         attempts = max(1, int(attempts))
         last = None
         for attempt in range(attempts):
-            last = self._multisample_once(
-                spec["capture_bytes"], spec["reps"])
+            if spec.get("capture_command", "BCPT") == "BCPD":
+                last = self._multisample_once(
+                    spec["capture_bytes"], spec["reps"], command="BCPD")
+            else:
+                last = self._multisample_once(
+                    spec["capture_bytes"], spec["reps"])
             error = str(last.get("_err", ""))
             if not error:
                 return last
@@ -5037,9 +5411,49 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if self._mzi_last_point_result is not None:
             self._show_mzi_point_diagnostics(self._mzi_last_point_result)
 
+    def _show_mzi_tone_point(self, result):
+        self.mzi_reference_plot.clear()
+        self.mzi_spike_plot.clear()
+        spec = result["spec"]
+        analysis = result["tone_analysis"]
+        reference = analysis["channels"][spec["reference_adc"]]
+        reference_mv = np.asarray(reference["average_v"]) * 1e3
+        reference_fit_mv = np.asarray(reference["fitted_v"]) * 1e3
+        self.mzi_reference_plot.plot(
+            reference_mv, pen=pg.mkPen("#E8EDF2", width=1.0))
+        self.mzi_reference_plot.plot(
+            reference_fit_mv, pen=pg.mkPen("#F6AE2D", width=1.5))
+        self.mzi_reference_plot.setTitle(
+            f"ADC3 electrical reference | {spec['reps']} aligned capture(s) "
+            f"| fitted amplitude {reference['amplitude_v'] * 1e3:.3f} mV")
+        self.mzi_reference_plot.setYRange(
+            self._mzi_reference_trace_range[0],
+            self._mzi_reference_trace_range[1], padding=0.0)
+
+        channel = int(self.mzi_preview_adc.currentData())
+        measured = analysis["channels"][channel]
+        average_mv = np.asarray(measured["average_v"]) * 1e3
+        fitted_mv = np.asarray(measured["fitted_v"]) * 1e3
+        self.mzi_spike_plot.plot(
+            average_mv, pen=pg.mkPen(CH_COLORS[channel], width=1.0))
+        self.mzi_spike_plot.plot(
+            fitted_mv, pen=pg.mkPen("#F6AE2D", width=1.5))
+        state = "enabled" if channel in spec["tone_inputs"] else "not driven"
+        self.mzi_spike_plot.setTitle(
+            f"ADC{channel} ({state}) | amplitude "
+            f"{measured['amplitude_v'] * 1e3:.3f} mV | gain/ADC3 "
+            f"{measured['gain_vs_reference']:.6f} | latency "
+            f"{measured['latency_modulo_period_ns']:.3f} ns modulo period")
+        self.mzi_spike_plot.setYRange(
+            self._mzi_optical_trace_range[0],
+            self._mzi_optical_trace_range[1], padding=0.0)
+
     def _show_mzi_point_diagnostics(self, result):
         """Show exactly what the pre-sweep point acquisition measured."""
 
+        if result.get("mode") == "tone":
+            self._show_mzi_tone_point(result)
+            return
         self.mzi_reference_plot.clear()
         self.mzi_spike_plot.clear()
         spec = result["spec"]
@@ -5172,6 +5586,87 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._bg(lambda: self.mzi_import_result.emit(
             self._run_mzi_import_experiment(path)))
 
+    def _load_mzi_tone_experiment(self, experiment_dir, manifest):
+        captures = sorted(
+            manifest.get("heater_captures", []),
+            key=lambda item: int(item["index"]))
+        if not captures:
+            raise ValueError("tone experiment has no heater captures")
+        stimulus = manifest.get("stimulus", {})
+        frequency_hz = float(stimulus["actual_frequency_hz"])
+        acquisition = manifest.get("acquisition", {})
+        reference_adc = int(
+            acquisition.get("reference_adc_channel", 3))
+        analyses = []
+        voltages = []
+        directions = []
+        points = []
+        for descriptor in captures:
+            capture_dir = os.path.join(
+                experiment_dir, descriptor["directory"])
+            raw_path = os.path.join(capture_dir, "raw_captures.npz")
+            with np.load(raw_path, allow_pickle=False) as raw:
+                stacks_v = {
+                    channel: np.asarray(
+                        raw[f"raw_ch{channel}"], dtype=np.float64
+                    ) * VOLTS_PER_COUNT
+                    for channel in range(4)
+                }
+            analysis = analyze_tone_capture(
+                stacks_v, frequency_hz, reference_adc=reference_adc,
+                start_sample=64)
+            analyses.append(analysis)
+            voltage = float(descriptor["heater_voltage_v"])
+            direction = int(
+                str(descriptor.get("direction", "forward")).lower()
+                == "reverse")
+            voltages.append(voltage)
+            directions.append(direction)
+            points.append({
+                "voltage_v": voltage,
+                "direction": direction,
+                "channels": {
+                    str(channel): {
+                        key: float(value)
+                        for key, value in channel_result.items()
+                        if key not in ("average_v", "fitted_v")
+                    }
+                    for channel, channel_result
+                    in analysis["channels"].items()
+                },
+            })
+        result = {
+            "kind": "imported_tone_sweep",
+            "mode": "tone",
+            "manifest": manifest,
+            "path": experiment_dir,
+            "voltages": np.asarray(voltages, dtype=np.float64),
+            "directions": np.asarray(directions, dtype=np.int8),
+            "tone_points": points,
+            "tone_analyses": analyses,
+            "tone_frequency_hz": frequency_hz,
+            "reference_adc": reference_adc,
+        }
+        result["tone_amplitudes_v"] = {
+            channel: np.asarray([
+                analysis["channels"][channel]["amplitude_v"]
+                for analysis in analyses], dtype=np.float64)
+            for channel in range(4)
+        }
+        result["tone_gains"] = {
+            channel: np.asarray([
+                analysis["channels"][channel]["gain_vs_reference"]
+                for analysis in analyses], dtype=np.float64)
+            for channel in range(3)
+        }
+        result["tone_latencies_ns"] = {
+            channel: np.asarray([
+                analysis["channels"][channel]["latency_modulo_period_ns"]
+                for analysis in analyses], dtype=np.float64)
+            for channel in range(3)
+        }
+        return result
+
     def _run_mzi_import_experiment(self, path):
         try:
             experiment_dir = os.path.abspath(os.path.expanduser(str(path)))
@@ -5179,6 +5674,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
             if not isinstance(manifest.get("heater_captures"), list):
                 raise ValueError(
                     "experiment.json does not contain heater_captures")
+            if (manifest.get("stimulus", {}).get("mode")
+                    == "shared_dds_pure_tone"):
+                return self._load_mzi_tone_experiment(
+                    experiment_dir, manifest)
             result = process_experiment(experiment_dir)
             result["kind"] = "imported_sweep"
             result["manifest"] = load_manifest(experiment_dir)
@@ -5234,11 +5733,130 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if result is not None:
             self._display_mzi_dataset(result)
 
+    def _show_mzi_tone_measurements(self, result):
+        self._clear_mzi_trace_grid()
+        selected_channel = self._selected_mzi_result_channel()
+        analyses = list(result.get("tone_analyses", []))
+        voltages = np.asarray(result.get("voltages", []), dtype=np.float64)
+        directions = np.asarray(result.get("directions", []), dtype=np.int8)
+        if not analyses:
+            self.mzi_results_summary.setText(
+                "No completed pure-tone points are available.")
+            return
+        columns = 4
+        rows = (len(analyses) + columns - 1) // columns
+        for column in range(columns):
+            self.mzi_trace_grid.setColumnStretch(column, 1)
+        amplitudes = []
+        gains = []
+        latencies = []
+        for index, analysis in enumerate(analyses):
+            channel_result = analysis["channels"][selected_channel]
+            average_mv = np.asarray(
+                channel_result["average_v"], dtype=np.float64) * 1e3
+            fitted_mv = np.asarray(
+                channel_result["fitted_v"], dtype=np.float64) * 1e3
+            plot = pg.PlotWidget()
+            plot.setMinimumSize(240, 135)
+            plot.setMaximumHeight(180)
+            plot.setBackground("#101418")
+            plot.showGrid(x=True, y=True, alpha=0.18)
+            if index % columns == 0:
+                plot.setLabel("left", "output", units="mV")
+            if index // columns == rows - 1:
+                plot.setLabel("bottom", "ADC sample", units="ns")
+            display_x, display_y = event_preserving_trace(
+                average_mv, np.empty(0, dtype=np.int32))
+            plot.plot(
+                display_x, display_y,
+                pen=pg.mkPen(
+                    "#E8EDF2" if selected_channel == 3
+                    else CH_COLORS[selected_channel], width=1.0))
+            finite = np.isfinite(fitted_mv)
+            plot.plot(
+                np.flatnonzero(finite), fitted_mv[finite],
+                pen=pg.mkPen("#F6AE2D", width=1.5))
+            voltage = (
+                float(voltages[index])
+                if index < voltages.size else float("nan"))
+            direction = (
+                "R" if index < directions.size and directions[index] else "F")
+            amplitude_mv = float(channel_result["amplitude_v"]) * 1e3
+            plot.setTitle(
+                f"#{index + 1} | {voltage:.4f} V {direction} | "
+                f"ADC{selected_channel} {amplitude_mv:.3f} mV",
+                size="8pt")
+            plot.setYRange(
+                float(self.mzi_trace_y_min.value()),
+                float(self.mzi_trace_y_max.value()), padding=0.0)
+            plot.setToolTip(
+                "White/colored trace is the trigger-aligned arithmetic "
+                "average; gold is the least-squares fit at the programmed "
+                "DDS frequency.")
+            self.mzi_trace_grid.addWidget(
+                plot, index // columns, index % columns)
+            self.mzi_sweep_trace_plots.append(plot)
+            amplitudes.append(amplitude_mv)
+            if selected_channel != 3:
+                gains.append(float(channel_result["gain_vs_reference"]))
+                latencies.append(float(
+                    channel_result["latency_modulo_period_ns"]))
+        if selected_channel == 3:
+            self.mzi_results_summary.setText(
+                f"ADC3 electrical reference: {len(analyses)} fitted points; "
+                f"amplitude {min(amplitudes):.3f}.."
+                f"{max(amplitudes):.3f} mV.")
+        else:
+            self.mzi_results_summary.setText(
+                f"ADC{selected_channel}: {len(analyses)} fitted points; "
+                f"absolute amplitude {min(amplitudes):.3f}.."
+                f"{max(amplitudes):.3f} mV; gain vs ADC3 "
+                f"{min(gains):.6f}..{max(gains):.6f}; latency modulo the "
+                f"tone period {min(latencies):.3f}.."
+                f"{max(latencies):.3f} ns.")
+
+    def _show_mzi_tone_result_curve(self, result):
+        plot = self.mzi_result_curve_plot
+        plot.clear()
+        legend = plot.plotItem.legend
+        if legend is None:
+            legend = plot.addLegend(offset=(8, 8))
+        else:
+            legend.clear()
+        voltages = np.asarray(result["voltages"], dtype=np.float64)
+        directions = np.asarray(result["directions"], dtype=np.int8)
+        for channel in range(3):
+            values = np.asarray(
+                result["tone_amplitudes_v"][channel],
+                dtype=np.float64) * 1e3
+            for direction, suffix, style in (
+                    (0, "forward", QtCore.Qt.SolidLine),
+                    (1, "reverse", QtCore.Qt.DashLine)):
+                selected = directions == direction
+                if not np.any(selected):
+                    continue
+                plot.plot(
+                    voltages[selected], values[selected],
+                    pen=pg.mkPen(
+                        CH_COLORS[channel], width=1.6, style=style),
+                    symbol="o", symbolSize=5,
+                    symbolBrush=CH_COLORS[channel],
+                    name=f"ADC{channel} {suffix}")
+        plot.setTitle("")
+        plot.setLabel("left", "fitted tone amplitude", units="mV")
+        plot.setLabel("bottom", "heater", units="V")
+        plot.enableAutoRange(axis=pg.ViewBox.YAxis)
     def _display_mzi_dataset(self, result):
-        self._show_mzi_sweep_measurements(result)
-        self._show_mzi_result_curve(result)
-        manifest = result.get("manifest", {})
-        point_count = len(result.get("measurements", []))
+        if result.get("mode") == "tone":
+            self._show_mzi_tone_measurements(result)
+            self._show_mzi_tone_result_curve(result)
+            manifest = result.get("manifest", {})
+            point_count = len(result.get("tone_analyses", []))
+        else:
+            self._show_mzi_sweep_measurements(result)
+            self._show_mzi_result_curve(result)
+            manifest = result.get("manifest", {})
+            point_count = len(result.get("measurements", []))
         name = str(
             manifest.get("experiment_name") or os.path.basename(result["path"]))
         self.mzi_dataset_status.setText(
@@ -5319,8 +5937,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if result is None:
             return
         active_tab = self.mzi_results_tabs.currentIndex()
-        self._show_mzi_sweep_measurements(result)
-        self._show_mzi_result_curve(result)
+        if result.get("mode") == "tone":
+            self._show_mzi_tone_measurements(result)
+            self._show_mzi_tone_result_curve(result)
+        else:
+            self._show_mzi_sweep_measurements(result)
+            self._show_mzi_result_curve(result)
         self.mzi_results_tabs.setCurrentIndex(active_tab)
 
     @staticmethod
@@ -5654,6 +6276,34 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 padding = max(0.05 * (upper - lower), 0.01)
                 plot.setYRange(
                     lower - padding, upper + padding, padding=0.0)
+    def _show_mzi_tone_sweep(self, result):
+        self.mzi_curve_fwd.setData([], [])
+        self.mzi_curve_rev.setData([], [])
+        self._clear_mzi_tone_curves()
+        voltages = np.asarray(result["voltages"], dtype=np.float64)
+        directions = np.asarray(result["directions"], dtype=np.int8)
+        self.mzi_plot.setLabel("left", "fitted tone amplitude", units="mV")
+        self.mzi_plot.setLabel("bottom", "heater", units="V")
+        self.mzi_plot.addLegend(offset=(8, 8))
+        for channel in range(3):
+            values = np.asarray(
+                result["tone_amplitudes_v"][channel], dtype=np.float64) * 1e3
+            for direction, suffix, style in (
+                    (0, "forward", QtCore.Qt.SolidLine),
+                    (1, "reverse", QtCore.Qt.DashLine)):
+                selected = directions == direction
+                if not np.any(selected):
+                    continue
+                pen = pg.mkPen(
+                    CH_COLORS[channel], width=1.6, style=style)
+                curve = self.mzi_plot.plot(
+                    voltages[selected], values[selected], pen=pen,
+                    symbol="o", symbolSize=5,
+                    symbolBrush=CH_COLORS[channel],
+                    name=f"ADC{channel} {suffix}")
+                self._mzi_tone_curves.append(curve)
+        self.mzi_plot.enableAutoRange(axis=pg.ViewBox.YAxis)
+
     def _on_mzi_cal_result(self, result):
         self._mzi_running = False
         enabled = bool(self.dac)
@@ -5728,6 +6378,51 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.mzi_status.setText(
                 f"Programmed {len(result['voltages'])} heater output(s); "
                 f"settled for {result.get('settle_s', 0.0) * 1000:.1f} ms.")
+            return
+
+        if spec.get("mode") == "tone" and kind in (
+                "configured", "point", "sweep"):
+            for channel, label in enumerate(spec["xbar_sources"]):
+                self.src_cbs[channel].setCurrentText(label)
+                self._applied_label[channel] = label
+            self._refresh_xbar_preview()
+            if kind == "configured":
+                enabled_inputs = ", ".join(
+                    f"DAC{channel}" for channel in spec["tone_inputs"])
+                self.mzi_status.setText(
+                    f"Pure-tone setup programmed: {enabled_inputs}; "
+                    f"{spec['tone_actual_frequency_hz'] / 1000.0:.3f} kHz, "
+                    "0 V offset, full bipolar range; DAC3/ADC3 reference.")
+                return
+            if kind == "point":
+                self.mzi_progress.setValue(1)
+                self._mzi_last_point_result = result
+                self._show_mzi_point_diagnostics(result)
+                lane_text = "; ".join(
+                    f"ADC{channel} {values['amplitude_v'] * 1e3:.3f} mV, "
+                    f"gain {values['gain_vs_reference']:.6f}, "
+                    f"latency {values['latency_modulo_period_ns']:.3f} ns"
+                    for channel, values in
+                    sorted(result["channel_results"].items()))
+                self.mzi_status.setText(
+                    f"Captured and coherently averaged {spec['reps']} "
+                    f"phase-aligned tone repetition(s) at "
+                    f"{result['voltage']:.4f} V. {lane_text}. "
+                    f"Saved to {result['path']}")
+                return
+            self._show_mzi_tone_sweep(result)
+            points = len(result.get("tone_points", []))
+            lane_text = "; ".join(
+                f"ADC{channel} amplitude "
+                f"{np.min(values) * 1e3:.3f}.."
+                f"{np.max(values) * 1e3:.3f} mV"
+                for channel, values in
+                sorted(result["tone_amplitudes_v"].items())
+                if channel < 3)
+            self.mzi_status.setText(
+                f"Pure-tone sweep complete: {points} heater point(s); "
+                f"{lane_text}. Raw captures and tone_summary.npz saved in "
+                f"{result['path']}")
             return
 
         if spec and kind in ("configured", "point", "sweep"):
@@ -5850,11 +6545,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.status.setText(f"multisample: BCPT {lbl} x {reps} trigger-synced reps...")
         self._bg(lambda: self.msamp_result.emit(self._multisample_once(nbytes, reps)))
 
-    def _multisample_once(self, nbytes, reps):
-        """BCPT + BRDO + one UDP drain, sliced into raw hardware-aligned reps.
+    def _multisample_once(self, nbytes, reps, command="BCPT"):
+        """BCPT/BCPD + BRDO, sliced into raw hardware-aligned repetitions.
         Correlation offsets are reported as diagnostics but are never applied.
         Runs in a worker thread. Returns
         {'stack': {ch: float64[N,L]}, 'offs': [...], 'meta': {...}} or {'_err'}."""
+        if command not in ("BCPT", "BCPD"):
+            return {"_err": f"unsupported burst command {command!r}"}
         try:
             from burst_capture import Reassembler, decode_chip, parse_brdo_request
         except Exception as exc:  # noqa: BLE001
@@ -5869,12 +6566,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
             # legitimately take reps x period. Wait long enough; if this still
             # times out the MB is likely mid-BCPT and needs to finish before it
             # answers anything else.
-            bcpt = self.dac.cmd(f"BCPT {kb}k {reps}", ok=("OK BCPT", "ERR"),
-                                timeout=180.0)
+            bcpt = self.dac.cmd(
+                f"{command} {kb}k {reps}",
+                ok=(f"OK {command}", "ERR"), timeout=180.0)
             if not bcpt:
-                return {"_err": describe_burst_capture_failure("BCPT", bcpt)}
-            if not bcpt.startswith("OK BCPT"):
-                return {"_err": describe_burst_capture_failure("BCPT", bcpt)}
+                return {"_err": describe_burst_capture_failure(command, bcpt)}
+            if not bcpt.startswith(f"OK {command}"):
+                return {"_err": describe_burst_capture_failure(command, bcpt)}
             meta = {}
             for tok in bcpt.split():
                 if "=" in tok:
@@ -5885,7 +6583,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                         pass
             if not all(k in meta for k in
                        ("reps", "bytes_per_rep", "stride", "total_per_chip")):
-                return {"_err": f"unparseable BCPT reply: {bcpt!r}"}
+                return {"_err": f"unparseable {command} reply: {bcpt!r}"}
             total = meta["total_per_chip"]
             try:
                 asm = Reassembler(self.args.board_ip, self.args.cmd_port,

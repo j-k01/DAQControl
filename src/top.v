@@ -654,6 +654,7 @@ module top #(
     wire [31:0] dac_program_status_async;
     wire [31:0] dac_program_status_reg;
     wire [31:0] gth_tx_clk_count;
+    wire        dac_tone_start_tx;
     wire [31:0] gth_rx_clk_count;
     wire [15:0] gth_tx_clk_count_short;
     wire [15:0] gth_rx_clk_count_short;
@@ -1225,6 +1226,19 @@ module top #(
         .dest     (dac_dds_phase_inc_tx)
     );
 
+    // Reg31[1] is a software-owned toggle. It restarts the shared DDS only
+    // after both ADC burst engines have reported that they are armed.
+    (* ASYNC_REG = "TRUE" *) reg [2:0] dac_tone_restart_sync = 3'b000;
+    always @(posedge gth_tx_usrclk2) begin
+        if (litejesd_reset)
+            dac_tone_restart_sync <= 3'b000;
+        else
+            dac_tone_restart_sync <= {
+                dac_tone_restart_sync[1:0], regf_value[31*32 + 1]};
+    end
+    wire dac_tone_restart_tx =
+        dac_tone_restart_sync[2] ^ dac_tone_restart_sync[1];
+
     // Keep DAC control out of RW2[15:8]. Those bits drive GTH TX polarity.
     // DAC-side runtime controls are limited to RW2[7:1]:
     //   [2:1] ILA-only sample-map tag
@@ -1535,6 +1549,7 @@ module top #(
         .physical_map_mode(dac_physical_map_mode_tx),
         .triangle_step    (16'd256),
         .sine_phase_inc   (dac_dds_phase_inc_tx),
+        .tone_restart     (dac_tone_restart_tx),
         .dac_src_sel      (dac_src_sel_tx),
         .mon_words        (mon_words_tx),
         .current_word     (cur_source_word_tx),
@@ -1552,6 +1567,7 @@ module top #(
         .status           (litejesd_status_async),
         .triangle_word    (litejesd_triangle_async),
         .sine_word        (litejesd_sine_async),
+        .tone_start       (dac_tone_start_tx),
         .gth_txdata       (litejesd_txdata),
         .gth_txcharisk    (litejesd_txcharisk),
         .debug_bram_words (dac_debug_bram_words),
@@ -1699,6 +1715,7 @@ module top #(
     assign litejesd_status_async = 32'd0;
     assign litejesd_triangle_async = 32'd0;
     assign litejesd_sine_async = 32'd0;
+    assign dac_tone_start_tx = 1'b0;
     assign dac_program_word0_async = 64'd0;
     assign dac_program_word1_async = 64'd0;
     assign dac_program_word2_async = 64'd0;
@@ -1954,29 +1971,46 @@ module top #(
     // eliminating an independent CDC phase choice.  RW3[7]=0 keeps the original
     // immediate behavior.
     (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [2:0] cur_cyc_start_sync = 3'b000;
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [2:0] tone_start_sync = 3'b000;
     (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] cap_trig_mode_sync = 2'b00;
+    (* ASYNC_REG = "TRUE", SHREG_EXTRACT = "NO" *) reg [1:0] cap_tone_mode_sync = 2'b00;
+    reg tone_start_tx_tog = 1'b0;
     reg cap_armed = 1'b0;
+
+    always @(posedge gth_tx_usrclk2) begin
+        if (litejesd_reset)
+            tone_start_tx_tog <= 1'b0;
+        else if (dac_tone_start_tx)
+            tone_start_tx_tog <= ~tone_start_tx_tog;
+    end
 
     wire adc_capture_req_edge = adc_capture_req_sync[2] ^ adc_capture_req_sync[1];
     wire cur_cycle_start_rx   = cur_cyc_start_sync[2]   ^ cur_cyc_start_sync[1];
+    wire tone_start_rx        = tone_start_sync[2]      ^ tone_start_sync[1];
     wire cap_trig_mode_rx     = cap_trig_mode_sync[1];
+    wire cap_tone_mode_rx     = cap_tone_mode_sync[1];
+    wire aligned_capture_event = cap_tone_mode_rx ? tone_start_rx : cur_cycle_start_rx;
 
     always @(posedge gth_rx_usrclk2) begin
         if (adc_rx_reset) begin
             cur_cyc_start_sync <= 3'b000;
+            tone_start_sync    <= 3'b000;
             cap_trig_mode_sync <= 2'b00;
+            cap_tone_mode_sync <= 2'b00;
             cap_armed          <= 1'b0;
         end else begin
             cur_cyc_start_sync <= {cur_cyc_start_sync[1:0], cur_cycle_start_tx_tog};
+            tone_start_sync    <= {tone_start_sync[1:0], tone_start_tx_tog};
             cap_trig_mode_sync <= {cap_trig_mode_sync[0], rw_reg3[7]};
+            cap_tone_mode_sync <= {cap_tone_mode_sync[0], regf_value[31*32]};
             if (adc_capture_req_edge && cap_trig_mode_rx)
                 cap_armed <= 1'b1;          // RW3[3] edge arms; waits for injection start
-            else if (cur_cycle_start_rx)
-                cap_armed <= 1'b0;          // fired at the injection-window start
+            else if (aligned_capture_event)
+                cap_armed <= 1'b0;          // fired at the selected phase boundary
         end
     end
 
-    wire adc_capture_start = cap_trig_mode_rx ? (cur_cycle_start_rx & cap_armed)
+    wire adc_capture_start = cap_trig_mode_rx ? (aligned_capture_event & cap_armed)
                                               : adc_capture_req_edge;
     wire [63:0] adc_ch0_capture = adc1_litejesd_ready_async ? adc_ch0_async : 64'd0;
     wire [63:0] adc_ch1_capture = adc1_litejesd_ready_async ? adc_ch1_async : 64'd0;
@@ -2151,6 +2185,7 @@ module top #(
     assign litejesd_status_async = 32'd0;
     assign litejesd_triangle_async = 32'd0;
     assign litejesd_sine_async = 32'd0;
+    assign dac_tone_start_tx = 1'b0;
     assign dac_program_word0_async = 64'd0;
     assign dac_program_word1_async = 64'd0;
     assign dac_program_word2_async = 64'd0;

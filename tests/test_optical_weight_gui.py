@@ -66,6 +66,11 @@ class FakeDac:
         }
         return "OK CURW"
 
+    def set_dds_frequency(self, frequency_hz):
+        increment, actual = dac_scope_qt.dds_phase_increment(frequency_hz)
+        self.calls.append(("dds", float(frequency_hz), increment, actual))
+        return "DDS inc=0x%06X" % increment, increment, actual
+
     def get_current_player_status(self, timeout=2.0):
         self.calls.append(("current_status", timeout))
         status = self.force_current_status or self.current_status
@@ -724,6 +729,122 @@ class OpticalWeightGuiTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at least one heater"):
             self.window._mzi_gui_spec()
 
+    def test_pure_tone_mode_builds_fixed_routes_and_programs_dds(self):
+        index = self.window.mzi_mode.findData("tone")
+        self.window.mzi_mode.setCurrentIndex(index)
+        self.window.mzi_tone_frequency.setValue(1250.0)
+        self.window.mzi_tone_inputs[0].setChecked(False)
+        self.window.mzi_tone_inputs[1].setChecked(True)
+        self.window.mzi_tone_inputs[2].setChecked(True)
+        spec = self.window._mzi_gui_spec()
+
+        self.assertEqual(spec["mode"], "tone")
+        self.assertEqual(spec["capture_command"], "BCPD")
+        self.assertEqual(spec["tone_inputs"], [1, 2])
+        self.assertEqual(spec["xbar_sources"], ["Off", "DDS", "DDS", "DDS"])
+        self.assertAlmostEqual(spec["tone_frequency_hz"], 1.25e6)
+        self.assertFalse(self.window.mzi_tone_panel.isHidden())
+        self.assertFalse(self.window.mzi_dac_sources[0].isEnabled())
+
+        fake = FakeDac()
+        self.window.dac = fake
+        self.window._program_mzi_test(spec)
+        self.assertEqual(fake.calls[0][0], "dds")
+        self.assertEqual(
+            [call for call in fake.calls if call[0] == "source"],
+            [("source", 0, "Off"), ("source", 1, "DDS"),
+             ("source", 2, "DDS"), ("source", 3, "DDS")])
+        self.assertFalse(any(call[0] == "timing" for call in fake.calls))
+        self.assertFalse(any(call[0] == "current_wave" for call in fake.calls))
+
+    def test_pure_tone_low_frequency_selects_long_enough_capture(self):
+        index = self.window.mzi_mode.findData("tone")
+        self.window.mzi_mode.setCurrentIndex(index)
+        self.window.mzi_tone_frequency.setValue(10.0)
+
+        self.assertEqual(
+            self.window.mzi_capture_size.currentData(), 768 * 1024)
+        spec = self.window._mzi_gui_spec()
+        captured_cycles = (
+            (spec["capture_bytes"] // 4 - 64)
+            * spec["tone_actual_frequency_hz"] / 1.0e9)
+        self.assertGreaterEqual(captured_cycles, 1.5)
+    def test_pure_tone_capture_selects_bcpd(self):
+        index = self.window.mzi_mode.findData("tone")
+        self.window.mzi_mode.setCurrentIndex(index)
+        spec = self.window._mzi_gui_spec()
+        calls = []
+
+        def capture(nbytes, repetitions, *, command="BCPT"):
+            calls.append((nbytes, repetitions, command))
+            return {"stack": {}, "meta": {"cov": 1.0}}
+
+        self.window._multisample_once = capture
+        result = self.window._mzi_multisample_with_retries(
+            spec, voltage=0.25)
+
+        self.assertNotIn("_err", result)
+        self.assertEqual(
+            calls, [(spec["capture_bytes"], spec["reps"], "BCPD")])
+
+
+    def test_saved_pure_tone_experiment_imports_without_board(self):
+        fake_mzi = FakeMziController()
+        self.window.dac = FakeDac()
+        self.window._mzi_controller = fake_mzi
+        mode_index = self.window.mzi_mode.findData("tone")
+        self.window.mzi_mode.setCurrentIndex(mode_index)
+        self.window.mzi_tone_frequency.setValue(1000.0)
+        self.window.mzi_reps.setValue(4)
+        self.window.mzi_capture_size.setCurrentIndex(
+            self.window.mzi_capture_size.findData(64 * 1024))
+        spec = self.window._mzi_gui_spec()
+        spec.update(
+            voltages=np.asarray([0.0, 0.5]),
+            directions=np.asarray([0, 0], dtype=np.int8),
+            spacing="voltage")
+
+        def capture(nbytes, repetitions, *, command="BCPT"):
+            self.assertEqual(command, "BCPD")
+            sample_count = nbytes // 4
+            sample = np.arange(sample_count, dtype=np.float64)
+            omega = (
+                2.0 * np.pi * spec["tone_actual_frequency_hz"] / 1.0e9)
+            amplitudes = [1200.0, 800.0, 400.0, 12000.0]
+            delays = [37.0, 83.0, 146.0, 0.0]
+            stacks = {}
+            for channel in range(4):
+                wave = amplitudes[channel] * np.sin(
+                    omega * (sample - delays[channel]))
+                stacks[channel] = np.tile(
+                    np.rint(wave).astype(np.int16),
+                    (repetitions, 1))
+            return {
+                "stack": stacks,
+                "meta": {"command": command},
+                "offs": [],
+                "diag": {},
+            }
+
+        self.window._multisample_once = capture
+        captured = self.window._run_mzi_calibration(spec)
+        self.assertNotIn("_err", captured)
+
+        self.window.dac = None
+        imported = self.window._run_mzi_import_experiment(captured["path"])
+        self.window._on_mzi_import_result(imported)
+
+        self.assertNotIn("_err", imported)
+        self.assertEqual(imported["kind"], "imported_tone_sweep")
+        self.assertEqual(imported["mode"], "tone")
+        self.assertEqual(len(imported["tone_analyses"]), 2)
+        self.assertEqual(len(self.window.mzi_sweep_trace_plots), 2)
+        self.assertIn("absolute amplitude", self.window.mzi_results_summary.text())
+        self.assertEqual(self.window.workspace_tabs.currentIndex(), 2)
+        np.testing.assert_allclose(
+            imported["tone_amplitudes_v"][0],
+            np.full(2, 1200.0 * dac_scope_qt.VOLTS_PER_COUNT),
+            rtol=2e-3)
 
 if __name__ == "__main__":
     unittest.main()

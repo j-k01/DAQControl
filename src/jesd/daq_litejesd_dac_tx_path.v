@@ -20,6 +20,7 @@ module daq_litejesd_dac_tx_path #(
     input  wire [3:0]    physical_map_mode,
     input  wire [15:0]   triangle_step,
     input  wire [23:0]   sine_phase_inc,
+    input  wire          tone_restart,
     input  wire [15:0]   dac_src_sel,        // 4-bit crossbar source select per DAC
     input  wire [255:0]  mon_words,          // 4 x 64-bit per-neuron current monitor (GT domain)
     input  wire [63:0]   current_word,       // pure injected current source (GT domain)
@@ -38,6 +39,7 @@ module daq_litejesd_dac_tx_path #(
     output wire [31:0]   status,
     output wire [31:0]   triangle_word,
     output wire [31:0]   sine_word,
+    output reg           tone_start,
 
     output wire [255:0]  gth_txdata,
     output wire [31:0]   gth_txcharisk,
@@ -199,6 +201,15 @@ module daq_litejesd_dac_tx_path #(
     wire [15:0] sine_sample2 = sine_from_phase(sine_phase2);
     wire [15:0] sine_sample3 = sine_from_phase(sine_phase3);
 
+    wire [23:0] restart_phase1 = sine_step;
+    wire [23:0] restart_phase2 = restart_phase1 + sine_step;
+    wire [23:0] restart_phase3 = restart_phase2 + sine_step;
+    wire [23:0] restart_phase4 = restart_phase3 + sine_step;
+    wire [15:0] restart_sample0 = sine_from_phase(24'd0);
+    wire [15:0] restart_sample1 = sine_from_phase(restart_phase1);
+    wire [15:0] restart_sample2 = sine_from_phase(restart_phase2);
+    wire [15:0] restart_sample3 = sine_from_phase(restart_phase3);
+
     always @(posedge jesd_clk) begin
         if (jesd_rst || !enable) begin
             triangle_sample <= 16'd0;
@@ -207,6 +218,19 @@ module daq_litejesd_dac_tx_path #(
             sine_phase      <= 24'd0;
             sine_word_r     <= 32'd0;
             sine_quad_word_r <= 64'd0;
+            tone_start      <= 1'b0;
+        end else if (tone_restart) begin
+            // Capture control toggles this only after both ADC engines arm.
+            // Restart this beat at phase zero and mark that exact boundary.
+            sine_phase       <= restart_phase4;
+            sine_word_r      <= {restart_sample1, restart_sample0};
+            sine_quad_word_r <= {
+                restart_sample3,
+                restart_sample2,
+                restart_sample1,
+                restart_sample0
+            };
+            tone_start       <= 1'b1;
         end else begin
             triangle_word_r <= {triangle_next0[15:0], triangle_sample};
             triangle_sample <= triangle_next3[15:0];
@@ -223,6 +247,7 @@ module daq_litejesd_dac_tx_path #(
                 sine_sample0
             };
             sine_phase      <= sine_phase4;
+            tone_start      <= 1'b0;
         end
     end
 
